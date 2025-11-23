@@ -3,8 +3,8 @@ __title__ = "New Button"
 __doc__ = """Version = 1.0
 Date    = 23.11.2025
 _____________________________________________________________________
-Description:
-N/A
+Description: 
+New Button Description added.
 _____________________________________________________________________"""
 
 from sys import prefix
