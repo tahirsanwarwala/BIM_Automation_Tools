@@ -60,7 +60,7 @@ print(picked_box.Max)
 
 #--------------------------------------------------
 #🟠 7. Set Selection in Revit UI
-new_selection = FilteredElementCollector(doc).OfClass(Wall).ToElementIds()
+new_selection = FilteredElementCollector(doc).OfClass(Wall). ()
 selection.SetElementIds(new_selection)
 
 # #💡 P.S. If You have a python list you need to turn it into List[ElementId] ;)
