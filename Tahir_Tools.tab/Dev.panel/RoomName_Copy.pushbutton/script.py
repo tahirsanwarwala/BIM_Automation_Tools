@@ -75,56 +75,61 @@ def get_door_xy(door_element):
         return round(point.X, 4), round(point.Y, 4)
     return None
 
-def get_target_levels():
+def get_target_levels(source):
+    try:
+        source_lvl = doc.GetElement(source[0].LevelId).Name
+        # Get all levels in the project
+        levels = FilteredElementCollector(doc).OfClass(Level).ToElements()
+        level_dict = {level.Name: level for level in levels}
 
-    global source_doors
-    source_lvl = doc.GetElement(source_doors[0].LevelId).Name
-    # Get all levels in the project
-    levels = FilteredElementCollector(doc).OfClass(Level).ToElements()
-    level_dict = {level.Name: level for level in levels}
+        sorted_levels = sorted(levels, key=lambda l: l.Elevation)
+        level_names = [level.Name for level in sorted_levels]
 
-    sorted_levels = sorted(levels, key=lambda l: l.Elevation)
-    level_names = [level.Name for level in sorted_levels]
+        # Get source level
+        target_levels = forms.SelectFromList.show(
+            [name for name in level_names if name != source_lvl ],
+            title="Select Target Level",
+            button_name="Select", multiselect=True
+        )
 
-    # Get source level
-    target_levels = forms.SelectFromList.show(
-        [name for name in level_names if name != source_lvl ],
-        title="Select Target Level",
-        button_name="Select", multiselect=True
-    )
-    levels = [level_dict[l] for l in target_levels]
-    return levels
+        levels = [level_dict[l] for l in target_levels]
+        return levels
 
-def copy_params():
-    source_door = source_dict[target_xy]
+    except Exception as e:
+        raise SystemExit
+
+
+def copy_params(target):
+    source_door = source_dict[target]
     source_param = source_door.LookupParameter(parameter_name).AsString()
-    if "Unit" in source_param:
-        if door.ToRoom[phase[1]]:
-            room_number = door.ToRoom[phase[1]].Number
-        elif door.FromRoom[phase[1]]:
-            room_number = door.FromRoom[phase[1]].Number
-        else:
-            room_number = None
-        if room_number:
-            room_name = source_param.split()
-            room_name[1] = str(room_number)
-            new_room = " ".join(room_name)
+    if source_param:
+        if source_param.startswith("Unit"):
+            if door.ToRoom[phase[1]]:
+                room_number = door.ToRoom[phase[1]].Number
+            elif door.FromRoom[phase[1]]:
+                room_number = door.FromRoom[phase[1]].Number
+            else:
+                room_number = None
+            if room_number:
+                room_name = source_param.split()
+                room_name[1] = str(room_number)
+                new_room = " ".join(room_name)
+                target_param = door.LookupParameter(parameter_name)
+                target_param.Set(new_room)
+        if source_param.startswith("L"):
+            level_name = level.Name.split()
+            level_num = level_name[1]
+            mark = source_param.split(".")
+            mark[0] = f"L{level_num}"
+            new_mark = ".".join(mark)
             target_param = door.LookupParameter(parameter_name)
-            target_param.Set(new_room)
-    elif "L" in source_param[0]:
-        level_name = level.Name.split()
-        level_num = level_name[1]
-        mark = source_param.split(".")
-        mark[0] = f"L{level_num}"
-        new_mark = ".".join(mark)
-        target_param = door.LookupParameter(parameter_name)
-        target_param.Set(new_mark)
-    # else:
-    #     print(f"Door ID: {door.Id} has no {parameter_name} value.")
+            target_param.Set(new_mark)
+        # else:
+        #     print(f"Door ID: {door.Id} has no {parameter_name} value.")
 
 
 source_doors = select_doors()
-levels = get_target_levels()
+levels = get_target_levels(source_doors)
 source_dict = {}
 for door in source_doors:
     source_xy = get_door_xy(door)
@@ -138,5 +143,5 @@ for level in levels:
     for door in doors:
         target_xy = get_door_xy(door)
         if target_xy in source_dict:
-            copy_params()
+            copy_params(target_xy)
 t.Commit()

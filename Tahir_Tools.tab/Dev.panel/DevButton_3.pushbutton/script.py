@@ -53,9 +53,6 @@ doc    = __revit__.ActiveUIDocument.Document #type:Document
 # ╩ ╩╩ ╩╩╝╚╝
 #==================================================
 
-
-
-
 #🤖 Automate Your Boring Work Here
 
 
