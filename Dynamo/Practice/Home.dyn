@@ -1,0 +1,72 @@
+{
+  "Uuid": "7889bf3c-56ab-4e04-952c-21532a93ee06",
+  "IsCustomNode": false,
+  "Description": "",
+  "Name": "Home",
+  "ElementResolver": {
+    "ResolutionMap": {
+      "Point": {
+        "Key": "Autodesk.DesignScript.Geometry.Point",
+        "Value": "ProtoGeometry.dll"
+      }
+    }
+  },
+  "Inputs": [],
+  "Outputs": [],
+  "Nodes": [],
+  "Connectors": [],
+  "Dependencies": [],
+  "NodeLibraryDependencies": [],
+  "Thumbnail": "",
+  "GraphDocumentationURL": null,
+  "ExtensionWorkspaceData": [
+    {
+      "ExtensionGuid": "28992e1d-abb9-417f-8b1b-05e053bee670",
+      "Name": "Properties",
+      "Version": "2.19",
+      "Data": {}
+    },
+    {
+      "ExtensionGuid": "DFBD9CC0-DB40-457A-939E-8C8555555A9D",
+      "Name": "Generative Design",
+      "Version": "6.1",
+      "Data": {}
+    }
+  ],
+  "Author": "",
+  "Linting": {
+    "activeLinter": "None",
+    "activeLinterId": "7b75fb44-43fd-4631-a878-29f4d5d8399a",
+    "warningCount": 0,
+    "errorCount": 0
+  },
+  "Bindings": [],
+  "View": {
+    "Dynamo": {
+      "ScaleFactor": 1.0,
+      "HasRunWithoutCrash": true,
+      "IsVisibleInDynamoLibrary": true,
+      "Version": "2.19.3.6394",
+      "RunType": "Automatic",
+      "RunPeriod": "1000"
+    },
+    "Camera": {
+      "Name": "_Background Preview",
+      "EyeX": -35.02423095703125,
+      "EyeY": 17.491434097290039,
+      "EyeZ": -16.859966278076172,
+      "LookX": 28.947996139526367,
+      "LookY": -22.917221069335938,
+      "LookZ": 23.183130264282227,
+      "UpX": 0.25841191411018372,
+      "UpY": 0.9436071515083313,
+      "UpZ": 0.206951305270195
+    },
+    "ConnectorPins": [],
+    "NodeViews": [],
+    "Annotations": [],
+    "X": 6768.7533360996695,
+    "Y": 4932.4043827258793,
+    "Zoom": 0.29184562012217985
+  }
+}

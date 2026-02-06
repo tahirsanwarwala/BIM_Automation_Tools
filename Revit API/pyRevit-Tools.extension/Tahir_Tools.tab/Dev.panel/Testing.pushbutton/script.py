@@ -1,95 +1,69 @@
 # -*- coding: utf-8 -*-
-__title__ = "Test Scripts"
-__doc__ = """Date = 23.01.2026
-________________________________________________________________
-Description:
-Aligns level leader elbows and ends to match a source leader
-in a geometry-safe, view-independent way.
-"""
-# ╦╔╦╗╔═╗╔═╗╦═╗╔╦╗╔═╗
-# ║║║║╠═╝║ ║╠╦╝ ║ ╚═╗
-# ╩╩ ╩╩  ╚═╝╩╚═ ╩ ╚═╝
-#==================================================
-from Autodesk.Revit.DB import *
-from Autodesk.Revit.UI.Selection import *
-from Tahir.LevelSelection import LevelSelectionFilter
-from Autodesk.Revit.Exceptions import OperationCanceledException
 
+from pyrevit import revit, forms
+from Autodesk.Revit.DB import (
+    FilteredElementCollector,
+    BuiltInCategory,
+    BoundingBoxXYZ,
+    Transaction
+)
 
-#.NET Imports
-import clr
-
-clr.AddReference('System')
-from System.Collections.Generic import List
-
-
-
-# ╦  ╦╔═╗╦═╗╦╔═╗╔╗ ╦  ╔═╗╔═╗
-# ╚╗╔╝╠═╣╠╦╝║╠═╣╠╩╗║  ║╣ ╚═╗
-#  ╚╝ ╩ ╩╩╚═╩╩ ╩╚═╝╩═╝╚═╝╚═╝
-#==================================================
-app    = __revit__.Application
-uidoc  = __revit__.ActiveUIDocument
-doc    = __revit__.ActiveUIDocument.Document #type:Document
+doc = revit.doc
 view = doc.ActiveView
-selection = uidoc.Selection
 
+# -------------------------------------------------
+# Validate view
+# -------------------------------------------------
+# if not view.CanHaveCropRegion:
+#     forms.alert("Active view cannot be cropped.", exitscript=True)
 
+# -------------------------------------------------
+# Collect rooms visible in this view
+# -------------------------------------------------
+rooms = (
+    FilteredElementCollector(doc, view.Id)
+    .OfCategory(BuiltInCategory.OST_Rooms)
+    .WhereElementIsNotElementType()
+    .ToElements()
+)
 
-# ╔╦╗╔═╗╦╔╗╔
-# ║║║╠═╣║║║║
-# ╩ ╩╩ ╩╩╝╚╝
-#==================================================
-# -------------------------------
-# Pick SOURCE datum (with leader)
-# -------------------------------
-# -------------------------
-# Select multiple target levels
-# -------------------------
-def select_levels():
-    try:
-        selection_filter = LevelSelectionFilter()
-        references = uidoc.Selection.PickObjects(
-            ObjectType.Element,
-            selection_filter,
-            "Select target Levels"
-        )
-        return [doc.GetElement(ref) for ref in references]
+if not rooms:
+    forms.alert("No rooms found in active view.", exitscript=True)
 
-    except OperationCanceledException:
-        return None
+room_map = {f"{r.Number} - {r.Name}": r for r in rooms}
 
-    except Exception as ex:
-        print("Level selection failed:", ex)
-        return None
+selection = forms.SelectFromList.show(
+    sorted(room_map.keys()),
+    title="Select Room",
+    button_name="Crop View"
+)
 
+if not selection:
+    forms.alert("No room selected.", exitscript=True)
 
-# -------------------------
-# Pick SOURCE datum
-# -------------------------
-try:
-    ref_src = selection.PickObject(
-        ObjectType.Element,
-        "Pick SOURCE datum (with leader)"
-    )
-    src_datum = doc.GetElement(ref_src)
-except OperationCanceledException:
-    raise SystemExit
+room = room_map[selection]
 
-except Exception as ex:
-    print("Failed to pick source datum:", ex)
-    raise SystemExit
+# -------------------------------------------------
+# Get bounding box
+# -------------------------------------------------
+bbox = room.get_BoundingBox(view)
 
+if not bbox:
+    forms.alert("Room bounding box not available.", exitscript=True)
 
-# -------------------------
-# Get SOURCE leader safely
-# -------------------------
+# -------------------------------------------------
+# Apply directly to crop box
+# -------------------------------------------------
+with Transaction(doc, "Crop View to Room") as t:
+    t.Start()
 
-for end in [DatumEnds.End0, DatumEnds.End1]:
-    if src_datum.IsBubbleVisibleInView(end, view):
-        src_end = end
+    view.CropBoxActive = True
+    view.CropBoxVisible = True
 
-if src_end is None:
-    print("Source datum has no leader at End0 or End1 in this view.")
-    raise SystemExit
+    new_box = BoundingBoxXYZ()
+    new_box.Min = bbox.Min
+    new_box.Max = bbox.Max
 
+    view.CropBox = new_box
+
+    t.Commit()
