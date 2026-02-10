@@ -133,7 +133,7 @@ while True:
         print('No parameter named "Room Name" or containing "room" found on the door. Skipping.')
         continue
 
-    # start transaction and set parameter
+    # start the transaction and set parameter
     t = Transaction(doc, 'Set Door Room Name')
     try:
         t.Start()
