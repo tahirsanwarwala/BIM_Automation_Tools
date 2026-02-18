@@ -1,0 +1,14 @@
+<RevitAddIns>
+    <AddIn Type="Application">
+        <Name>Tahir_Tools</Name>
+        <Assembly>Tahir_Tools\Tahir_Tools.dll</Assembly>
+        <AddInId>3D8B02A5-0F08-4B43-8B2F-7656F113847D</AddInId>
+        <FullClassName>Tahir_Tools.Application</FullClassName>
+        <VendorId>Development</VendorId>
+        <VendorDescription></VendorDescription>
+    </AddIn>
+    <ManifestSettings>
+        <UseRevitContext>False</UseRevitContext>
+        <ContextName>Tahir_Tools</ContextName>
+    </ManifestSettings>
+</RevitAddIns>
