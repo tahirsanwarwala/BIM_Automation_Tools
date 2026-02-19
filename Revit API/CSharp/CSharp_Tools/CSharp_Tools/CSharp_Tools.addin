@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  CSharp_Tools.addin
+  ==================
+  Revit 2024 add-in manifest.
+
+  DEPLOY INSTRUCTIONS
+  ===================
+  Copy this file AND CSharp_Tools.dll to one of:
+
+    Per-user  : %APPDATA%\Autodesk\Revit\Addins\2024\
+    All-users : %PROGRAMDATA%\Autodesk\Revit\Addins\2024\
+
+  The <Assembly> path is relative to the .addin file location.
+  Adjust to an absolute path if your DLL lives elsewhere.
+-->
+<RevitAddIns>
+
+  <AddIn Type="Application">
+    <Name>CSharp Tools</Name>
+    <AddInId>FEF332A2-4880-4E73-B189-951BDEC1FCBB</AddInId>
+    <Assembly>CSharp_Tools\CSharp_Tools.dll</Assembly>
+    <FullClassName>CSharp_Tools.Application</FullClassName>
+    <VendorId>YOUR_VENDOR_ID</VendorId>
+    <VendorDescription>Your Company / Developer Name</VendorDescription>
+  </AddIn>
+
+</RevitAddIns>
