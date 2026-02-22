@@ -3,16 +3,20 @@
   "WorkspaceRootPath": "C:\\Users\\Bim59\\AppData\\Roaming\\BIM_Automation Github\\Revit API\\CSharp\\CSharp_Tools\\",
   "Documents": [
     {
+      "AbsoluteMoniker": "D:0:0:{F0D116F0-D21B-4598-A387-56F8A196DFD5}|CSharp_Tools\\CSharp_Tools.csproj|c:\\users\\bim59\\appdata\\roaming\\bim_automation github\\revit api\\csharp\\csharp_tools\\csharp_tools\\csharp_tools.addin||{FA3CD31E-987B-443A-9B81-186104E8DAC1}",
+      "RelativeMoniker": "D:0:0:{F0D116F0-D21B-4598-A387-56F8A196DFD5}|CSharp_Tools\\CSharp_Tools.csproj|solutionrelative:csharp_tools\\csharp_tools.addin||{FA3CD31E-987B-443A-9B81-186104E8DAC1}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{F0D116F0-D21B-4598-A387-56F8A196DFD5}|CSharp_Tools\\CSharp_Tools.csproj|c:\\users\\bim59\\appdata\\roaming\\bim_automation github\\revit api\\csharp\\csharp_tools\\csharp_tools\\application.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{F0D116F0-D21B-4598-A387-56F8A196DFD5}|CSharp_Tools\\CSharp_Tools.csproj|solutionrelative:csharp_tools\\application.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
       "AbsoluteMoniker": "D:0:0:{F0D116F0-D21B-4598-A387-56F8A196DFD5}|CSharp_Tools\\CSharp_Tools.csproj|c:\\users\\bim59\\appdata\\roaming\\bim_automation github\\revit api\\csharp\\csharp_tools\\csharp_tools\\commands\\selectsimilarinmodelcommand.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
       "RelativeMoniker": "D:0:0:{F0D116F0-D21B-4598-A387-56F8A196DFD5}|CSharp_Tools\\CSharp_Tools.csproj|solutionrelative:csharp_tools\\commands\\selectsimilarinmodelcommand.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
     },
     {
       "AbsoluteMoniker": "D:0:0:{F0D116F0-D21B-4598-A387-56F8A196DFD5}|CSharp_Tools\\CSharp_Tools.csproj|c:\\users\\bim59\\appdata\\roaming\\bim_automation github\\revit api\\csharp\\csharp_tools\\csharp_tools\\commands\\selectsimilarinviewscommand.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
       "RelativeMoniker": "D:0:0:{F0D116F0-D21B-4598-A387-56F8A196DFD5}|CSharp_Tools\\CSharp_Tools.csproj|solutionrelative:csharp_tools\\commands\\selectsimilarinviewscommand.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
-    },
-    {
-      "AbsoluteMoniker": "D:0:0:{F0D116F0-D21B-4598-A387-56F8A196DFD5}|CSharp_Tools\\CSharp_Tools.csproj|c:\\users\\bim59\\appdata\\roaming\\bim_automation github\\revit api\\csharp\\csharp_tools\\csharp_tools\\application.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
-      "RelativeMoniker": "D:0:0:{F0D116F0-D21B-4598-A387-56F8A196DFD5}|CSharp_Tools\\CSharp_Tools.csproj|solutionrelative:csharp_tools\\application.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
     }
   ],
   "DocumentGroupContainers": [
@@ -26,17 +30,16 @@
           "Children": [
             {
               "$type": "Document",
-              "DocumentIndex": 2,
+              "DocumentIndex": 1,
               "Title": "Application.cs",
               "DocumentMoniker": "C:\\Users\\Bim59\\AppData\\Roaming\\BIM_Automation Github\\Revit API\\CSharp\\CSharp_Tools\\CSharp_Tools\\Application.cs",
               "RelativeDocumentMoniker": "CSharp_Tools\\Application.cs",
               "ToolTip": "C:\\Users\\Bim59\\AppData\\Roaming\\BIM_Automation Github\\Revit API\\CSharp\\CSharp_Tools\\CSharp_Tools\\Application.cs",
               "RelativeToolTip": "CSharp_Tools\\Application.cs",
-              "ViewState": "AgIAAAAAAAAAAAAAAAAAAIIAAAAIAAAAAAAAAA==",
+              "ViewState": "AgIAAAYAAAAAAAAAAAAAABQAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
               "WhenOpened": "2026-02-19T09:03:59.756Z",
-              "IsPinned": true,
-              "EditorCaption": ""
+              "IsPinned": true
             },
             {
               "$type": "Bookmark",
@@ -45,19 +48,31 @@
             {
               "$type": "Document",
               "DocumentIndex": 0,
+              "Title": "CSharp_Tools.addin",
+              "DocumentMoniker": "C:\\Users\\Bim59\\AppData\\Roaming\\BIM_Automation Github\\Revit API\\CSharp\\CSharp_Tools\\CSharp_Tools\\CSharp_Tools.addin",
+              "RelativeDocumentMoniker": "CSharp_Tools\\CSharp_Tools.addin",
+              "ToolTip": "C:\\Users\\Bim59\\AppData\\Roaming\\BIM_Automation Github\\Revit API\\CSharp\\CSharp_Tools\\CSharp_Tools\\CSharp_Tools.addin",
+              "RelativeToolTip": "CSharp_Tools\\CSharp_Tools.addin",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAABkAAAAKAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000072|",
+              "WhenOpened": "2026-02-22T09:47:23.708Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 2,
               "Title": "SelectSimilarInModelCommand.cs",
               "DocumentMoniker": "C:\\Users\\Bim59\\AppData\\Roaming\\BIM_Automation Github\\Revit API\\CSharp\\CSharp_Tools\\CSharp_Tools\\Commands\\SelectSimilarInModelCommand.cs",
               "RelativeDocumentMoniker": "CSharp_Tools\\Commands\\SelectSimilarInModelCommand.cs",
               "ToolTip": "C:\\Users\\Bim59\\AppData\\Roaming\\BIM_Automation Github\\Revit API\\CSharp\\CSharp_Tools\\CSharp_Tools\\Commands\\SelectSimilarInModelCommand.cs",
               "RelativeToolTip": "CSharp_Tools\\Commands\\SelectSimilarInModelCommand.cs",
-              "ViewState": "AgIAAJQBAAAAAAAAAAAUwLQBAAAtAAAAAAAAAA==",
+              "ViewState": "AgIAAOwBAAAAAAAAAAAuwLIBAAA8AAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2026-02-19T18:33:06.375Z",
-              "EditorCaption": ""
+              "WhenOpened": "2026-02-19T18:33:06.375Z"
             },
             {
               "$type": "Document",
-              "DocumentIndex": 1,
+              "DocumentIndex": 3,
               "Title": "SelectSimilarInViewsCommand.cs",
               "DocumentMoniker": "C:\\Users\\Bim59\\AppData\\Roaming\\BIM_Automation Github\\Revit API\\CSharp\\CSharp_Tools\\CSharp_Tools\\Commands\\SelectSimilarInViewsCommand.cs",
               "RelativeDocumentMoniker": "CSharp_Tools\\Commands\\SelectSimilarInViewsCommand.cs",
@@ -65,8 +80,7 @@
               "RelativeToolTip": "CSharp_Tools\\Commands\\SelectSimilarInViewsCommand.cs",
               "ViewState": "AgIAAHwAAAAAAAAAAAAcwJsAAAAkAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2026-02-19T17:44:49.411Z",
-              "EditorCaption": ""
+              "WhenOpened": "2026-02-19T17:44:49.411Z"
             }
           ]
         }

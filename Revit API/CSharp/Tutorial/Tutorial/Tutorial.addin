@@ -1,0 +1,10 @@
+<RevitAddIns>
+    <AddIn Type="Application">
+        <Name>Tutorial</Name>
+        <Assembly>Tutorial\Tutorial.dll</Assembly>
+        <AddInId>BA5C6F1E-42A1-4960-AF75-BC0B962EAF35</AddInId>
+        <FullClassName>Tutorial.Application</FullClassName>
+        <VendorId>Development</VendorId>
+        <VendorDescription></VendorDescription>
+    </AddIn>
+</RevitAddIns>
