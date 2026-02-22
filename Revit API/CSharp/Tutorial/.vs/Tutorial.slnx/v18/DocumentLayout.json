@@ -68,8 +68,7 @@
               "RelativeToolTip": "Tutorial\\General\\Globals.cs",
               "ViewState": "AgIAAAAAAAAAAAAAAAAAAAsAAAAfAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2026-02-22T10:50:40.664Z",
-              "EditorCaption": ""
+              "WhenOpened": "2026-02-22T10:50:40.664Z"
             },
             {
               "$type": "Document",
@@ -81,8 +80,7 @@
               "RelativeToolTip": "Tutorial\\Forms\\Custom.cs",
               "ViewState": "AgIAAAAAAAAAAAAAAAAAABkAAAAAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2026-02-22T10:29:14.842Z",
-              "EditorCaption": ""
+              "WhenOpened": "2026-02-22T10:29:14.842Z"
             },
             {
               "$type": "Document",
@@ -106,8 +104,7 @@
               "RelativeToolTip": "Tutorial\\Tutorial.addin",
               "ViewState": "AgIAAAAAAAAAAAAAAAAAAAQAAAA1AAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000072|",
-              "WhenOpened": "2026-02-22T09:39:03.922Z",
-              "EditorCaption": ""
+              "WhenOpened": "2026-02-22T09:39:03.922Z"
             },
             {
               "$type": "Document",
@@ -119,8 +116,7 @@
               "RelativeToolTip": "Tutorial\\Utilities\\Ribbon_Utils.cs",
               "ViewState": "AgIAAAAAAAAAAAAAAAAAAA0AAAAdAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2026-02-21T21:30:11.386Z",
-              "EditorCaption": ""
+              "WhenOpened": "2026-02-21T21:30:11.386Z"
             },
             {
               "$type": "Document",
@@ -132,8 +128,7 @@
               "RelativeToolTip": "Tutorial\\Commands\\General\\Cmds_General.cs",
               "ViewState": "AgIAAAAAAAAAAAAAAAAAAAMAAAAbAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2026-02-20T16:39:44.606Z",
-              "EditorCaption": ""
+              "WhenOpened": "2026-02-20T16:39:44.606Z"
             }
           ]
         }

@@ -4,9 +4,9 @@
 //
 // Revit API 2024
 
-using System;
-using System.Reflection;
 using Autodesk.Revit.UI;
+using CSharp_Tools.Commands;
+using System.Reflection;
 
 namespace CSharp_Tools
 {
@@ -71,19 +71,35 @@ namespace CSharp_Tools
                     // Image      = LoadImage("elbow_16.png");
                 };
 
+                // Button 3 — Align Elbows
+                var pbAlignElbow = new PushButtonData(
+                    name: "AlignElbowsBtn",
+                    text: "Align Elbows",
+                    assemblyName: assemblyPath,
+                    className: "CSharp_Tools.Commands.AlignElbows")
+                {
+                    ToolTip = "Align level leader elbows and ends to match a source leader.",
+                    LongDescription = "Pick a source Level whose leader geometry you want to copy, " +
+                                      "then select one or more target Levels. " +
+                                      "The elbow X/Y and end X/Y are copied from the source; " +
+                                      "each target preserves its own Z elevation."
+                    // LargeImage = LoadImage("align_elbow_32.png");
+                    // Image      = LoadImage("align_elbow_16.png");
+                };
+
                 // Button 3A — Select Similar on Multiple Views
                 var pbMatchView = new PushButtonData(
                     name: "MatchByView",
                     text: "Match by View",
                     assemblyName: assemblyPath,
-                    className: "CSharp_Tools.SelectSimilarInViewsCommand");
+                    className: "CSharp_Tools.Commands.SelectSimilarInViewsCommand");
 
                 // Button 3B — Select Similar on Multiple Views
                 var pbMatchModel = new PushButtonData(
                     name: "MatchByModel",
                     text: "Match by Model",
                     assemblyName: assemblyPath,
-                    className: "CSharp_Tools.SelectSimilarInModelCommand");
+                    className: "CSharp_Tools.Commands.SelectSimilarInModelCommand");
 
                 // ---- 4A. Create the pulldown and add both buttons into it ----
                 var levelPulldownData = new PulldownButtonData(
@@ -108,9 +124,30 @@ namespace CSharp_Tools
 
                 pulldown1.AddPushButton(pbSwitch);
                 pulldown1.AddPushButton(pbElbow);
+                pulldown1.AddPushButton(pbAlignElbow);
 
                 pulldown2.AddPushButton(pbMatchView);
                 pulldown2.AddPushButton(pbMatchModel);
+
+                // ---- 5. Standalone push button — Sheets from Excel ----
+                // This button sits directly on the panel (not inside a pulldown)
+                // so it is always immediately visible without any drop-down click.
+                var pbCreateSheets = new PushButtonData(
+                    name: "CreateSheetsFromExcelBtn",
+                    text: "Sheets\nfrom Excel",
+                    assemblyName: assemblyPath,
+                    className: "CSharp_Tools.Commands.CreateSheetsFromExcel")
+                {
+                    ToolTip = "Create Revit sheets from an Excel (.xlsx) file.",
+                    LongDescription =
+                        "Opens a template guide showing the required Excel column format. " +
+                        "Select your .xlsx file to create sheets automatically, with duplicate " +
+                        "detection, optional titleblock assignment, and a summary report."
+                    // LargeImage = LoadImage("sheets_32.png");
+                    // Image      = LoadImage("sheets_16.png");
+                };
+
+                panel.AddItem(pbCreateSheets);
 
                 return Result.Succeeded;
             }

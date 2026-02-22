@@ -1,12 +1,16 @@
 {
   "version": 2,
-  "dgSpecHash": "LSN4CucEpIY=",
+  "dgSpecHash": "Su1IKhwUOkw=",
   "success": true,
   "projectFilePath": "C:\\Users\\Bim59\\AppData\\Roaming\\BIM_Automation Github\\Revit API\\CSharp\\CSharp_Tools\\CSharp_Tools\\CSharp_Tools.csproj",
   "expectedPackageFiles": [
     "C:\\Users\\Bim59\\.nuget\\packages\\communitytoolkit.mvvm\\8.4.0\\communitytoolkit.mvvm.8.4.0.nupkg.sha512",
+    "C:\\Users\\Bim59\\.nuget\\packages\\epplus\\6.2.10\\epplus.6.2.10.nupkg.sha512",
+    "C:\\Users\\Bim59\\.nuget\\packages\\epplus.interfaces\\6.1.1\\epplus.interfaces.6.1.1.nupkg.sha512",
+    "C:\\Users\\Bim59\\.nuget\\packages\\epplus.system.drawing\\6.1.1\\epplus.system.drawing.6.1.1.nupkg.sha512",
     "C:\\Users\\Bim59\\.nuget\\packages\\jetbrains.annotations\\2025.2.4\\jetbrains.annotations.2025.2.4.nupkg.sha512",
     "C:\\Users\\Bim59\\.nuget\\packages\\microsoft.bcl.asyncinterfaces\\8.0.0\\microsoft.bcl.asyncinterfaces.8.0.0.nupkg.sha512",
+    "C:\\Users\\Bim59\\.nuget\\packages\\microsoft.io.recyclablememorystream\\1.4.1\\microsoft.io.recyclablememorystream.1.4.1.nupkg.sha512",
     "C:\\Users\\Bim59\\.nuget\\packages\\nice3point.revit.api.revitapi\\2024.3.30\\nice3point.revit.api.revitapi.2024.3.30.nupkg.sha512",
     "C:\\Users\\Bim59\\.nuget\\packages\\nice3point.revit.api.revitapiui\\2024.3.30\\nice3point.revit.api.revitapiui.2024.3.30.nupkg.sha512",
     "C:\\Users\\Bim59\\.nuget\\packages\\nice3point.revit.extensions\\2024.2.1\\nice3point.revit.extensions.2024.2.1.nupkg.sha512",

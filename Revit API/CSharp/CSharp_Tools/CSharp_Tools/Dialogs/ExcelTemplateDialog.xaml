@@ -1,0 +1,9 @@
+<Window x:Class="CSharp_Tools.Dialogs.ExcelTemplateDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!--
+        All layout and styling is built in code-behind (ExcelTemplateDialog.xaml.cs).
+        This file is intentionally empty so that stale compiled BAML never overrides
+        colors or styles set in the BuildUI() method.
+    -->
+</Window>

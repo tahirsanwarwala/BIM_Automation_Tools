@@ -8,59 +8,66 @@
 //   4. Collects all elements in target views that match the source family+type.
 //   5. Selects source + matching elements in the UI.
 
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Windows;
-using System.Windows.Controls;
 using Autodesk.Revit.Attributes;
-using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Autodesk.Revit.UI.Selection;
+using CSharp_Tools.Dialogs;
 
-namespace CSharp_Tools
+namespace CSharp_Tools.Commands
 {
     [Transaction(TransactionMode.ReadOnly)]
     [Regeneration(RegenerationOption.Manual)]
     public class SelectSimilarInViewsCommand : IExternalCommand
     {
-        // ============================================================
-        // Tolerance for XY bounding-box-center matching (in feet).
-        // Change this one value to adjust matching strictness everywhere.
-        // ============================================================
-        private const double LocationTolerance = 0.5;   // 0.5 ft ≈ 6 inches
-
         public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements)
         {
             UIDocument uidoc = commandData.Application.ActiveUIDocument;
-            Document   doc   = uidoc.Document;
+            Document doc = uidoc.Document;
             Autodesk.Revit.DB.View activeView = doc.ActiveView;
 
             // --------------------------------------------------
-            // 1. User selects view-specific elements in active view
+            // 1. Use pre-selection if it contains only view-specific
+            //    elements; otherwise ask the user to pick.
             // --------------------------------------------------
-            IList<Reference> refs;
-            try
-            {
-                refs = uidoc.Selection.PickObjects(
-                    ObjectType.Element,
-                    new ViewSpecificSelectionFilter(),
-                    "Select view-specific elements, then press Finish.");
-            }
-            catch (Autodesk.Revit.Exceptions.OperationCanceledException)
-            {
-                return Result.Cancelled;
-            }
-            catch (Exception ex)
-            {
-                TaskDialog.Show("Selection Error", ex.Message);
-                return Result.Failed;
-            }
-
-            var sourceElements = refs
-                .Select(r => doc.GetElement(r))
+            var preSelected = uidoc.Selection.GetElementIds()
+                .Select(id => doc.GetElement(id))
                 .Where(e => e != null && e.ViewSpecific)
                 .ToList();
+
+            bool hadValidPreSelection = preSelected.Any() &&
+                uidoc.Selection.GetElementIds().Count == preSelected.Count;
+
+            List<Element> sourceElements;
+
+            if (hadValidPreSelection)
+            {
+                sourceElements = preSelected;
+            }
+            else
+            {
+                IList<Reference> refs;
+                try
+                {
+                    refs = uidoc.Selection.PickObjects(
+                        ObjectType.Element,
+                        new ViewSpecificSelectionFilter(),
+                        "Select view-specific elements, then press Finish.");
+                }
+                catch (Autodesk.Revit.Exceptions.OperationCanceledException)
+                {
+                    return Result.Cancelled;
+                }
+                catch (Exception ex)
+                {
+                    TaskDialog.Show("Selection Error", ex.Message);
+                    return Result.Failed;
+                }
+
+                sourceElements = refs
+                    .Select(r => doc.GetElement(r))
+                    .Where(e => e != null && e.ViewSpecific)
+                    .ToList();
+            }
 
             if (!sourceElements.Any())
             {
@@ -149,8 +156,8 @@ namespace CSharp_Tools
                         // Keep candidate if its center is within tolerance
                         // of ANY source element center (XY only)
                         bool matched = sourceCenters.Any(sc =>
-                            Math.Abs(sc.X - center.X) <= LocationTolerance &&
-                            Math.Abs(sc.Y - center.Y) <= LocationTolerance);
+                            Math.Abs(sc.X - center.X) <= SelectionModeDialog.LocationTolerance &&
+                            Math.Abs(sc.Y - center.Y) <= SelectionModeDialog.LocationTolerance);
 
                         if (matched)
                             resultIds.Add(candidate.Id);
@@ -239,116 +246,5 @@ namespace CSharp_Tools
                 (bb.Min.Y + bb.Max.Y) / 2.0,
                 (bb.Min.Z + bb.Max.Z) / 2.0);
         }
-    }
-
-    // ============================================================
-    // Selection filter — view-specific elements only
-    // ============================================================
-    public class ViewSpecificSelectionFilter : ISelectionFilter
-    {
-        public bool AllowElement(Element elem)
-            => elem != null && elem.ViewSpecific;
-
-        public bool AllowReference(Reference reference, XYZ position)
-            => true;
-    }
-
-    // ============================================================
-    // Dialog: Location match vs Entire view
-    // ============================================================
-    public class SelectionModeDialog : Window
-    {
-        public bool MatchByLocation { get; private set; }
-
-        public SelectionModeDialog()
-        {
-            Title                 = "Selection Mode";
-            Width                 = 360;
-            SizeToContent         = SizeToContent.Height;
-            WindowStartupLocation = WindowStartupLocation.CenterScreen;
-            ShowInTaskbar         = false;
-            ResizeMode            = ResizeMode.NoResize;
-
-            var root = new StackPanel { Margin = new Thickness(20) };
-
-            root.Children.Add(new TextBlock
-            {
-                Text         = "How should matching elements be found?",
-                FontSize     = 13,
-                TextWrapping = TextWrapping.Wrap,
-                Margin       = new Thickness(0, 0, 0, 16)
-            });
-
-            // Description for option 1
-            root.Children.Add(new TextBlock
-            {
-                Text         = "Same Location:\nOnly selects elements at the same XY position " +
-                               "as the source elements (within a tolerance of " +
-                               $"{SelectSimilarInViewsCommand_Tolerance.Value} ft).",
-                FontSize     = 11,
-                TextWrapping = TextWrapping.Wrap,
-                Margin       = new Thickness(0, 0, 0, 8)
-            });
-
-            // Description for option 2
-            root.Children.Add(new TextBlock
-            {
-                Text         = "Entire View:\nSelects all matching elements anywhere in the selected views.",
-                FontSize     = 11,
-                TextWrapping = TextWrapping.Wrap,
-                Margin       = new Thickness(0, 0, 0, 16)
-            });
-
-            var buttonRow = new StackPanel
-            {
-                Orientation         = Orientation.Horizontal,
-                HorizontalAlignment = HorizontalAlignment.Center
-            };
-
-            var btnLocation = MakeButton("Same Location");
-            btnLocation.Click += (s, e) =>
-            {
-                MatchByLocation = true;
-                DialogResult    = true;
-                Close();
-            };
-
-            var btnEntire = MakeButton("Entire View");
-            btnEntire.Click += (s, e) =>
-            {
-                MatchByLocation = false;
-                DialogResult    = true;
-                Close();
-            };
-
-            var btnCancel = MakeButton("Cancel");
-            btnCancel.Click += (s, e) => { DialogResult = false; Close(); };
-
-            buttonRow.Children.Add(btnLocation);
-            buttonRow.Children.Add(btnEntire);
-            buttonRow.Children.Add(btnCancel);
-            root.Children.Add(buttonRow);
-
-            Content = root;
-        }
-
-        private static Button MakeButton(string label) => new Button
-        {
-            Content  = label,
-            Width    = 100,
-            Height   = 30,
-            Margin   = new Thickness(4),
-            FontSize = 11
-        };
-    }
-
-    // ============================================================
-    // Exposes the tolerance constant to the dialog without coupling
-    // ============================================================
-    internal static class SelectSimilarInViewsCommand_Tolerance
-    {
-        // Mirrors SelectSimilarInViewsCommand.LocationTolerance
-        // so the dialog can display it. Change the value there, not here.
-        internal const double Value = 0.5;
     }
 }

@@ -1,4 +1,4 @@
-// AddElbowsCommand.cs
+// AddElbows.cs
 // Revit API 2024 — IExternalCommand implementation
 // Converted from pyRevit Python script.
 //
@@ -7,16 +7,12 @@
 //   then adds or adjusts a leader elbow on whichever
 //   end currently has a visible bubble.
 
-using System;
-using System.Linq;
 using Autodesk.Revit.Attributes;
-using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Autodesk.Revit.UI.Selection;
-using System.Collections.Generic;
 
-namespace CSharp_Tools.Commands;
-
+namespace CSharp_Tools.Commands
+{
     [Transaction(TransactionMode.Manual)]
     [Regeneration(RegenerationOption.Manual)]
     public class AddElbows : IExternalCommand
@@ -27,37 +23,55 @@ namespace CSharp_Tools.Commands;
         public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements)
         {
             UIDocument uidoc = commandData.Application.ActiveUIDocument;
-            Document   doc   = uidoc.Document;
+            Document doc = uidoc.Document;
             View view = doc.ActiveView;
 
             XYZ right = view.RightDirection;
-            XYZ up    = view.UpDirection;
+            XYZ up = view.UpDirection;
 
             // --------------------------------------------------
-            // 1. Let the user pick Levels
+            // 1. Use pre-selection if it contains only Levels;
+            //    otherwise ask the user to pick.
             // --------------------------------------------------
-            IList<Reference> refs;
-            try
-            {
-                refs = uidoc.Selection.PickObjects(
-                    ObjectType.Element,
-                    new LevelSelectionFilter(),
-                    "Select Levels, then press Finish.");
-            }
-            catch (Autodesk.Revit.Exceptions.OperationCanceledException)
-            {
-                return Result.Cancelled;
-            }
-            catch (Exception ex)
-            {
-                TaskDialog.Show("Selection Error", "Selection failed:\n" + ex.Message);
-                return Result.Failed;
-            }
-
-            var levels = refs
-                .Select(r => doc.GetElement(r))
+            var preSelected = uidoc.Selection.GetElementIds()
+                .Select(id => doc.GetElement(id))
                 .OfType<Level>()
                 .ToList();
+
+            bool hadValidPreSelection = preSelected.Any() &&
+                uidoc.Selection.GetElementIds().Count == preSelected.Count;
+
+            List<Level> levels;
+
+            if (hadValidPreSelection)
+            {
+                levels = preSelected;
+            }
+            else
+            {
+                IList<Reference> refs;
+                try
+                {
+                    refs = uidoc.Selection.PickObjects(
+                        ObjectType.Element,
+                        new LevelSelectionFilter(),
+                        "Select Levels, then press Finish.");
+                }
+                catch (Autodesk.Revit.Exceptions.OperationCanceledException)
+                {
+                    return Result.Cancelled;
+                }
+                catch (Exception ex)
+                {
+                    TaskDialog.Show("Selection Error", "Selection failed:\n" + ex.Message);
+                    return Result.Failed;
+                }
+
+                levels = refs
+                    .Select(r => doc.GetElement(r))
+                    .OfType<Level>()
+                    .ToList();
+            }
 
             if (!levels.Any())
             {
@@ -136,15 +150,4 @@ namespace CSharp_Tools.Commands;
             return null;
         }
     }
-
-    // ============================================================
-    // Selection filter — Levels only
-    // ============================================================
-    public class LevelSelectionFilter : ISelectionFilter
-    {
-        public bool AllowElement(Element elem)
-            => elem is Level;
-
-        public bool AllowReference(Reference reference, XYZ position)
-            => false;
-    }
+}

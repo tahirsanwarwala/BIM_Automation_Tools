@@ -6,13 +6,10 @@
 //   Shows datum bubbles on End0, End1, or both ends
 //   for selected Levels / Grids in the active view.
 
-using System;
-using System.Collections.Generic;
-using System.Linq;
 using Autodesk.Revit.Attributes;
-using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Autodesk.Revit.UI.Selection;
+using CSharp_Tools.Dialogs;
 
 namespace CSharp_Tools.Commands
 {
@@ -23,8 +20,8 @@ namespace CSharp_Tools.Commands
         public Result Execute(ExternalCommandData commandData, ref string message, ElementSet elements)
         {
             UIApplication uiApp = commandData.Application;
-            UIDocument    uidoc = uiApp.ActiveUIDocument;
-            Document      doc   = uidoc.Document;
+            UIDocument uidoc = uiApp.ActiveUIDocument;
+            Document doc = uidoc.Document;
             Autodesk.Revit.DB.View view = doc.ActiveView;
 
             // --------------------------------------------------
@@ -41,30 +38,48 @@ namespace CSharp_Tools.Commands
             bool showEnd1 = dlg.ShowEnd1;
 
             // --------------------------------------------------
-            // 2. Let the user pick Levels / Grids in the view
+            // 2. Use pre-selection if it contains only Levels/Grids;
+            //    otherwise ask the user to pick.
             // --------------------------------------------------
-            IList<Reference> refs;
-            try
-            {
-                refs = uidoc.Selection.PickObjects(
-                    ObjectType.Element,
-                    new DatumSelectionFilter(),
-                    "Select Levels or Grids, then press Finish.");
-            }
-            catch (Autodesk.Revit.Exceptions.OperationCanceledException)
-            {
-                return Result.Cancelled;
-            }
-            catch (Exception ex)
-            {
-                TaskDialog.Show("Selection Error", "Selection failed:\n" + ex.Message);
-                return Result.Failed;
-            }
-
-            var datums = refs
-                .Select(r => doc.GetElement(r))
+            var preSelected = uidoc.Selection.GetElementIds()
+                .Select(id => doc.GetElement(id))
                 .OfType<DatumPlane>()
                 .ToList();
+
+            bool hadValidPreSelection = preSelected.Any() &&
+                uidoc.Selection.GetElementIds().Count == preSelected.Count;
+
+            List<DatumPlane> datums;
+
+            if (hadValidPreSelection)
+            {
+                datums = preSelected;
+            }
+            else
+            {
+                IList<Reference> refs;
+                try
+                {
+                    refs = uidoc.Selection.PickObjects(
+                        ObjectType.Element,
+                        new DatumSelectionFilter(),
+                        "Select Levels or Grids, then press Finish.");
+                }
+                catch (Autodesk.Revit.Exceptions.OperationCanceledException)
+                {
+                    return Result.Cancelled;
+                }
+                catch (Exception ex)
+                {
+                    TaskDialog.Show("Selection Error", "Selection failed:\n" + ex.Message);
+                    return Result.Failed;
+                }
+
+                datums = refs
+                    .Select(r => doc.GetElement(r))
+                    .OfType<DatumPlane>()
+                    .ToList();
+            }
 
             if (!datums.Any())
             {
@@ -126,7 +141,7 @@ namespace CSharp_Tools.Commands
 
         private static bool BubbleIsVisible(DatumPlane datum, DatumEnds end, Autodesk.Revit.DB.View view)
         {
-            try   { return datum.IsBubbleVisibleInView(end, view); }
+            try { return datum.IsBubbleVisibleInView(end, view); }
             catch { return false; }
         }
 
@@ -154,17 +169,5 @@ namespace CSharp_Tools.Commands
             }
             catch { return false; }
         }
-    }
-
-    // ============================================================
-    // Selection filter — only Levels and Grids
-    // ============================================================
-    public class DatumSelectionFilter : ISelectionFilter
-    {
-        public bool AllowElement(Element elem)
-            => elem is Level || elem is Grid;
-
-        public bool AllowReference(Reference reference, XYZ position)
-            => true;
     }
 }
