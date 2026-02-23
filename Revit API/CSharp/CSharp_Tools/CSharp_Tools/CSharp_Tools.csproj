@@ -72,8 +72,23 @@
     </ItemGroup>
     
     <ItemGroup>
-        <Resource Include="Resources\Icons\RibbonIcon16.png" />
-        <Resource Include="Resources\Icons\RibbonIcon32.png" />
+        <!-- 32x32 icons (LargeImage on ribbon buttons) -->
+        <EmbeddedResource Include="Resources\Icons\SwitchBubbles32.png" />
+        <EmbeddedResource Include="Resources\Icons\AddElbows32.png" />
+        <EmbeddedResource Include="Resources\Icons\AlignElbows32.png" />
+        <EmbeddedResource Include="Resources\Icons\MatchByView32.png" />
+        <EmbeddedResource Include="Resources\Icons\MatchByModel32.png" />
+        <EmbeddedResource Include="Resources\Icons\SheetsFromExcel32.png" />
+        <EmbeddedResource Include="Resources\Icons\DatumTools32.png" />
+        <EmbeddedResource Include="Resources\Icons\MultiSelect32.png" />
+
+        <!-- 16x16 icons (Image on ribbon buttons) -->
+        <EmbeddedResource Include="Resources\Icons\SwitchBubbles16.png" />
+        <EmbeddedResource Include="Resources\Icons\AddElbows16.png" />
+        <EmbeddedResource Include="Resources\Icons\AlignElbows16.png" />
+        <EmbeddedResource Include="Resources\Icons\MatchByView16.png" />
+        <EmbeddedResource Include="Resources\Icons\MatchByModel16.png" />
+        <EmbeddedResource Include="Resources\Icons\SheetsFromExcel16.png" />
     </ItemGroup>
 
 </Project>

@@ -39,7 +39,7 @@ namespace CSharp_Tools
                 Assembly assembly = Assembly.GetExecutingAssembly();
                 string assemblyPath = assembly.Location;
 
-                // ---- 3. Define the two push buttons ----
+                // ---- 3. Define the push buttons ----
 
                 // Button 1 — Switch Datum Bubbles
                 var pbSwitch = new PushButtonData(
@@ -51,9 +51,9 @@ namespace CSharp_Tools
                     ToolTip = "Show or hide datum bubbles on End 1, End 2, or Both " +
                                       "for selected Levels / Grids in the active view.",
                     LongDescription = "Select one or more Levels or Grids. " +
-                                      "Choose whether to display datum bubbles at End 1, End 2, or both ends."
-                    // LargeImage = LoadImage("switch_32.png");
-                    // Image      = LoadImage("switch_16.png");
+                                      "Choose whether to display datum bubbles at End 1, End 2, or both ends.",
+                    LargeImage = LoadImage("SwitchBubbles32.png"),
+                    Image      = LoadImage("SwitchBubbles16.png")
                 };
 
                 // Button 2 — Add Elbows
@@ -66,9 +66,9 @@ namespace CSharp_Tools
                     ToolTip = "Add or adjust a leader elbow on selected Levels in the active view.",
                     LongDescription = "Select one or more Levels. " +
                                       "The command adds a leader elbow on whichever end currently " +
-                                      "has a visible bubble, or adjusts an existing flat elbow."
-                    // LargeImage = LoadImage("elbow_32.png");
-                    // Image      = LoadImage("elbow_16.png");
+                                      "has a visible bubble, or adjusts an existing flat elbow.",
+                    LargeImage = LoadImage("AddElbows32.png"),
+                    Image      = LoadImage("AddElbows16.png")
                 };
 
                 // Button 3 — Align Elbows
@@ -82,41 +82,51 @@ namespace CSharp_Tools
                     LongDescription = "Pick a source Level whose leader geometry you want to copy, " +
                                       "then select one or more target Levels. " +
                                       "The elbow X/Y and end X/Y are copied from the source; " +
-                                      "each target preserves its own Z elevation."
-                    // LargeImage = LoadImage("align_elbow_32.png");
-                    // Image      = LoadImage("align_elbow_16.png");
+                                      "each target preserves its own Z elevation.",
+                    LargeImage = LoadImage("AlignElbows32.png"),
+                    Image      = LoadImage("AlignElbows16.png")
                 };
 
-                // Button 3A — Select Similar on Multiple Views
+                // Button 4 — Select Similar on Multiple Views
                 var pbMatchView = new PushButtonData(
                     name: "MatchByView",
                     text: "Match by View",
                     assemblyName: assemblyPath,
-                    className: "CSharp_Tools.Commands.SelectSimilarInViewsCommand");
+                    className: "CSharp_Tools.Commands.SelectSimilarInViewsCommand")
+                {
+                    ToolTip = "Select matching elements across multiple views.",
+                    LargeImage = LoadImage("MatchByView32.png"),
+                    Image      = LoadImage("MatchByView16.png")
+                };
 
-                // Button 3B — Select Similar on Multiple Views
+                // Button 5 — Select Similar on Entire Model
                 var pbMatchModel = new PushButtonData(
                     name: "MatchByModel",
                     text: "Match by Model",
                     assemblyName: assemblyPath,
-                    className: "CSharp_Tools.Commands.SelectSimilarInModelCommand");
+                    className: "CSharp_Tools.Commands.SelectSimilarInModelCommand")
+                {
+                    ToolTip = "Select matching elements across multiple levels.",
+                    LargeImage = LoadImage("MatchByModel32.png"),
+                    Image      = LoadImage("MatchByModel16.png")
+                };
 
-                // ---- 4A. Create the pulldown and add both buttons into it ----
+                // ---- 4A. Create the Datum Tools pulldown ----
                 var levelPulldownData = new PulldownButtonData(
                     name: "DatumToolsPulldown",
                     text: "Datum Tools")
                 {
-                    ToolTip = "Datum bubble and leader tools."
-                    // LargeImage = LoadImage("datum_32.png");
+                    ToolTip = "Datum bubble and leader tools.",
+                    LargeImage = LoadImage("DatumTools32.png")
                 };
 
-                // ---- 4B. Create a 2nd pulldown and add both buttons into it ----
+                // ---- 4B. Create the Multi-Level Select pulldown ----
                 var selpulldownData = new PulldownButtonData(
                     name: "SelectionToolsPulldown",
                     text: "Multi-Level Select")
                 {
-                    ToolTip = "Selection for Multiple Views or Levels"
-                    // LargeImage = LoadImage("datum_32.png");
+                    ToolTip = "Selection for Multiple Views or Levels",
+                    LargeImage = LoadImage("MultiSelect32.png")
                 };
 
                 var pulldown1 = panel.AddItem(levelPulldownData) as PulldownButton;
@@ -142,9 +152,9 @@ namespace CSharp_Tools
                     LongDescription =
                         "Opens a template guide showing the required Excel column format. " +
                         "Select your .xlsx file to create sheets automatically, with duplicate " +
-                        "detection, optional titleblock assignment, and a summary report."
-                    // LargeImage = LoadImage("sheets_32.png");
-                    // Image      = LoadImage("sheets_16.png");
+                        "detection, optional titleblock assignment, and a summary report.",
+                    LargeImage = LoadImage("SheetsFromExcel32.png"),
+                    Image      = LoadImage("SheetsFromExcel16.png")
                 };
 
                 panel.AddItem(pbCreateSheets);
@@ -179,22 +189,24 @@ namespace CSharp_Tools
         }
 
         /// <summary>
-        /// Helper: load a PNG embedded resource as a BitmapImage.
-        /// Add PNG files as embedded resources then uncomment to use.
+        /// Load a PNG embedded resource as a BitmapImage for ribbon icons.
+        /// Resource names follow the pattern: CSharp_Tools.Resources.Icons.{filename}
         /// </summary>
-        // private static System.Windows.Media.ImageSource LoadImage(string resourceName)
-        // {
-        //     var asm = Assembly.GetExecutingAssembly();
-        //     string fullName = $"CSharp_Tools.Resources.{resourceName}";
-        //     using (var stream = asm.GetManifestResourceStream(fullName))
-        //     {
-        //         if (stream == null) return null;
-        //         var img = new System.Windows.Media.Imaging.BitmapImage();
-        //         img.BeginInit();
-        //         img.StreamSource = stream;
-        //         img.EndInit();
-        //         return img;
-        //     }
-        // }
+        private static System.Windows.Media.ImageSource LoadImage(string resourceName)
+        {
+            var asm = Assembly.GetExecutingAssembly();
+            string fullName = $"CSharp_Tools.Resources.Icons.{resourceName}";
+            using (var stream = asm.GetManifestResourceStream(fullName))
+            {
+                if (stream == null) return null;
+                var img = new System.Windows.Media.Imaging.BitmapImage();
+                img.BeginInit();
+                img.StreamSource = stream;
+                img.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+                img.EndInit();
+                img.Freeze();
+                return img;
+            }
+        }
     }
 }
