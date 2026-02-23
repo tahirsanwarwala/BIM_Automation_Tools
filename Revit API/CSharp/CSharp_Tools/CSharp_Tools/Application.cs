@@ -52,8 +52,8 @@ namespace CSharp_Tools
                                       "for selected Levels / Grids in the active view.",
                     LongDescription = "Select one or more Levels or Grids. " +
                                       "Choose whether to display datum bubbles at End 1, End 2, or both ends.",
-                    LargeImage = LoadImage("SwitchBubbles32.png"),
-                    Image      = LoadImage("SwitchBubbles16.png")
+                    LargeImage = LoadImage("CSharp_Tools.Tools.DatumTools.Icons.SwitchBubbles32.png", 32),
+                    Image      = LoadImage("CSharp_Tools.Tools.DatumTools.Icons.SwitchBubbles16.png", 16)
                 };
 
                 // Button 2 — Add Elbows
@@ -67,8 +67,8 @@ namespace CSharp_Tools
                     LongDescription = "Select one or more Levels. " +
                                       "The command adds a leader elbow on whichever end currently " +
                                       "has a visible bubble, or adjusts an existing flat elbow.",
-                    LargeImage = LoadImage("AddElbows32.png"),
-                    Image      = LoadImage("AddElbows16.png")
+                    LargeImage = LoadImage("CSharp_Tools.Tools.DatumTools.Icons.AddElbows32.png", 32),
+                    Image      = LoadImage("CSharp_Tools.Tools.DatumTools.Icons.AddElbows16.png", 16)
                 };
 
                 // Button 3 — Align Elbows
@@ -83,8 +83,8 @@ namespace CSharp_Tools
                                       "then select one or more target Levels. " +
                                       "The elbow X/Y and end X/Y are copied from the source; " +
                                       "each target preserves its own Z elevation.",
-                    LargeImage = LoadImage("AlignElbows32.png"),
-                    Image      = LoadImage("AlignElbows16.png")
+                    LargeImage = LoadImage("CSharp_Tools.Tools.DatumTools.Icons.AlignElbows32.png", 32),
+                    Image      = LoadImage("CSharp_Tools.Tools.DatumTools.Icons.AlignElbows16.png", 16)
                 };
 
                 // Button 4 — Select Similar on Multiple Views
@@ -95,8 +95,8 @@ namespace CSharp_Tools
                     className: "CSharp_Tools.Commands.SelectSimilarInViewsCommand")
                 {
                     ToolTip = "Select matching elements across multiple views.",
-                    LargeImage = LoadImage("MatchByView32.png"),
-                    Image      = LoadImage("MatchByView16.png")
+                    LargeImage = LoadImage("CSharp_Tools.Tools.MultiLevelSelect.Icons.MatchByView32.png", 32),
+                    Image      = LoadImage("CSharp_Tools.Tools.MultiLevelSelect.Icons.MatchByView16.png", 16)
                 };
 
                 // Button 5 — Select Similar on Entire Model
@@ -107,8 +107,8 @@ namespace CSharp_Tools
                     className: "CSharp_Tools.Commands.SelectSimilarInModelCommand")
                 {
                     ToolTip = "Select matching elements across multiple levels.",
-                    LargeImage = LoadImage("MatchByModel32.png"),
-                    Image      = LoadImage("MatchByModel16.png")
+                    LargeImage = LoadImage("CSharp_Tools.Tools.MultiLevelSelect.Icons.MatchByModel32.png", 32),
+                    Image      = LoadImage("CSharp_Tools.Tools.MultiLevelSelect.Icons.MatchByModel16.png", 16)
                 };
 
                 // ---- 4A. Create the Datum Tools pulldown ----
@@ -117,7 +117,7 @@ namespace CSharp_Tools
                     text: "Datum Tools")
                 {
                     ToolTip = "Datum bubble and leader tools.",
-                    LargeImage = LoadImage("DatumTools32.png")
+                    LargeImage = LoadImage("CSharp_Tools.Tools.DatumTools.Icons.DatumTools32.png", 32)
                 };
 
                 // ---- 4B. Create the Multi-Level Select pulldown ----
@@ -126,7 +126,7 @@ namespace CSharp_Tools
                     text: "Multi-Level Select")
                 {
                     ToolTip = "Selection for Multiple Views or Levels",
-                    LargeImage = LoadImage("MultiSelect32.png")
+                    LargeImage = LoadImage("CSharp_Tools.Tools.MultiLevelSelect.Icons.MultiSelect32.png", 32)
                 };
 
                 var pulldown1 = panel.AddItem(levelPulldownData) as PulldownButton;
@@ -153,8 +153,8 @@ namespace CSharp_Tools
                         "Opens a template guide showing the required Excel column format. " +
                         "Select your .xlsx file to create sheets automatically, with duplicate " +
                         "detection, optional titleblock assignment, and a summary report.",
-                    LargeImage = LoadImage("SheetsFromExcel32.png"),
-                    Image      = LoadImage("SheetsFromExcel16.png")
+                    LargeImage = LoadImage("CSharp_Tools.Tools.SheetsFromExcel.Icons.SheetsFromExcel32.png", 32),
+                    Image      = LoadImage("CSharp_Tools.Tools.SheetsFromExcel.Icons.SheetsFromExcel16.png", 16)
                 };
 
                 panel.AddItem(pbCreateSheets);
@@ -192,10 +192,18 @@ namespace CSharp_Tools
         /// Load a PNG embedded resource as a BitmapImage for ribbon icons.
         /// Resource names follow the pattern: CSharp_Tools.Resources.Icons.{filename}
         /// </summary>
-        private static System.Windows.Media.ImageSource LoadImage(string resourceName)
+        /// <param name="resourceName">Filename of the embedded PNG (e.g. "SwitchBubbles32.png").</param>
+        /// <param name="pixelSize">
+        ///   Exact pixel dimension to decode to (16 or 32).
+        ///   Setting this overrides the DPI metadata embedded in the PNG so that
+        ///   WPF always treats the image as exactly pixelSize × pixelSize device-independent pixels,
+        ///   preventing icons saved at 72 dpi from appearing ~33 % larger than expected.
+        /// </param>
+        private static System.Windows.Media.ImageSource LoadImage(string resourceName, int pixelSize)
         {
             var asm = Assembly.GetExecutingAssembly();
-            string fullName = $"CSharp_Tools.Resources.Icons.{resourceName}";
+            // resourceName is the full manifest name (e.g. "CSharp_Tools.Tools.DatumTools.Icons.X.png")
+            string fullName = resourceName;
             using (var stream = asm.GetManifestResourceStream(fullName))
             {
                 if (stream == null) return null;
@@ -203,6 +211,9 @@ namespace CSharp_Tools
                 img.BeginInit();
                 img.StreamSource = stream;
                 img.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+                // Force exact pixel size — WPF will ignore the PNG's embedded DPI metadata.
+                img.DecodePixelWidth  = pixelSize;
+                img.DecodePixelHeight = pixelSize;
                 img.EndInit();
                 img.Freeze();
                 return img;

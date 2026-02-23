@@ -22,9 +22,9 @@ C:\Users\Bim59\AppData\Roaming\BIM_Automation Github\Revit API\CSharp\CSharp_Too
 C:\Users\Bim59\AppData\Roaming\BIM_Automation Github\Revit API\CSharp\CSharp_Tools\CSharp_Tools\obj\Debug.R24\CSharp_Tools.dll
 C:\Users\Bim59\AppData\Roaming\BIM_Automation Github\Revit API\CSharp\CSharp_Tools\CSharp_Tools\obj\Debug.R24\CSharp_Tools.pdb
 C:\Users\Bim59\AppData\Roaming\BIM_Automation Github\Revit API\CSharp\CSharp_Tools\CSharp_Tools\obj\Debug.R24\CSharp_Tools_MarkupCompile.cache
-C:\Users\Bim59\AppData\Roaming\BIM_Automation Github\Revit API\CSharp\CSharp_Tools\CSharp_Tools\obj\Debug.R24\Dialogs\ExcelTemplateDialog.baml
-C:\Users\Bim59\AppData\Roaming\BIM_Automation Github\Revit API\CSharp\CSharp_Tools\CSharp_Tools\obj\Debug.R24\Dialogs\ExcelTemplateDialog.g.cs
 C:\Users\Bim59\AppData\Roaming\BIM_Automation Github\Revit API\CSharp\CSharp_Tools\CSharp_Tools\bin\Debug.R24\EPPlus.dll
 C:\Users\Bim59\AppData\Roaming\BIM_Automation Github\Revit API\CSharp\CSharp_Tools\CSharp_Tools\bin\Debug.R24\EPPlus.Interfaces.dll
 C:\Users\Bim59\AppData\Roaming\BIM_Automation Github\Revit API\CSharp\CSharp_Tools\CSharp_Tools\bin\Debug.R24\EPPlus.System.Drawing.dll
 C:\Users\Bim59\AppData\Roaming\BIM_Automation Github\Revit API\CSharp\CSharp_Tools\CSharp_Tools\bin\Debug.R24\Microsoft.IO.RecyclableMemoryStream.dll
+C:\Users\Bim59\AppData\Roaming\BIM_Automation Github\Revit API\CSharp\CSharp_Tools\CSharp_Tools\obj\Debug.R24\Tools\SheetsFromExcel\Dialogs\ExcelTemplateDialog.baml
+C:\Users\Bim59\AppData\Roaming\BIM_Automation Github\Revit API\CSharp\CSharp_Tools\CSharp_Tools\obj\Debug.R24\Tools\SheetsFromExcel\Dialogs\ExcelTemplateDialog.g.cs

@@ -72,23 +72,25 @@
     </ItemGroup>
     
     <ItemGroup>
-        <!-- 32x32 icons (LargeImage on ribbon buttons) -->
-        <EmbeddedResource Include="Resources\Icons\SwitchBubbles32.png" />
-        <EmbeddedResource Include="Resources\Icons\AddElbows32.png" />
-        <EmbeddedResource Include="Resources\Icons\AlignElbows32.png" />
-        <EmbeddedResource Include="Resources\Icons\MatchByView32.png" />
-        <EmbeddedResource Include="Resources\Icons\MatchByModel32.png" />
-        <EmbeddedResource Include="Resources\Icons\SheetsFromExcel32.png" />
-        <EmbeddedResource Include="Resources\Icons\DatumTools32.png" />
-        <EmbeddedResource Include="Resources\Icons\MultiSelect32.png" />
+        <!-- DatumTools icons -->
+        <EmbeddedResource Include="Tools\DatumTools\Icons\DatumTools32.png" />
+        <EmbeddedResource Include="Tools\DatumTools\Icons\SwitchBubbles32.png" />
+        <EmbeddedResource Include="Tools\DatumTools\Icons\SwitchBubbles16.png" />
+        <EmbeddedResource Include="Tools\DatumTools\Icons\AddElbows32.png" />
+        <EmbeddedResource Include="Tools\DatumTools\Icons\AddElbows16.png" />
+        <EmbeddedResource Include="Tools\DatumTools\Icons\AlignElbows32.png" />
+        <EmbeddedResource Include="Tools\DatumTools\Icons\AlignElbows16.png" />
 
-        <!-- 16x16 icons (Image on ribbon buttons) -->
-        <EmbeddedResource Include="Resources\Icons\SwitchBubbles16.png" />
-        <EmbeddedResource Include="Resources\Icons\AddElbows16.png" />
-        <EmbeddedResource Include="Resources\Icons\AlignElbows16.png" />
-        <EmbeddedResource Include="Resources\Icons\MatchByView16.png" />
-        <EmbeddedResource Include="Resources\Icons\MatchByModel16.png" />
-        <EmbeddedResource Include="Resources\Icons\SheetsFromExcel16.png" />
+        <!-- MultiLevelSelect icons -->
+        <EmbeddedResource Include="Tools\MultiLevelSelect\Icons\MultiSelect32.png" />
+        <EmbeddedResource Include="Tools\MultiLevelSelect\Icons\MatchByView32.png" />
+        <EmbeddedResource Include="Tools\MultiLevelSelect\Icons\MatchByView16.png" />
+        <EmbeddedResource Include="Tools\MultiLevelSelect\Icons\MatchByModel32.png" />
+        <EmbeddedResource Include="Tools\MultiLevelSelect\Icons\MatchByModel16.png" />
+
+        <!-- SheetsFromExcel icons -->
+        <EmbeddedResource Include="Tools\SheetsFromExcel\Icons\SheetsFromExcel32.png" />
+        <EmbeddedResource Include="Tools\SheetsFromExcel\Icons\SheetsFromExcel16.png" />
     </ItemGroup>
 
 </Project>
