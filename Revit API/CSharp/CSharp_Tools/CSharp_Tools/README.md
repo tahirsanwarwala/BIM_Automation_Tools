@@ -1,43 +1,63 @@
-# CSharp_Tools — Revit Add-in
+# CSharp Tools — Revit Add-in
 
-A Revit add-in (C# / Revit API 2022–2026) that extends the ribbon with productivity tools grouped by function.
+A set of productivity tools for Revit, available directly in the **CSharp_Tools** ribbon tab. No scripts to run — just click a button and go.
 
 ---
 
-## Ribbon Layout
+## What's in the Ribbon
 
-The add-in adds a **CSharp_Tools** tab with a **Deploy** panel containing:
+The add-in adds a **CSharp_Tools** tab with three panels:
 
-| Ribbon Item | Type | Description |
+| Panel | Buttons | What it does |
 |---|---|---|
-| **Datum Tools** | Pulldown | Switch, add, and align datum bubble leaders on Levels & Grids |
-| **Multi-Level Select** | Pulldown | Select similar elements across multiple views or levels |
-| **Sheets from Excel** | Push button | Bulk-create Revit sheets from an Excel file |
+| **Annotation** | Switch Bubbles, Add Elbows, Align Elbows | Tools for tidying up Level and Grid annotations |
+| **Selection** | Match by View, Match by Model | Select the same element type across multiple views or levels at once |
+| **Sheets** | Sheets from Excel | Create Revit sheets in bulk from a spreadsheet |
 
 ---
 
-## Project Structure
+## Tools at a Glance
+
+### 📐 Annotation Panel
+Tools for managing how Levels and Grids look in your drawings.
+
+- **Switch Bubbles** — Turn datum bubbles on or off at either end of Levels or Grids.
+- **Add Elbows** — Add a leader elbow to Level heads so they don't overlap other annotations.
+- **Align Elbows** — Line up multiple Level elbows to match one another in a single click.
+
+### 🔍 Selection Panel
+Go beyond Revit's built-in "Select All Instances" with more control over where you're selecting.
+
+- **Match by View** — Select elements of the same type across specific views you choose.
+- **Match by Model** — Select elements of the same type across specific levels in the model.
+
+### 📄 Sheets Panel
+- **Sheets from Excel** — Point the tool at an Excel file and it creates all your sheets automatically.
+
+---
+
+## Folder Structure
 
 ```
 CSharp_Tools/
-├── Application.cs              Entry point — builds the ribbon on Revit startup
-├── CSharp_Tools.addin          Revit add-in manifest
-├── CSharp_Tools.csproj         Project file
+├── Application.cs              Builds the ribbon tab and buttons on Revit startup
+├── CSharp_Tools.addin          Revit add-in registration file
+├── CSharp_Tools.csproj         Visual Studio project file
 │
 └── Tools/
-    ├── DatumTools/             ← Datum Tools pulldown
+    ├── DatumTools/             Annotation panel tools
     │   ├── README.md
     │   ├── Commands/
     │   ├── Dialogs/
     │   └── Icons/
     │
-    ├── MultiLevelSelect/       ← Multi-Level Select pulldown
+    ├── MultiLevelSelect/       Selection panel tools
     │   ├── README.md
     │   ├── Commands/
     │   ├── Dialogs/
     │   └── Icons/
     │
-    └── SheetsFromExcel/        ← Sheets from Excel push button
+    └── SheetsFromExcel/        Sheets panel tool
         ├── README.md
         ├── Commands/
         ├── Dialogs/
@@ -47,12 +67,12 @@ CSharp_Tools/
 
 ---
 
-## Feature Documentation
+## Detailed Documentation
 
-| Feature | README |
+| Tool | README |
 |---|---|
-| Datum Tools | [Tools/DatumTools/README.md](Tools/DatumTools/README.md) |
-| Multi-Level Select | [Tools/MultiLevelSelect/README.md](Tools/MultiLevelSelect/README.md) |
+| Annotation Tools | [Tools/DatumTools/README.md](Tools/DatumTools/README.md) |
+| Selection Tools | [Tools/MultiLevelSelect/README.md](Tools/MultiLevelSelect/README.md) |
 | Sheets from Excel | [Tools/SheetsFromExcel/README.md](Tools/SheetsFromExcel/README.md) |
 
 ---
@@ -60,9 +80,8 @@ CSharp_Tools/
 ## Requirements
 
 - Autodesk Revit **2022 – 2026**
-- .NET Framework 4.8 (as required by Revit)
-- Build with **Visual Studio 2022** or the [Nice3point.Revit.Sdk](https://github.com/Nice3point/RevitToolkit) MSBuild SDK
+- Built and tested with Visual Studio 2022
 
-## Building
+## Building from Source
 
-Open `CSharp_Tools.sln` in Visual Studio, select the desired configuration (e.g. `Debug.R24`), and build. The `.addin` manifest and DLL are automatically deployed to the Revit Add-ins folder.
+Open `CSharp_Tools.slnx` in Visual Studio, select your target configuration (e.g. `Debug.R24`), and build. The add-in files are automatically copied to your Revit Add-ins folder.

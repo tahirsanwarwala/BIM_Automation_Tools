@@ -1,0 +1,7 @@
+{
+    "python.testing.pytestArgs": [
+        "Revit API"
+    ],
+    "python.testing.unittestEnabled": false,
+    "python.testing.pytestEnabled": true
+}

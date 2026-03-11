@@ -1,6 +1,7 @@
 // Application.cs
 // IExternalApplication — creates the custom Revit ribbon tab,
-// panel, and a pulldown button containing both commands.
+// three panels (Annotation, Selection, Sheets), and stacked buttons
+// for each tool group.
 //
 // Revit API 2024
 
@@ -17,7 +18,11 @@ namespace CSharp_Tools
         // Never set this to a pyRevit tab name — pyRevit cannot manage
         // native API ribbon items and will throw a UI error on startup.
         private const string TabName = "CSharp_Tools";
-        private const string PanelName = "Deploy";
+
+        // Panel names
+        private const string PanelAnnotation = "Annotation";
+        private const string PanelSelection  = "Selection";
+        private const string PanelSheets     = "Sheets";
 
         public Result OnStartup(UIControlledApplication application)
         {
@@ -33,13 +38,17 @@ namespace CSharp_Tools
                     // Tab already exists — no problem, we'll just add to it.
                 }
 
-                // ---- 2. Create (or re-use) the ribbon panel ----
-                RibbonPanel panel = GetOrCreatePanel(application, TabName, PanelName);
+                // ---- 2. Create (or re-use) the three ribbon panels ----
+                RibbonPanel annotationPanel = GetOrCreatePanel(application, TabName, PanelAnnotation);
+                RibbonPanel selectionPanel  = GetOrCreatePanel(application, TabName, PanelSelection);
+                RibbonPanel sheetsPanel     = GetOrCreatePanel(application, TabName, PanelSheets);
 
                 Assembly assembly = Assembly.GetExecutingAssembly();
                 string assemblyPath = assembly.Location;
 
-                // ---- 3. Define the push buttons ----
+                // ================================================================
+                // ANNOTATION PANEL — Datum Tools stacked buttons
+                // ================================================================
 
                 // Button 1 — Switch Datum Bubbles
                 var pbSwitch = new PushButtonData(
@@ -87,6 +96,13 @@ namespace CSharp_Tools
                     Image      = LoadImage("CSharp_Tools.Tools.DatumTools.Icons.AlignElbows16.png", 16)
                 };
 
+                // Stack all three Datum Tools buttons in the Annotation panel
+                annotationPanel.AddStackedItems(pbSwitch, pbElbow, pbAlignElbow);
+
+                // ================================================================
+                // SELECTION PANEL — Multi-Level Select stacked buttons
+                // ================================================================
+
                 // Button 4 — Select Similar on Multiple Views
                 var pbMatchView = new PushButtonData(
                     name: "MatchByView",
@@ -111,37 +127,13 @@ namespace CSharp_Tools
                     Image      = LoadImage("CSharp_Tools.Tools.MultiLevelSelect.Icons.MatchByModel16.png", 16)
                 };
 
-                // ---- 4A. Create the Datum Tools pulldown ----
-                var levelPulldownData = new PulldownButtonData(
-                    name: "DatumToolsPulldown",
-                    text: "Datum Tools")
-                {
-                    ToolTip = "Datum bubble and leader tools.",
-                    LargeImage = LoadImage("CSharp_Tools.Tools.DatumTools.Icons.DatumTools32.png", 32)
-                };
+                // Stack the two Multi-Level Select buttons in the Selection panel
+                selectionPanel.AddStackedItems(pbMatchView, pbMatchModel);
 
-                // ---- 4B. Create the Multi-Level Select pulldown ----
-                var selpulldownData = new PulldownButtonData(
-                    name: "SelectionToolsPulldown",
-                    text: "Multi-Level Select")
-                {
-                    ToolTip = "Selection for Multiple Views or Levels",
-                    LargeImage = LoadImage("CSharp_Tools.Tools.MultiLevelSelect.Icons.MultiSelect32.png", 32)
-                };
+                // ================================================================
+                // SHEETS PANEL — Sheets from Excel standalone push button
+                // ================================================================
 
-                var pulldown1 = panel.AddItem(levelPulldownData) as PulldownButton;
-                var pulldown2 = panel.AddItem(selpulldownData) as PulldownButton;
-
-                pulldown1.AddPushButton(pbSwitch);
-                pulldown1.AddPushButton(pbElbow);
-                pulldown1.AddPushButton(pbAlignElbow);
-
-                pulldown2.AddPushButton(pbMatchView);
-                pulldown2.AddPushButton(pbMatchModel);
-
-                // ---- 5. Standalone push button — Sheets from Excel ----
-                // This button sits directly on the panel (not inside a pulldown)
-                // so it is always immediately visible without any drop-down click.
                 var pbCreateSheets = new PushButtonData(
                     name: "CreateSheetsFromExcelBtn",
                     text: "Sheets\nfrom Excel",
@@ -157,7 +149,7 @@ namespace CSharp_Tools
                     Image      = LoadImage("CSharp_Tools.Tools.SheetsFromExcel.Icons.SheetsFromExcel16.png", 16)
                 };
 
-                panel.AddItem(pbCreateSheets);
+                sheetsPanel.AddItem(pbCreateSheets);
 
                 return Result.Succeeded;
             }
@@ -190,9 +182,8 @@ namespace CSharp_Tools
 
         /// <summary>
         /// Load a PNG embedded resource as a BitmapImage for ribbon icons.
-        /// Resource names follow the pattern: CSharp_Tools.Resources.Icons.{filename}
         /// </summary>
-        /// <param name="resourceName">Filename of the embedded PNG (e.g. "SwitchBubbles32.png").</param>
+        /// <param name="resourceName">Full manifest resource name (e.g. "CSharp_Tools.Tools.DatumTools.Icons.SwitchBubbles32.png").</param>
         /// <param name="pixelSize">
         ///   Exact pixel dimension to decode to (16 or 32).
         ///   Setting this overrides the DPI metadata embedded in the PNG so that
@@ -202,9 +193,7 @@ namespace CSharp_Tools
         private static System.Windows.Media.ImageSource LoadImage(string resourceName, int pixelSize)
         {
             var asm = Assembly.GetExecutingAssembly();
-            // resourceName is the full manifest name (e.g. "CSharp_Tools.Tools.DatumTools.Icons.X.png")
-            string fullName = resourceName;
-            using (var stream = asm.GetManifestResourceStream(fullName))
+            using (var stream = asm.GetManifestResourceStream(resourceName))
             {
                 if (stream == null) return null;
                 var img = new System.Windows.Media.Imaging.BitmapImage();

@@ -1,72 +1,41 @@
-# Datum Tools
+# Datum Tools — Annotation Panel
 
-A pulldown button group in the **CSharp_Tools** Revit add-in ribbon tab that provides tools for managing datum (Level and Grid) annotations.
-
----
-
-## Buttons
-
-### Switch Datum Bubbles
-**Command class:** `CSharp_Tools.Commands.SwitchDatumBubbles`
-
-Shows or hides datum bubbles on Levels and Grids in the active view.
-
-**Workflow:**
-1. Select one or more Levels or Grids in the active view (or pre-select before running).
-2. Run the command. A dialog appears with options: **End 1**, **End 2**, or **Both**.
-3. Choose the end(s) to toggle — bubbles are turned on or off based on their current state.
-
-**Files:**
-| File | Role |
-|---|---|
-| `Commands/SwitchDatumBubbles.cs` | Main command entry point |
-| `Commands/DatumSelectionFilter.cs` | ISelectionFilter — restricts picks to Levels and Grids |
-| `Dialogs/BubbleEndDialog.cs` | Dialog to pick End 1, End 2, or Both |
+Three tools for cleaning up how **Levels** and **Grids** look in your Revit views. Find them in the **Annotation** panel of the **CSharp_Tools** tab.
 
 ---
 
-### Add Elbows
-**Command class:** `CSharp_Tools.Commands.AddElbows`
+## Switch Bubbles
 
-Adds or adjusts a leader elbow on selected Levels in the active view.
+**What it does:** Turns datum bubbles on or off at either end of selected Levels or Grids — without having to click each one individually in the view.
 
-**Workflow:**
-1. Select one or more Levels (or pre-select before running).
-2. The command automatically finds the active bubble end and adds an elbow if none exists, or adjusts a flat elbow.
-
-**Files:**
-| File | Role |
-|---|---|
-| `Commands/AddElbows.cs` | Main command entry point |
-| `Commands/DatumSelectionFilter.cs` | Shared selection filter |
+**How to use:**
+1. Select one or more Levels or Grids in the active view (you can also pre-select before clicking the button).
+2. Click **Switch Bubbles**.
+3. In the dialog, choose which end to toggle: **End 1**, **End 2**, or **Both**.
+4. The bubbles are turned on or off based on their current state.
 
 ---
 
-### Align Elbows
-**Command class:** `CSharp_Tools.Commands.AlignElbows`
+## Add Elbows
 
-Copies leader elbow geometry from a source Level to one or more target Levels.
+**What it does:** Adds a kink (elbow) to the leader line on Level heads, keeping annotations tidy and preventing overlaps.
 
-**Workflow:**
-1. Run the command.
-2. Pick the **source** Level whose elbow position you want to copy.
-3. Pick one or more **target** Levels. Their elbows and leader ends are aligned to the source; each target keeps its own Z elevation.
+**How to use:**
+1. Select one or more Levels in the active view.
+2. Click **Add Elbows**.
+3. The tool finds which end of each Level has a visible bubble and adds an elbow there automatically. If an elbow already exists but is flat, it adjusts it.
 
-**Files:**
-| File | Role |
-|---|---|
-| `Commands/AlignElbows.cs` | Main command entry point |
-| `Commands/DatumSelectionFilter.cs` | Shared selection filter |
+> **Tip:** Works best in section or elevation views where Level heads are visible.
 
 ---
 
-## Icons
-| File | Used as |
-|---|---|
-| `Icons/DatumTools32.png` | Pulldown button large image (32×32) |
-| `Icons/SwitchBubbles32.png` | Switch Datum Bubbles large image (32×32) |
-| `Icons/SwitchBubbles16.png` | Switch Datum Bubbles small image (16×16) |
-| `Icons/AddElbows32.png` | Add Elbows large image (32×32) |
-| `Icons/AddElbows16.png` | Add Elbows small image (16×16) |
-| `Icons/AlignElbows32.png` | Align Elbows large image (32×32) |
-| `Icons/AlignElbows16.png` | Align Elbows small image (16×16) |
+## Align Elbows
+
+**What it does:** Copies the elbow position from one Level onto others, so all your Level leaders line up neatly.
+
+**How to use:**
+1. Click **Align Elbows**.
+2. Click the **source** Level — the one whose elbow position you want to match.
+3. Click one or more **target** Levels. Their leader elbows and ends are moved to match the source.
+
+> Each target Level keeps its own elevation — only the horizontal leader geometry is adjusted.
