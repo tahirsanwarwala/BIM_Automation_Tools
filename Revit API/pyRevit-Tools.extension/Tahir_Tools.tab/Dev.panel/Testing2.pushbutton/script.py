@@ -1,194 +1,113 @@
 # -*- coding: utf-8 -*-
-__title__ = "Test Script 2"
+__title__ = "Shift CW Marks"
+__doc__ = "Shifts curtain wall Mark parameters from a selected entry upward by a user-defined amount - Active View only."
 
-from Autodesk.Revit.DB import *
-from Autodesk.Revit.UI.Selection import ObjectType, ISelectionFilter
-from Autodesk.Revit.Exceptions import OperationCanceledException
-from pyrevit import revit, forms, script
+from pyrevit import revit, DB, forms
+import re
 
-
-uidoc = revit.uidoc
 doc = revit.doc
-output = script.get_output()
 
+# Collect curtain walls visible in the active view only
+active_view = doc.ActiveView
+cw_elements = DB.FilteredElementCollector(doc, active_view.Id)\
+    .OfCategory(DB.BuiltInCategory.OST_Walls)\
+    .WhereElementIsNotElementType()\
+    .ToElements()
 
-# ---------------------------------------------------
-# Filter
-# ---------------------------------------------------
-class RoomSelectionFilter(ISelectionFilter):
-    def AllowElement(self, e):
-        try:
-            return isinstance(e, SpatialElement) and \
-                   e.Category.Id.IntegerValue == int(BuiltInCategory.OST_Rooms)
-        except Exception as ex:
-            output.print_md("Filter error: {}".format(ex))
-            return False
+cw_elements = [e for e in cw_elements if e.WallType.Kind == DB.WallKind.Curtain]
 
-    def AllowReference(self, r, p):
-        return True
+# Build mark -> element map
+mark_map = {}
+for e in cw_elements:
+    mark_param = e.get_Parameter(DB.BuiltInParameter.ALL_MODEL_MARK)
+    if mark_param and mark_param.AsString():
+        mark = mark_param.AsString().strip()
+        mark_map[mark] = e
 
+if not mark_map:
+    forms.alert("No curtain walls with Mark values found in the active view.", exitscript=True)
 
-# ---------------------------------------------------
-# Helpers
-# ---------------------------------------------------
-def room_xy(room):
-    try:
-        loc = room.Location
-        if isinstance(loc, LocationPoint):
-            p = loc.Point
-            return (round(p.X, 3), round(p.Y, 3))
-        else:
-            output.print_md("Room {} has no LocationPoint".format(room.Id))
-    except Exception as ex:
-        output.print_md("XY read failed for room {} : {}".format(room.Id, ex))
-    return None
+# Sort marks naturally
+def mark_sort_key(m):
+    parts = re.split(r'(\d+)', m)
+    return [int(p) if p.isdigit() else p for p in parts]
 
+sorted_marks = sorted(mark_map.keys(), key=mark_sort_key)
 
-def get_param(room, name):
-    try:
-        p = room.LookupParameter(name)
-        if not p:
-            output.print_md("Missing parameter '{}' on room {}".format(name, room.Id))
-            return None
-        return p.AsString()
-    except Exception as ex:
-        output.print_md("Read failed '{}' on room {} : {}".format(name, room.Id, ex))
-        return None
+# Ask user for direction
+direction = forms.SelectFromList.show(
+    ["+ (Increment)", "- (Decrement)"],
+    title="Select Operation",
+    multiselect=False
+)
 
+if not direction:
+    forms.alert("No operation selected.", exitscript=True)
 
-def set_param(room, name, value):
-    try:
-        if value is None:
-            return
+sign = 1 if direction.startswith("+") else -1
 
-        p = room.LookupParameter(name)
-        if not p:
-            output.print_md("Missing target parameter '{}' on room {}".format(name, room.Id))
-            return
+# Ask user for the amount
+amount_input = forms.ask_for_string(
+    prompt="Enter the amount to {} marks by:".format("increment" if sign == 1 else "decrement"),
+    title="Shift Amount"
+)
 
-        if p.IsReadOnly:
-            output.print_md("Parameter '{}' read-only on room {}".format(name, room.Id))
-            return
+if not amount_input:
+    forms.alert("No amount entered.", exitscript=True)
 
-        p.Set(value)
+if not amount_input.strip().isdigit() or int(amount_input.strip()) == 0:
+    forms.alert("Please enter a positive whole number greater than 0.", exitscript=True)
 
-    except Exception as ex:
-        output.print_md("Write failed '{}' on room {} : {}".format(name, room.Id, ex))
+delta = sign * int(amount_input.strip())
 
+# Ask user to select starting mark
+selected = forms.SelectFromList.show(
+    sorted_marks,
+    title="Select Starting Mark (this and above will be shifted {:+d})".format(delta),
+    multiselect=False
+)
 
-# ---------------------------------------------------
-# Select source rooms
-# ---------------------------------------------------
-try:
-    refs = uidoc.Selection.PickObjects(
-        ObjectType.Element,
-        RoomSelectionFilter(),
-        "Select SOURCE rooms"
-    )
-except OperationCanceledException:
-    raise SystemExit
-except Exception as ex:
-    output.print_md("Selection failed: {}".format(ex))
-    raise SystemExit
+if not selected:
+    forms.alert("No selection made.", exitscript=True)
 
+start_idx = sorted_marks.index(selected)
+marks_to_shift = sorted_marks[start_idx:]
 
-try:
-    source_rooms = [doc.GetElement(r.ElementId) for r in refs if doc.GetElement(r.ElementId)]
-    if not source_rooms:
-        output.print_md("No valid source rooms selected.")
-        raise SystemExit
-except Exception as ex:
-    output.print_md("Source room processing failed: {}".format(ex))
-    raise SystemExit
+# Validate decrement won't produce negative suffix
+if delta < 0:
+    for mark in marks_to_shift:
+        match = re.match(r'^(.*?)(\d+)$', mark)
+        if match and int(match.group(2)) + delta < 0:
+            forms.alert(
+                "Operation would produce a negative number for '{}'.\nAborting.".format(mark),
+                exitscript=True
+            )
 
+# Shift suffix by delta, preserving zero-padding
+def shift_mark(mark, delta):
+    match = re.match(r'^(.*?)(\d+)$', mark)
+    if match:
+        prefix = match.group(1)
+        num = int(match.group(2))
+        width = len(match.group(2))
+        return "{}{}".format(prefix, str(num + delta).zfill(width))
+    return mark
 
-# ---------------------------------------------------
-# Choose target levels
-# ---------------------------------------------------
-try:
-    source_level = doc.GetElement(source_rooms[0].LevelId)
+# Reverse for increment, forward for decrement — avoids collisions
+ordered = reversed(marks_to_shift) if delta > 0 else iter(marks_to_shift)
 
-    levels = FilteredElementCollector(doc).OfClass(Level).ToElements()
-    levels = sorted(levels, key=lambda l: l.Elevation)
-
-    level_map = {l.Name: l for l in levels}
-
-    selected = forms.SelectFromList.show(
-        [l.Name for l in levels if l.Id != source_level.Id],
-        title="Select Target Levels",
-        multiselect=True
-    )
-
-    if not selected:
-        raise SystemExit
-
-    target_levels = [level_map[n] for n in selected]
-
-except Exception as ex:
-    output.print_md("Target level selection failed: {}".format(ex))
-    raise SystemExit
-
-
-# ---------------------------------------------------
-# Build source dictionary
-# ---------------------------------------------------
-source_dict = {}
-
-try:
-    for r in source_rooms:
-        xy = room_xy(r)
-        if not xy:
-            continue
-
-        pod_a = get_param(r, "POD Type A")
-        pod_b = get_param(r, "POD Type B")
-
-        source_dict[xy] = (pod_a, pod_b)
-
-    if not source_dict:
-        output.print_md("No valid source parameter values found.")
-        raise SystemExit
-
-except Exception as ex:
-    output.print_md("Building source dictionary failed: {}".format(ex))
-    raise SystemExit
-
-
-# ---------------------------------------------------
-# Copy values
-# ---------------------------------------------------
-t = Transaction(doc, "Copy POD Type Params By Location")
-
-try:
+with DB.Transaction(doc, "Shift Curtain Wall Marks") as t:
     t.Start()
-
-    for lvl in target_levels:
-
-        try:
-            level_filter = ElementLevelFilter(lvl.Id)
-
-            target_rooms = (FilteredElementCollector(doc)
-                            .OfCategory(BuiltInCategory.OST_Rooms)
-                            .WherePasses(level_filter)
-                            .WhereElementIsNotElementType()
-                            .ToElements())
-
-            for room in target_rooms:
-                xy = room_xy(room)
-                if xy not in source_dict:
-                    continue
-
-                pod_a, pod_b = source_dict[xy]
-
-                set_param(room, "POD Type A", pod_a)
-                set_param(room, "POD Type B", pod_b)
-
-        except Exception as ex:
-            output.print_md("Failed processing level {} : {}".format(lvl.Name, ex))
-
+    for mark in ordered:
+        elem = mark_map[mark]
+        new_mark = shift_mark(mark, delta)
+        mark_param = elem.get_Parameter(DB.BuiltInParameter.ALL_MODEL_MARK)
+        mark_param.Set(new_mark)
     t.Commit()
 
-except Exception as ex:
-    output.print_md("Transaction failed: {}".format(ex))
-    if t.HasStarted():
-        t.RollBack()
+forms.alert(
+    "Done! {} mark(s) shifted by {:+d} starting from {}.".format(
+        len(marks_to_shift), delta, selected
+    ),
+    title="Success"
+)

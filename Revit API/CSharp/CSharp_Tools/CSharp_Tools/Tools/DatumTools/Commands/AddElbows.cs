@@ -38,6 +38,7 @@ namespace CSharp_Tools.Commands
                 .OfType<Level>()
                 .ToList();
 
+
             bool hadValidPreSelection = preSelected.Any() &&
                 uidoc.Selection.GetElementIds().Count == preSelected.Count;
 

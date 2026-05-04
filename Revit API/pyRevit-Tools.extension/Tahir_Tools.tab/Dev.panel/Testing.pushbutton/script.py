@@ -1,255 +1,343 @@
 # -*- coding: utf-8 -*-
-__title__ = "Place Views\non Sheets"
-__doc__ = """Select views and sheets, then place views on matched sheets by Level number."""
+"""
+Change Element Type
+Lets the user pick an element, shows all available types for that category/family,
+and applies the selected type to the element.
+"""
 
-import re
+__title__ = "Change\nType"
+__author__ = "Tahir Sanwarwala"
+__doc__ = "Select an element and change its type from a list of available types."
+
 import clr
-clr.AddReference('RevitAPI')
-clr.AddReference('RevitAPIUI')
+clr.AddReference("PresentationFramework")
+clr.AddReference("PresentationCore")
 
-from pyrevit import revit, DB, forms
 from Autodesk.Revit.DB import (
-    FilteredElementCollector, View, ViewSheet,
-    Viewport, XYZ, Transaction, BuiltInParameter,
-    BuiltInCategory
+    FilteredElementCollector,
+    ElementTypeGroup,
+    Transaction,
+    Element,
 )
-
-doc = revit.doc
-
-# ─────────────────────────────────────────────
-# HELPER: Extract level number from a string
-# e.g. "Level 7" → "7", "Level 10" → "10"
-# ─────────────────────────────────────────────
-def extract_level_number(name):
-    match = re.search(r'[Ll]evel\s+(\d+)', name)
-    if match:
-        return match.group(1)
-    return None
-
-
-# ─────────────────────────────────────────────
-# STEP 1: Collect ALL placeable views
-# ─────────────────────────────────────────────
-all_views = FilteredElementCollector(doc)\
-    .OfClass(View)\
-    .ToElements()
-
-placeable_view_types = [
-    DB.ViewType.FloorPlan,
-    DB.ViewType.CeilingPlan,
-    DB.ViewType.Elevation,
-    DB.ViewType.Section,
-    DB.ViewType.Detail,
-    DB.ViewType.DraftingView,
-    DB.ViewType.ThreeD,
-    DB.ViewType.AreaPlan,
-]
-
-placeable_views = [v for v in all_views if not v.IsTemplate
-                   and v.ViewType in placeable_view_types]
-
-if not placeable_views:
-    forms.alert("No placeable views found in the project.", exitscript=True)
-
-
-# ─────────────────────────────────────────────
-# STEP 2: Collect ALL sheets
-# ─────────────────────────────────────────────
-all_sheets = list(
-    FilteredElementCollector(doc)
-    .OfClass(ViewSheet)
-    .ToElements()
+from Autodesk.Revit.UI.Selection import ObjectType
+from pyrevit import revit, forms, script
+from System.Windows import Window, GridLength, Thickness
+from System.Windows.Controls import (
+    Grid, RowDefinition, ColumnDefinition,
+    Label, ListBox, ListBoxItem, Button,
+    ScrollViewer, StackPanel, Border,
 )
+from System.Windows.Media import BrushConverter, SolidColorBrush
+from System.Windows import HorizontalAlignment, VerticalAlignment, FontWeights
+from System.Windows import SizeToContent
 
-if not all_sheets:
-    forms.alert("No sheets found in the project.", exitscript=True)
+# ── colour palette ────────────────────────────────────────────────────────────
+BG_DARK   = "#1A1D23"
+BG_MID    = "#22262F"
+BG_ROW    = "#2A2F3A"
+ACCENT    = "#00BFAE"
+TEXT_LT   = "#E8EAF0"
+TEXT_DIM  = "#8A8FA8"
+HOVER_BG  = "#2E3444"
+SEL_BG    = "#004D47"
 
-
-# ─────────────────────────────────────────────
-# STEP 3: Ask user to select views (ALL views shown)
-# ─────────────────────────────────────────────
-view_dict = {}
-for v in sorted(placeable_views, key=lambda x: x.Name):
-    view_dict[v.Name] = v
-
-selected_view_names = forms.SelectFromList.show(
-    sorted(view_dict.keys()),
-    title="Select Views to Place",
-    multiselect=True,
-    button_name="Select Views"
-)
-
-if not selected_view_names:
-    forms.alert("No views selected. Exiting.", exitscript=True)
-
-selected_views = [view_dict[name] for name in selected_view_names]
+def brush(hex_color):
+    return BrushConverter().ConvertFromString(hex_color)
 
 
-# ─────────────────────────────────────────────
-# STEP 4: Ask user to select sheets (ALL sheets shown)
-# ─────────────────────────────────────────────
-sheet_dict = {}
-for s in sorted(all_sheets, key=lambda x: x.Name):
-    display_name = "{0} - {1}".format(s.SheetNumber, s.Name)
-    sheet_dict[display_name] = s
+def get_name(element):
+    """Safely get the Name of a Revit element in IronPython."""
+    try:
+        # Works for most element types
+        return element.Name
+    except Exception:
+        pass
+    try:
+        # Fallback via parameter
+        p = element.get_Parameter(
+            __import__("Autodesk.Revit.DB", fromlist=["BuiltInParameter"])
+            .BuiltInParameter.ALL_MODEL_TYPE_NAME
+        )
+        if p:
+            return p.AsString()
+    except Exception:
+        pass
+    return "id:{}".format(element.Id.IntegerValue)
 
-selected_sheet_names = forms.SelectFromList.show(
-    sorted(sheet_dict.keys()),
-    title="Select Target Sheets",
-    multiselect=True,
-    button_name="Select Sheets"
-)
 
-if not selected_sheet_names:
-    forms.alert("No sheets selected. Exiting.", exitscript=True)
+# ── helper: get all types that belong to the same family as the element ───────
+def get_sibling_types(doc, element):
+    """Return list of (name, ElementId) tuples for all types in the same family."""
+    elem_type_id = element.GetTypeId()
+    if elem_type_id.IntegerValue == -1:
+        return [], ""
 
-selected_sheets = [sheet_dict[name] for name in selected_sheet_names]
+    elem_type = doc.GetElement(elem_type_id)
+    if elem_type is None:
+        return [], ""
+
+    family_name = None
+    try:
+        if hasattr(elem_type, "Family") and elem_type.Family is not None:
+            family_name = elem_type.Family.Name
+    except Exception:
+        family_name = None
+
+    results = []
+    collector = FilteredElementCollector(doc).OfClass(type(elem_type))
+
+    for t in collector:
+        try:
+            # Filter to same family when possible
+            if family_name:
+                try:
+                    if not (hasattr(t, "Family") and t.Family is not None
+                            and t.Family.Name == family_name):
+                        continue
+                except Exception:
+                    continue
+            name = get_name(t)
+            results.append((name, t.Id))
+        except Exception:
+            continue
+
+    current_name = get_name(elem_type)
+    results.sort(key=lambda x: (x[0] != current_name, x[0].lower()))
+    return results, current_name
 
 
-# ─────────────────────────────────────────────
-# STEP 5: Build Level number → sheet map
-# Only from user-selected sheets
-# ─────────────────────────────────────────────
-sheet_level_map = {}
-sheets_without_level = []
+# ── WPF Dialog ────────────────────────────────────────────────────────────────
+class TypePickerDialog(Window):
+    def __init__(self, element_info, types, current_type_name):
+        """
+        element_info : str  – displayed in the header
+        types        : list of (name, ElementId)
+        current_type_name : str
+        """
+        self.selected_type_id = None
+        self._types = types
 
-for sheet in selected_sheets:
-    lvl = extract_level_number(sheet.Name)
-    if lvl:
-        if lvl not in sheet_level_map:
-            sheet_level_map[lvl] = sheet
+        self.Title = "Change Element Type"
+        self.Width = 420
+        self.Height = 520
+        self.SizeToContent = SizeToContent.Manual
+        self.WindowStartupLocation = \
+            getattr(__import__("System.Windows", fromlist=["WindowStartupLocation"]),
+                    "WindowStartupLocation").CenterScreen
+        self.Background = brush(BG_DARK)
+        self.ResizeMode = getattr(
+            __import__("System.Windows", fromlist=["ResizeMode"]), "ResizeMode").NoResize
+
+        root = Grid()
+        root.Margin = Thickness(0)
+
+        # rows: header / subheader / list / footer-buttons
+        for h in [56, 36, 999, 52]:
+            rd = RowDefinition()
+            rd.Height = GridLength(h) if h != 999 else GridLength(1,
+                getattr(__import__("System.Windows", fromlist=["GridUnitType"]),
+                        "GridUnitType").Star)
+            root.RowDefinitions.Add(rd)
+
+        # ── header ────────────────────────────────────────────────────────────
+        header = Border()
+        header.Background = brush(BG_MID)
+        header.SetValue(Grid.RowProperty, 0)
+        lbl_title = Label()
+        lbl_title.Content = "Change Element Type"
+        lbl_title.Foreground = brush(ACCENT)
+        lbl_title.FontSize = 16
+        lbl_title.FontWeight = FontWeights.Bold
+        lbl_title.VerticalAlignment = VerticalAlignment.Center
+        lbl_title.Margin = Thickness(16, 0, 0, 0)
+        header.Child = lbl_title
+        root.Children.Add(header)
+
+        # ── element info sub-header ────────────────────────────────────────────
+        sub = Border()
+        sub.Background = brush(BG_ROW)
+        sub.SetValue(Grid.RowProperty, 1)
+        lbl_info = Label()
+        lbl_info.Content = u"Element: {}".format(element_info)
+        lbl_info.Foreground = brush(TEXT_DIM)
+        lbl_info.FontSize = 11
+        lbl_info.VerticalAlignment = VerticalAlignment.Center
+        lbl_info.Margin = Thickness(16, 0, 0, 0)
+        sub.Child = lbl_info
+        root.Children.Add(sub)
+
+        # ── list ───────────────────────────────────────────────────────────────
+        scroll = ScrollViewer()
+        scroll.SetValue(Grid.RowProperty, 2)
+        scroll.Background = brush(BG_DARK)
+        scroll.Margin = Thickness(12, 8, 12, 4)
+
+        self.listbox = ListBox()
+        self.listbox.Background = brush(BG_DARK)
+        self.listbox.BorderThickness = Thickness(0)
+        self.listbox.Foreground = brush(TEXT_LT)
+        self.listbox.FontSize = 13
+
+        for name, type_id in types:
+            item = ListBoxItem()
+            item.Content = name
+            item.Tag = type_id
+            item.Padding = Thickness(10, 7, 10, 7)
+            item.Background = brush(BG_DARK)
+            item.Foreground = brush(TEXT_LT)
+            # mark current type
+            if name == current_type_name:
+                item.FontWeight = FontWeights.Bold
+                item.Foreground = brush(ACCENT)
+            self.listbox.Items.Add(item)
+
+        # pre-select current type
+        for i, (name, _) in enumerate(types):
+            if name == current_type_name:
+                self.listbox.SelectedIndex = i
+                self.listbox.ScrollIntoView(self.listbox.Items[i])
+                break
+
+        scroll.Content = self.listbox
+        root.Children.Add(scroll)
+
+        # ── buttons ────────────────────────────────────────────────────────────
+        btn_row = Border()
+        btn_row.SetValue(Grid.RowProperty, 3)
+        btn_row.Background = brush(BG_MID)
+
+        btn_panel = StackPanel()
+        btn_panel.Orientation = getattr(
+            __import__("System.Windows.Controls", fromlist=["Orientation"]),
+            "Orientation").Horizontal
+        btn_panel.HorizontalAlignment = HorizontalAlignment.Right
+        btn_panel.VerticalAlignment = VerticalAlignment.Center
+        btn_panel.Margin = Thickness(0, 0, 16, 0)
+
+        btn_cancel = Button()
+        btn_cancel.Content = "Cancel"
+        btn_cancel.Width = 90
+        btn_cancel.Height = 32
+        btn_cancel.Margin = Thickness(0, 0, 8, 0)
+        btn_cancel.Background = brush(BG_ROW)
+        btn_cancel.Foreground = brush(TEXT_DIM)
+        btn_cancel.BorderThickness = Thickness(0)
+        btn_cancel.FontSize = 13
+        btn_cancel.Click += self._cancel
+
+        btn_apply = Button()
+        btn_apply.Content = "Apply"
+        btn_apply.Width = 90
+        btn_apply.Height = 32
+        btn_apply.Background = brush(ACCENT)
+        btn_apply.Foreground = brush(BG_DARK)
+        btn_apply.BorderThickness = Thickness(0)
+        btn_apply.FontWeight = FontWeights.Bold
+        btn_apply.FontSize = 13
+        btn_apply.Click += self._apply
+
+        btn_panel.Children.Add(btn_cancel)
+        btn_panel.Children.Add(btn_apply)
+        btn_row.Child = btn_panel
+        root.Children.Add(btn_row)
+
+        self.Content = root
+
+    def _apply(self, sender, e):
+        selected = self.listbox.SelectedItem
+        if selected:
+            self.selected_type_id = selected.Tag
+            self.DialogResult = True
+            self.Close()
         else:
-            print("WARNING: Multiple sheets found for Level {0}. Using: {1}".format(
-                lvl, sheet_level_map[lvl].Name))
-    else:
-        sheets_without_level.append(sheet.Name)
+            forms.alert("Please select a type first.", title="No Selection")
 
-if sheets_without_level:
-    print("INFO: These selected sheets have no Level number and will be skipped:")
-    for name in sheets_without_level:
-        print("  - " + name)
+    def _cancel(self, sender, e):
+        self.DialogResult = False
+        self.Close()
 
 
-# ─────────────────────────────────────────────
-# STEP 6: Get sheet center from title block
-# ─────────────────────────────────────────────
-def get_sheet_center(sheet):
-    title_blocks = FilteredElementCollector(doc, sheet.Id)\
-        .OfCategory(BuiltInCategory.OST_TitleBlocks)\
-        .ToElements()
+# ── Main ──────────────────────────────────────────────────────────────────────
+def main():
+    doc   = revit.doc
+    uidoc = revit.uidoc
+    output = script.get_output()
 
-    if title_blocks:
-        tb = title_blocks[0]
-        bbox = tb.get_BoundingBox(sheet)
-        if bbox:
-            center_x = (bbox.Min.X + bbox.Max.X) / 2.0
-            center_y = (bbox.Min.Y + bbox.Max.Y) / 2.0
-            return XYZ(center_x, center_y, 0)
-
-    # Fallback: approximate center of an A1 sheet in feet
-    return XYZ(0.9, 0.6, 0)
-
-
-# ─────────────────────────────────────────────
-# STEP 7: Find "Title_None" viewport type once
-# ─────────────────────────────────────────────
-all_vp_types = FilteredElementCollector(doc)\
-    .OfClass(DB.ElementType)\
-    .ToElements()
-
-title_none_type = None
-for vt in all_vp_types:
-    if vt.FamilyName == "Viewport" and vt.get_Parameter(BuiltInParameter.SYMBOL_NAME_PARAM).AsString() == "Title_None":
-        title_none_type = vt
-        break
-
-if not title_none_type:
+    # Step 1 – pick an element
     forms.alert(
-        "Viewport type 'Title_None' was not found in this project.\n"
-        "Views will be placed with the default viewport type.",
-        title="Warning - Title_None Not Found"
+        "Click an element in the model to select it.",
+        title="Select Element",
+        ok=True
     )
 
-
-# ─────────────────────────────────────────────
-# STEP 8: Match selected views to selected sheets
-# and place them
-# ─────────────────────────────────────────────
-placed   = []
-skipped  = []
-no_match = []
-
-for view in selected_views:
-    view_level = extract_level_number(view.Name)
-
-    if not view_level:
-        no_match.append((view.Name, "No 'Level X' found in view name"))
-        continue
-
-    if view_level not in sheet_level_map:
-        no_match.append((view.Name, "No selected sheet matches Level {0}".format(view_level)))
-        continue
-
-    target_sheet = sheet_level_map[view_level]
-
-    # Check if already placed on this sheet
-    already_placed = False
-    for vp_id in target_sheet.GetAllViewports():
-        vp = doc.GetElement(vp_id)
-        if vp.ViewId == view.Id:
-            already_placed = True
-            break
-
-    if already_placed:
-        skipped.append((view.Name, "Already on sheet '{0}'".format(target_sheet.Name)))
-        continue
-
-    # Check if view can be added to sheet
-    if not Viewport.CanAddViewToSheet(doc, target_sheet.Id, view.Id):
-        skipped.append((view.Name, "Already placed on another sheet"))
-        continue
-
-    # Place the view and set viewport type
     try:
-        with Transaction(doc, "Place: {0}".format(view.Name)) as t:
-            t.Start()
+        ref = uidoc.Selection.PickObject(ObjectType.Element, "Select an element")
+    except Exception:
+        # user pressed Escape
+        return
 
-            # Create viewport at sheet center
-            center = get_sheet_center(target_sheet)
-            new_vp = Viewport.Create(doc, target_sheet.Id, view.Id, center)
+    element = doc.GetElement(ref.ElementId)
+    if element is None:
+        forms.alert("Could not retrieve element.", title="Error")
+        return
 
-            # Set viewport type to Title_None if found
-            if title_none_type:
-                new_vp.ChangeTypeId(title_none_type.Id)
+    # Step 2 – collect sibling types
+    result = get_sibling_types(doc, element)
+    if not result or not result[0]:
+        forms.alert(
+            "No types found for this element, or the element has no type.",
+            title="No Types"
+        )
+        return
 
+    types, current_type_name = result
+
+    # Build a readable element label
+    try:
+        cat_name = element.Category.Name if element.Category else "Unknown"
+    except Exception:
+        cat_name = "Unknown"
+    try:
+        elem_type = doc.GetElement(element.GetTypeId())
+        try:
+            family_name = elem_type.Family.Name if hasattr(elem_type, "Family") and elem_type.Family else ""
+        except Exception:
+            family_name = ""
+        elem_label = u"{} - {} : {}".format(cat_name, family_name, current_type_name)
+    except Exception:
+        elem_label = u"{} (id {})".format(cat_name, element.Id.IntegerValue)
+
+    # Step 3 - show picker dialog
+    dlg = TypePickerDialog(elem_label, types, current_type_name)
+    result = dlg.ShowDialog()
+
+    if not result or dlg.selected_type_id is None:
+        return  # cancelled
+
+    # Check if same type selected
+    if dlg.selected_type_id == element.GetTypeId():
+        forms.alert("That is already the current type. Nothing changed.", title="No Change")
+        return
+
+    # Step 4 - apply the new type
+    new_type = doc.GetElement(dlg.selected_type_id)
+    new_type_name = get_name(new_type) if new_type else str(dlg.selected_type_id.IntegerValue)
+
+    with Transaction(doc, "Change Element Type") as t:
+        t.Start()
+        try:
+            element.ChangeTypeId(dlg.selected_type_id)
             t.Commit()
-        placed.append((view.Name, target_sheet.Name))
+            forms.alert(
+                u"Type changed to:\n{}".format(new_type_name),
+                title="Done"
+            )
+        except Exception as ex:
+            t.RollBack()
+            forms.alert(
+                u"Failed to change type:\n{}".format(str(ex)),
+                title="Error"
+            )
 
-    except Exception as ex:
-        skipped.append((view.Name, "Error: {0}".format(str(ex))))
 
-
-# ─────────────────────────────────────────────
-# STEP 9: Report results
-# ─────────────────────────────────────────────
-report_lines = []
-
-if placed:
-    report_lines.append("PLACED ({0}):".format(len(placed)))
-    for v_name, s_name in placed:
-        report_lines.append("  + {0}  ->  {1}".format(v_name, s_name))
-
-if no_match:
-    report_lines.append("\nNO MATCH FOUND ({0}):".format(len(no_match)))
-    for v_name, reason in no_match:
-        report_lines.append("  ? {0}  ({1})".format(v_name, reason))
-
-if skipped:
-    report_lines.append("\nSKIPPED ({0}):".format(len(skipped)))
-    for v_name, reason in skipped:
-        report_lines.append("  x {0}  ({1})".format(v_name, reason))
-
-if not report_lines:
-    report_lines.append("Nothing was placed.")
-
-forms.alert("\n".join(report_lines), title="Place Views - Result")
+main()

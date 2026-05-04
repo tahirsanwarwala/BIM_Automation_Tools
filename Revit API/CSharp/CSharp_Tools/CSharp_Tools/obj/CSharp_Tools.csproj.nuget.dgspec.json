@@ -44,7 +44,7 @@
           "auditLevel": "low",
           "auditMode": "direct"
         },
-        "SdkAnalysisLevel": "10.0.100"
+        "SdkAnalysisLevel": "10.0.200"
       },
       "frameworks": {
         "net48": {
@@ -58,29 +58,24 @@
               "target": "Package",
               "version": "[6.2.10, )"
             },
-            "JetBrains.Annotations": {
-              "suppressParent": "All",
-              "target": "Package",
-              "version": "[2025.2.4, )"
-            },
             "Nice3point.Revit.Api.RevitAPI": {
               "target": "Package",
-              "version": "[2024.*, )"
+              "version": "[2023.*, )"
             },
             "Nice3point.Revit.Api.RevitAPIUI": {
               "target": "Package",
-              "version": "[2024.*, )"
+              "version": "[2023.*, )"
             },
             "Nice3point.Revit.Extensions": {
               "target": "Package",
-              "version": "[2024.*, )"
+              "version": "[2023.*, )"
             },
             "Nice3point.Revit.Toolkit": {
               "target": "Package",
-              "version": "[2024.*, )"
+              "version": "[2023.*, )"
             }
           },
-          "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\10.0.103\\RuntimeIdentifierGraph.json"
+          "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\10.0.201\\RuntimeIdentifierGraph.json"
         }
       }
     }

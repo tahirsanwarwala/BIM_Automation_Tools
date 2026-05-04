@@ -6,7 +6,6 @@
 // Revit API 2024
 
 using Autodesk.Revit.UI;
-using CSharp_Tools.Commands;
 using System.Reflection;
 
 namespace CSharp_Tools
@@ -21,8 +20,9 @@ namespace CSharp_Tools
 
         // Panel names
         private const string PanelAnnotation = "Annotation";
-        private const string PanelSelection  = "Selection";
-        private const string PanelSheets     = "Sheets";
+        private const string PanelSelection = "Selection";
+        private const string PanelSheets = "Sheets";
+        private const string PanelTest = "Test";
 
         public Result OnStartup(UIControlledApplication application)
         {
@@ -40,8 +40,9 @@ namespace CSharp_Tools
 
                 // ---- 2. Create (or re-use) the three ribbon panels ----
                 RibbonPanel annotationPanel = GetOrCreatePanel(application, TabName, PanelAnnotation);
-                RibbonPanel selectionPanel  = GetOrCreatePanel(application, TabName, PanelSelection);
-                RibbonPanel sheetsPanel     = GetOrCreatePanel(application, TabName, PanelSheets);
+                RibbonPanel selectionPanel = GetOrCreatePanel(application, TabName, PanelSelection);
+                RibbonPanel sheetsPanel = GetOrCreatePanel(application, TabName, PanelSheets);
+                RibbonPanel testPanel = GetOrCreatePanel(application, TabName, PanelTest);
 
                 Assembly assembly = Assembly.GetExecutingAssembly();
                 string assemblyPath = assembly.Location;
@@ -62,7 +63,7 @@ namespace CSharp_Tools
                     LongDescription = "Select one or more Levels or Grids. " +
                                       "Choose whether to display datum bubbles at End 1, End 2, or both ends.",
                     LargeImage = LoadImage("CSharp_Tools.Tools.DatumTools.Icons.SwitchBubbles32.png", 32),
-                    Image      = LoadImage("CSharp_Tools.Tools.DatumTools.Icons.SwitchBubbles16.png", 16)
+                    Image = LoadImage("CSharp_Tools.Tools.DatumTools.Icons.SwitchBubbles16.png", 16)
                 };
 
                 // Button 2 — Add Elbows
@@ -77,7 +78,7 @@ namespace CSharp_Tools
                                       "The command adds a leader elbow on whichever end currently " +
                                       "has a visible bubble, or adjusts an existing flat elbow.",
                     LargeImage = LoadImage("CSharp_Tools.Tools.DatumTools.Icons.AddElbows32.png", 32),
-                    Image      = LoadImage("CSharp_Tools.Tools.DatumTools.Icons.AddElbows16.png", 16)
+                    Image = LoadImage("CSharp_Tools.Tools.DatumTools.Icons.AddElbows16.png", 16)
                 };
 
                 // Button 3 — Align Elbows
@@ -93,7 +94,7 @@ namespace CSharp_Tools
                                       "The elbow X/Y and end X/Y are copied from the source; " +
                                       "each target preserves its own Z elevation.",
                     LargeImage = LoadImage("CSharp_Tools.Tools.DatumTools.Icons.AlignElbows32.png", 32),
-                    Image      = LoadImage("CSharp_Tools.Tools.DatumTools.Icons.AlignElbows16.png", 16)
+                    Image = LoadImage("CSharp_Tools.Tools.DatumTools.Icons.AlignElbows16.png", 16)
                 };
 
                 // Stack all three Datum Tools buttons in the Annotation panel
@@ -112,7 +113,7 @@ namespace CSharp_Tools
                 {
                     ToolTip = "Select matching elements across multiple views.",
                     LargeImage = LoadImage("CSharp_Tools.Tools.MultiLevelSelect.Icons.MatchByView32.png", 32),
-                    Image      = LoadImage("CSharp_Tools.Tools.MultiLevelSelect.Icons.MatchByView16.png", 16)
+                    Image = LoadImage("CSharp_Tools.Tools.MultiLevelSelect.Icons.MatchByView16.png", 16)
                 };
 
                 // Button 5 — Select Similar on Entire Model
@@ -124,7 +125,7 @@ namespace CSharp_Tools
                 {
                     ToolTip = "Select matching elements across multiple levels.",
                     LargeImage = LoadImage("CSharp_Tools.Tools.MultiLevelSelect.Icons.MatchByModel32.png", 32),
-                    Image      = LoadImage("CSharp_Tools.Tools.MultiLevelSelect.Icons.MatchByModel16.png", 16)
+                    Image = LoadImage("CSharp_Tools.Tools.MultiLevelSelect.Icons.MatchByModel16.png", 16)
                 };
 
                 // Stack the two Multi-Level Select buttons in the Selection panel
@@ -146,10 +147,25 @@ namespace CSharp_Tools
                         "Select your .xlsx file to create sheets automatically, with duplicate " +
                         "detection, optional titleblock assignment, and a summary report.",
                     LargeImage = LoadImage("CSharp_Tools.Tools.SheetsFromExcel.Icons.SheetsFromExcel32.png", 32),
-                    Image      = LoadImage("CSharp_Tools.Tools.SheetsFromExcel.Icons.SheetsFromExcel16.png", 16)
+                    Image = LoadImage("CSharp_Tools.Tools.SheetsFromExcel.Icons.SheetsFromExcel16.png", 16)
                 };
 
                 sheetsPanel.AddItem(pbCreateSheets);
+
+                // ================================================================
+                // TEST PANEL — Testing Scripts
+                // ================================================================
+
+                var pbTestScript = new PushButtonData(
+                    name: "Test",
+                    text: "Test",
+                    assemblyName: assemblyPath,
+                    className: "CSharp_Tools.Commands.TestScript")
+                {
+
+                };
+
+                testPanel.AddItem(pbTestScript);
 
                 return Result.Succeeded;
             }
@@ -201,7 +217,7 @@ namespace CSharp_Tools
                 img.StreamSource = stream;
                 img.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
                 // Force exact pixel size — WPF will ignore the PNG's embedded DPI metadata.
-                img.DecodePixelWidth  = pixelSize;
+                img.DecodePixelWidth = pixelSize;
                 img.DecodePixelHeight = pixelSize;
                 img.EndInit();
                 img.Freeze();

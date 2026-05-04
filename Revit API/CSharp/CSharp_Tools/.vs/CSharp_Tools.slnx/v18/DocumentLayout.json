@@ -3,8 +3,12 @@
   "WorkspaceRootPath": "C:\\Users\\Bim59\\AppData\\Roaming\\BIM_Automation Github\\Revit API\\CSharp\\CSharp_Tools\\",
   "Documents": [
     {
-      "AbsoluteMoniker": "D:0:0:{F0D116F0-D21B-4598-A387-56F8A196DFD5}|CSharp_Tools\\CSharp_Tools.csproj|c:\\users\\bim59\\appdata\\roaming\\bim_automation github\\revit api\\csharp\\csharp_tools\\csharp_tools\\application.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
-      "RelativeMoniker": "D:0:0:{F0D116F0-D21B-4598-A387-56F8A196DFD5}|CSharp_Tools\\CSharp_Tools.csproj|solutionrelative:csharp_tools\\application.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+      "AbsoluteMoniker": "D:0:0:{F0D116F0-D21B-4598-A387-56F8A196DFD5}|CSharp_Tools\\CSharp_Tools.csproj|c:\\users\\bim59\\appdata\\roaming\\bim_automation github\\revit api\\csharp\\csharp_tools\\csharp_tools\\tools\\sheetsfromexcel\\dialogs\\exceltemplatedialog.xaml.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{F0D116F0-D21B-4598-A387-56F8A196DFD5}|CSharp_Tools\\CSharp_Tools.csproj|solutionrelative:csharp_tools\\tools\\sheetsfromexcel\\dialogs\\exceltemplatedialog.xaml.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{F0D116F0-D21B-4598-A387-56F8A196DFD5}|CSharp_Tools\\CSharp_Tools.csproj|c:\\users\\bim59\\appdata\\roaming\\bim_automation github\\revit api\\csharp\\csharp_tools\\csharp_tools\\csharp_tools.csproj||{FA3CD31E-987B-443A-9B81-186104E8DAC1}|",
+      "RelativeMoniker": "D:0:0:{F0D116F0-D21B-4598-A387-56F8A196DFD5}|CSharp_Tools\\CSharp_Tools.csproj|solutionrelative:csharp_tools\\csharp_tools.csproj||{FA3CD31E-987B-443A-9B81-186104E8DAC1}|"
     }
   ],
   "DocumentGroupContainers": [
@@ -19,20 +23,28 @@
             {
               "$type": "Document",
               "DocumentIndex": 0,
-              "Title": "Application.cs",
-              "DocumentMoniker": "C:\\Users\\Bim59\\AppData\\Roaming\\BIM_Automation Github\\Revit API\\CSharp\\CSharp_Tools\\CSharp_Tools\\Application.cs",
-              "RelativeDocumentMoniker": "CSharp_Tools\\Application.cs",
-              "ToolTip": "C:\\Users\\Bim59\\AppData\\Roaming\\BIM_Automation Github\\Revit API\\CSharp\\CSharp_Tools\\CSharp_Tools\\Application.cs",
-              "RelativeToolTip": "CSharp_Tools\\Application.cs",
-              "ViewState": "AgIAAAAAAAAAAAAAAAAAAEMAAAAoAAAAAAAAAA==",
+              "Title": "ExcelTemplateDialog.xaml.cs",
+              "DocumentMoniker": "C:\\Users\\Bim59\\AppData\\Roaming\\BIM_Automation Github\\Revit API\\CSharp\\CSharp_Tools\\CSharp_Tools\\Tools\\SheetsFromExcel\\Dialogs\\ExcelTemplateDialog.xaml.cs",
+              "RelativeDocumentMoniker": "CSharp_Tools\\Tools\\SheetsFromExcel\\Dialogs\\ExcelTemplateDialog.xaml.cs",
+              "ToolTip": "C:\\Users\\Bim59\\AppData\\Roaming\\BIM_Automation Github\\Revit API\\CSharp\\CSharp_Tools\\CSharp_Tools\\Tools\\SheetsFromExcel\\Dialogs\\ExcelTemplateDialog.xaml.cs",
+              "RelativeToolTip": "CSharp_Tools\\Tools\\SheetsFromExcel\\Dialogs\\ExcelTemplateDialog.xaml.cs",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAABQAAAAqAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2026-02-19T09:03:59.756Z",
-              "IsPinned": true,
+              "WhenOpened": "2026-04-01T10:30:27.58Z",
               "EditorCaption": ""
             },
             {
-              "$type": "Bookmark",
-              "Name": "ST:0:0:{1c4feeaa-4718-4aa9-859d-94ce25d182ba}"
+              "$type": "Document",
+              "DocumentIndex": 1,
+              "Title": "CSharp_Tools",
+              "DocumentMoniker": "C:\\Users\\Bim59\\AppData\\Roaming\\BIM_Automation Github\\Revit API\\CSharp\\CSharp_Tools\\CSharp_Tools\\CSharp_Tools.csproj",
+              "RelativeDocumentMoniker": "CSharp_Tools\\CSharp_Tools.csproj",
+              "ToolTip": "C:\\Users\\Bim59\\AppData\\Roaming\\BIM_Automation Github\\Revit API\\CSharp\\CSharp_Tools\\CSharp_Tools\\CSharp_Tools.csproj",
+              "RelativeToolTip": "CSharp_Tools\\CSharp_Tools.csproj",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAACEAAABRAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000758|",
+              "WhenOpened": "2026-04-01T10:29:11.235Z",
+              "EditorCaption": ""
             }
           ]
         }

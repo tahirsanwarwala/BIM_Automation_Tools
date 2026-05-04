@@ -243,7 +243,7 @@ namespace CSharp_Tools.Commands
                 ElementId typeId = e.GetTypeId();
                 if (typeId == ElementId.InvalidElementId) continue;
 
-                string key = $"{e.Category?.Id?.IntegerValue}|{typeId.IntegerValue}";
+                string key = $"{e.Category?.Id?.Value}|{typeId.Value}";
                 keys.Add(key);
             }
             return keys;
@@ -258,7 +258,7 @@ namespace CSharp_Tools.Commands
             ElementId typeId = e.GetTypeId();
             if (typeId == ElementId.InvalidElementId) return false;
 
-            string key = $"{e.Category?.Id?.IntegerValue}|{typeId.IntegerValue}";
+            string key = $"{e.Category?.Id?.Value}|{typeId.Value}";
             return sourceTypeKeys.Contains(key);
         }
 

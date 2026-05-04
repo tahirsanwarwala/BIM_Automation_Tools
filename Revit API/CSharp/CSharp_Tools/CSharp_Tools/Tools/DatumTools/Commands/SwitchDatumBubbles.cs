@@ -132,6 +132,14 @@ namespace CSharp_Tools.Commands
                     "Bubbles could not be set for:\n\n" + string.Join("\n", failed));
             }
 
+
+            List<int> newlist = new List<int>()
+            {
+                1,2,3,4,5
+            };
+
+            Console.WriteLine(newlist);
+
             return Result.Succeeded;
         }
 
@@ -169,5 +177,6 @@ namespace CSharp_Tools.Commands
             }
             catch { return false; }
         }
+
     }
 }
