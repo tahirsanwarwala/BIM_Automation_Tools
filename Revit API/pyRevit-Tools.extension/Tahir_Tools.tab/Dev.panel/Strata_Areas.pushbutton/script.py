@@ -229,7 +229,6 @@ def main():
 
     # 4-6. Match and copy
     updated = 0
-    skipped_filled = 0
     skipped_no_match = 0
     errors = []
 
@@ -240,11 +239,6 @@ def main():
         for sheet in selected:
             sheet_num = sheet.SheetNumber
             unit_num = get_param_string(sheet, PARAM_UNIT_NUMBER)
-
-            # Skip if any strata param already filled
-            if not all(is_param_empty(sheet, p) for p in STRATA_PARAMS):
-                skipped_filled += 1
-                continue
 
             # Find matching Excel row
             matched = None
@@ -277,9 +271,8 @@ def main():
     msg = ("Strata Areas Update Complete\n"
            "===========================\n"
            "Updated:              {}\n"
-           "Skipped (filled):     {}\n"
            "Skipped (no match):   {}").format(
-               updated, skipped_filled, skipped_no_match)
+               updated, skipped_no_match)
     if errors:
         msg += "\n\nFailed sheets: " + ", ".join(errors)
 
