@@ -1,9 +1,0 @@
-C:\Users\Bim59\AppData\Roaming\BIM_Automation Github\Revit API\CSharp\CSharp_Tools\CSharp_Tools\obj\Release.R23\CSharp_Tools.csproj.AssemblyReference.cache
-C:\Users\Bim59\AppData\Roaming\BIM_Automation Github\Revit API\CSharp\CSharp_Tools\CSharp_Tools\obj\Release.R23\Tools\SheetsFromExcel\Dialogs\ExcelTemplateDialog.baml
-C:\Users\Bim59\AppData\Roaming\BIM_Automation Github\Revit API\CSharp\CSharp_Tools\CSharp_Tools\obj\Release.R23\Tools\SheetsFromExcel\Dialogs\ExcelTemplateDialog.g.cs
-C:\Users\Bim59\AppData\Roaming\BIM_Automation Github\Revit API\CSharp\CSharp_Tools\CSharp_Tools\obj\Release.R23\CSharp_Tools_MarkupCompile.cache
-C:\Users\Bim59\AppData\Roaming\BIM_Automation Github\Revit API\CSharp\CSharp_Tools\CSharp_Tools\obj\Release.R23\CSharp_Tools.g.resources
-C:\Users\Bim59\AppData\Roaming\BIM_Automation Github\Revit API\CSharp\CSharp_Tools\CSharp_Tools\obj\Release.R23\CSharp_Tools.GeneratedMSBuildEditorConfig.editorconfig
-C:\Users\Bim59\AppData\Roaming\BIM_Automation Github\Revit API\CSharp\CSharp_Tools\CSharp_Tools\obj\Release.R23\CSharp_Tools.AssemblyInfoInputs.cache
-C:\Users\Bim59\AppData\Roaming\BIM_Automation Github\Revit API\CSharp\CSharp_Tools\CSharp_Tools\obj\Release.R23\CSharp_Tools.AssemblyInfo.cs
-C:\Users\Bim59\AppData\Roaming\BIM_Automation Github\Revit API\CSharp\CSharp_Tools\CSharp_Tools\obj\Release.R23\CSharp_Tools.csproj.CoreCompileInputs.cache

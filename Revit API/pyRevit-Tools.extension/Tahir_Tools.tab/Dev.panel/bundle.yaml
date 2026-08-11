@@ -1,17 +1,5 @@
 layout:
-  - Testing
-  - Testing2
-  - RoomName_Copy
-  - AreaNum_FromRoom
-  - AlignLevels
-  - Annotation_Overlap
-  - AC_Condenser
-  - Strata_Areas
-  - Storage_Block
-  - Window_Param_Copy
-  - Balcony_Renumber
-  - CurtainPanel
-  - ExportSheet
-
-
+  - MergeFloors
+  - SplitFloors
+  - ConduitAlignCheck
 
