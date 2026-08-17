@@ -1,27 +1,29 @@
 # -*- coding: utf-8 -*-
 """
-Conduit Alignment Checker
-Scans electrical conduits in the active view and flags three types of issues:
+Conduit & Pipe Alignment Checker
+Scans electrical conduits, pipes, and their respective fittings in the active
+view and flags three types of issues:
 
-  1. GAP               — collinear conduits with a gap >= MIN_GAP between
+  1. GAP               — collinear elements with a gap >= MIN_GAP between
                          their facing endpoints (broken run).
 
-  2. EXCESSIVE OVERLAP — collinear conduits overlapping more than MAX_OVERLAP
+  2. EXCESSIVE OVERLAP — collinear elements overlapping more than MAX_OVERLAP
                          (optional, user-controlled).
 
-  3. MISALIGNMENT      — conduits meeting at a junction whose directions are
+  3. MISALIGNMENT      — elements meeting at a junction whose directions are
                          not aligned in plan and/or elevation.
 
-Designed for point-cloud-based conduit modeling where small overlaps between
-endpoints are normal practice instead of using bend fittings.
+Supports:
+  - Electrical Conduits & Conduit Fittings
+  - Pipes & Pipe Fittings
 """
 
-__title__  = "Conduit\nAlign Check"
+__title__  = "Conduit & Pipe\nAlign Check"
 __author__ = "Tahir Sanwarwala"
 __doc__    = (
-    "Check electrical conduit connections in the active view for gaps, "
-    "excessive overlaps, and angular misalignment. Flags all issues in a "
-    "single combined report."
+    "Check electrical conduits, pipes, and fittings in the active view for gaps, "
+    "excessive overlaps, and angular misalignment. Flags all issues in an isolated "
+    "3D view with graphic color overrides and a clickable report."
 )
 
 import clr
@@ -35,12 +37,20 @@ clr.AddReference("WindowsBase")
 
 from Autodesk.Revit.DB import (
     BuiltInCategory,
+    Color,
+    DisplayStyle,
     ElementId,
+    ElementMulticategoryFilter,
+    FillPatternElement,
     FilteredElementCollector,
+    OverrideGraphicSettings,
+    TemporaryViewMode,
+    View3D,
+    ViewDetailLevel,
+    ViewFamily,
+    ViewFamilyType,
     XYZ,
 )
-from Autodesk.Revit.DB.Electrical import Conduit
-
 from pyrevit import revit, forms, script
 
 import System.Windows as SW
@@ -57,24 +67,28 @@ logger = script.get_logger()
 # DEFAULT CONFIGURATION  (used to pre-populate the UI)
 # =============================================================================
 
-_DEF_ANGLE_TOL_DEG  = 10.0        # degrees
-_DEF_OFFSET_TOL_IN  = 0.03125     # 1/32 inch
-_DEF_MIN_GAP_IN     = 0.0625      # 1/16 inch
-_DEF_GAP_MAX_IN     = 1.0         # 1 inch
-_DEF_MAX_OVERLAP_IN = 0.25        # 1/4 inch
-_DEF_CHECK_OVERLAP  = False       # Excessive-overlap check OFF by default
+_DEF_CHECK_CONDUITS             = True        # Check Conduits & Fittings by default
+_DEF_IGNORE_CONDUIT_FITTING_GAPS = True        # Ignore gaps between two conduit fittings
+_DEF_CHECK_PIPES                 = True        # Check Pipes & Fittings by default
+_DEF_IGNORE_PIPE_FITTING_GAPS    = True        # Ignore gaps between two pipe fittings
+_DEF_ANGLE_TOL_DEG               = 10.0        # degrees
+_DEF_OFFSET_TOL_IN               = 0.03125     # 1/32 inch
+_DEF_MIN_GAP_IN                  = 0.0625      # 1/16 inch
+_DEF_GAP_MAX_IN                  = 1.0         # 1 inch
+_DEF_MAX_OVERLAP_IN              = 0.25        # 1/4 inch
+_DEF_CHECK_OVERLAP               = False       # Excessive-overlap check OFF by default
 
 
 # =============================================================================
-# SETTINGS DIALOG
+# SETTINGS DIALOG (WPF / XAML)
 # =============================================================================
 
 XAML = u"""
 <Window
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    Title="Conduit Alignment Check — Settings"
-    Width="420" SizeToContent="Height"
+    Title="Conduit &amp; Pipe Alignment Check — Settings"
+    Width="440" SizeToContent="Height"
     ResizeMode="NoResize"
     WindowStartupLocation="CenterScreen"
     Background="#1e1e2e"
@@ -83,21 +97,18 @@ XAML = u"""
     FontSize="13">
 
   <Window.Resources>
-    <!-- Label style -->
     <Style TargetType="TextBlock" x:Key="Lbl">
       <Setter Property="Foreground"   Value="#cdd6f4"/>
       <Setter Property="VerticalAlignment" Value="Center"/>
       <Setter Property="Margin"       Value="0,0,8,0"/>
     </Style>
 
-    <!-- Unit hint style -->
     <Style TargetType="TextBlock" x:Key="Unit">
       <Setter Property="Foreground"   Value="#6c7086"/>
       <Setter Property="VerticalAlignment" Value="Center"/>
       <Setter Property="Margin"       Value="4,0,0,0"/>
     </Style>
 
-    <!-- Text box style -->
     <Style TargetType="TextBox">
       <Setter Property="Background"   Value="#313244"/>
       <Setter Property="Foreground"   Value="#cdd6f4"/>
@@ -110,14 +121,12 @@ XAML = u"""
       <Setter Property="FontFamily"   Value="Consolas"/>
     </Style>
 
-    <!-- CheckBox style -->
     <Style TargetType="CheckBox">
       <Setter Property="Foreground"   Value="#cdd6f4"/>
       <Setter Property="VerticalAlignment" Value="Center"/>
       <Setter Property="Margin"       Value="0,0,0,0"/>
     </Style>
 
-    <!-- Section header -->
     <Style TargetType="TextBlock" x:Key="Sec">
       <Setter Property="Foreground"   Value="#89b4fa"/>
       <Setter Property="FontWeight"   Value="SemiBold"/>
@@ -125,7 +134,6 @@ XAML = u"""
       <Setter Property="Margin"       Value="0,14,0,6"/>
     </Style>
 
-    <!-- Primary button -->
     <Style TargetType="Button" x:Key="BtnPrimary">
       <Setter Property="Background"   Value="#89b4fa"/>
       <Setter Property="Foreground"   Value="#1e1e2e"/>
@@ -135,7 +143,6 @@ XAML = u"""
       <Setter Property="Cursor"       Value="Hand"/>
     </Style>
 
-    <!-- Cancel button -->
     <Style TargetType="Button" x:Key="BtnCancel">
       <Setter Property="Background"   Value="#45475a"/>
       <Setter Property="Foreground"   Value="#cdd6f4"/>
@@ -148,12 +155,32 @@ XAML = u"""
   <StackPanel Margin="24,20,24,20">
 
     <!-- ── Title ─────────────────────────────────────────────────── -->
-    <TextBlock Text="Conduit Alignment Check"
+    <TextBlock Text="Conduit &amp; Pipe Alignment Check"
                FontSize="16" FontWeight="Bold"
                Foreground="#cba6f7" Margin="0,0,0,4"/>
-    <TextBlock Text="Configure tolerances then click Run to scan the active view."
+    <TextBlock Text="Configure categories &amp; tolerances then click Run Check."
                Foreground="#6c7086" FontSize="11" Margin="0,0,0,2"/>
     <Separator Background="#313244" Margin="0,10,0,0"/>
+
+    <!-- ── Categories to Check ───────────────────────────────────── -->
+    <TextBlock Style="{StaticResource Sec}" Text="&#x25B6;  Elements to Check"/>
+
+    <CheckBox x:Name="ChkConduits"
+              Content="Electrical Conduits &amp; Fittings"
+              IsChecked="True"
+              Margin="0,0,0,3"/>
+    <CheckBox x:Name="ChkIgnoreConduitFittingGaps"
+              Content="Ignore Gaps between Two Conduit Fittings"
+              IsChecked="True"
+              Margin="20,0,0,6"/>
+    <CheckBox x:Name="ChkPipes"
+              Content="Pipes &amp; Pipe Fittings"
+              IsChecked="True"
+              Margin="0,0,0,3"/>
+    <CheckBox x:Name="ChkIgnorePipeFittingGaps"
+              Content="Ignore Gaps between Two Pipe Fittings"
+              IsChecked="True"
+              Margin="20,0,0,6"/>
 
     <!-- ── Angular Tolerance ─────────────────────────────────────── -->
     <TextBlock Style="{StaticResource Sec}" Text="&#x25B6;  Angular Alignment"/>
@@ -248,17 +275,10 @@ XAML = u"""
 
 
 def _show_settings_dialog():
-    """
-    Display the settings window and return a dict of tolerance values,
-    or None if the user cancelled.
-    """
+    """Display the settings window and return user configurations or None."""
     from System.Windows.Markup import XamlReader
-    from System import Exception as DotNetException
 
     win = XamlReader.Parse(XAML)
-
-    # Wire up event handlers via code-behind approach
-    result = [None]   # mutable container to capture output from event handlers
 
     def on_overlap_checked(sender, e):
         win.FindName("PnlOverlap").Visibility = SW.Visibility.Visible
@@ -271,9 +291,33 @@ def _show_settings_dialog():
         win.Close()
 
     def on_run(sender, e):
+        chk_c = win.FindName("ChkConduits").IsChecked
+        chk_p = win.FindName("ChkPipes").IsChecked
+        if not chk_c and not chk_p:
+            forms.alert(
+                "Please select at least one category to check (Conduits or Pipes).",
+                title="Selection Required"
+            )
+            return
         win.DialogResult = True
         win.Close()
 
+    def on_conduits_checked(sender, e):
+        win.FindName("ChkIgnoreConduitFittingGaps").IsEnabled = True
+
+    def on_conduits_unchecked(sender, e):
+        win.FindName("ChkIgnoreConduitFittingGaps").IsEnabled = False
+
+    def on_pipes_checked(sender, e):
+        win.FindName("ChkIgnorePipeFittingGaps").IsEnabled = True
+
+    def on_pipes_unchecked(sender, e):
+        win.FindName("ChkIgnorePipeFittingGaps").IsEnabled = False
+
+    win.FindName("ChkConduits").Checked  += on_conduits_checked
+    win.FindName("ChkConduits").Unchecked += on_conduits_unchecked
+    win.FindName("ChkPipes").Checked     += on_pipes_checked
+    win.FindName("ChkPipes").Unchecked   += on_pipes_unchecked
     win.FindName("ChkOverlap").Checked   += on_overlap_checked
     win.FindName("ChkOverlap").Unchecked += on_overlap_unchecked
     win.FindName("BtnCancel").Click      += on_cancel
@@ -289,15 +333,23 @@ def _show_settings_dialog():
         except Exception:
             return default
 
-    check_overlap = win.FindName("ChkOverlap").IsChecked
+    check_conduits              = win.FindName("ChkConduits").IsChecked
+    ignore_conduit_fitting_gaps = win.FindName("ChkIgnoreConduitFittingGaps").IsChecked
+    check_pipes                 = win.FindName("ChkPipes").IsChecked
+    ignore_pipe_fitting_gaps    = win.FindName("ChkIgnorePipeFittingGaps").IsChecked
+    check_overlap               = win.FindName("ChkOverlap").IsChecked
 
     return {
-        "angle_tol_deg":  _read_float("TxtAngle",      _DEF_ANGLE_TOL_DEG),
-        "offset_tol_in":  _read_float("TxtOffset",     _DEF_OFFSET_TOL_IN),
-        "min_gap_in":     _read_float("TxtMinGap",     _DEF_MIN_GAP_IN),
-        "gap_max_in":     _read_float("TxtGapMax",     _DEF_GAP_MAX_IN),
-        "check_overlap":  bool(check_overlap),
-        "max_overlap_in": _read_float("TxtMaxOverlap", _DEF_MAX_OVERLAP_IN),
+        "check_conduits":              bool(check_conduits),
+        "ignore_conduit_fitting_gaps": bool(ignore_conduit_fitting_gaps) and bool(check_conduits),
+        "check_pipes":                 bool(check_pipes),
+        "ignore_pipe_fitting_gaps":    bool(ignore_pipe_fitting_gaps) and bool(check_pipes),
+        "angle_tol_deg":               _read_float("TxtAngle",      _DEF_ANGLE_TOL_DEG),
+        "offset_tol_in":               _read_float("TxtOffset",     _DEF_OFFSET_TOL_IN),
+        "min_gap_in":                  _read_float("TxtMinGap",     _DEF_MIN_GAP_IN),
+        "gap_max_in":                  _read_float("TxtGapMax",     _DEF_GAP_MAX_IN),
+        "check_overlap":               bool(check_overlap),
+        "max_overlap_in":              _read_float("TxtMaxOverlap", _DEF_MAX_OVERLAP_IN),
     }
 
 
@@ -305,85 +357,171 @@ def _show_settings_dialog():
 # DATA STRUCTURES
 # =============================================================================
 
-class ConduitData:
-    """Holds extracted geometric data for one conduit element."""
+class MEPElementData:
+    """Holds metadata and endpoint list for an MEP element."""
 
-    def __init__(self, element_id, start_pt, end_pt, diameter):
-        self.element_id = element_id
-        self.start_pt   = start_pt
-        self.end_pt     = end_pt
-        self.diameter   = diameter   # outside diameter in feet
-        dx = end_pt.X - start_pt.X
-        dy = end_pt.Y - start_pt.Y
-        dz = end_pt.Z - start_pt.Z
-        length = math.sqrt(dx * dx + dy * dy + dz * dz)
-        if length > 1e-9:
-            self.direction = XYZ(dx / length, dy / length, dz / length)
-        else:
-            self.direction = XYZ(0, 0, 0)
-        self.length = length
+    def __init__(self, element_id, domain, category_name, is_fitting=False):
+        self.element_id    = element_id      # ElementId
+        self.domain        = domain          # "Conduit" or "Pipe"
+        self.category_name = category_name   # "Conduit", "Conduit Fitting", "Pipe", "Pipe Fitting"
+        self.is_fitting    = is_fitting
+        self.endpoints     = []              # list of EndpointInfo
 
 
 class EndpointInfo:
-    """Associates an endpoint location with its parent conduit and which end."""
+    """Represents one connector / end of an MEP element."""
 
-    def __init__(self, conduit_data, point, end_index):
-        # end_index: 0 = start of conduit, 1 = end of conduit
-        self.conduit_data = conduit_data
-        self.point        = point
-        self.end_index    = end_index
+    def __init__(self, element_data, point, end_index, outward_vec, diameter):
+        self.element_data = element_data     # MEPElementData
+        self.point        = point            # XYZ
+        self.end_index    = end_index        # 0, 1, or connector index
+        self.outward_vec  = outward_vec      # XYZ unit vector pointing outward from element
+        self.diameter     = diameter         # float in feet
 
 
 class FlaggedPair:
-    """A flagged conduit pair with an issue type."""
+    """A flagged connection pair with an issue type."""
 
     def __init__(self, ep_a, ep_b, issue_type):
         self.ep_a       = ep_a
         self.ep_b       = ep_b
-        self.issue_type = issue_type   # "Gap", "Excessive Overlap", "Misaligned (Plan)", etc.
+        self.issue_type = issue_type
 
 
 # =============================================================================
-# STEP 1 — COLLECT CONDUITS
+# STEP 1 — COLLECT MEP ELEMENTS (CONDUITS, PIPES, FITTINGS)
 # =============================================================================
 
-def collect_conduits():
-    """Collect all Electrical Conduit elements visible in the active view."""
+def collect_mep_elements(check_conduits=True, check_pipes=True):
+    """
+    Collect Conduits, Conduit Fittings, Pipes, and Pipe Fittings
+    visible in the active view based on user selection.
+    """
     active_view = doc.ActiveView
+    categories = []
+    if check_conduits:
+        categories.append(BuiltInCategory.OST_Conduit)
+        categories.append(BuiltInCategory.OST_ConduitFitting)
+    if check_pipes:
+        categories.append(BuiltInCategory.OST_PipeCurves)
+        categories.append(BuiltInCategory.OST_PipeFitting)
+
+    if not categories:
+        return [], {}
+
+    from System.Collections.Generic import List as NetList
+    cat_filter_list = NetList[BuiltInCategory]()
+    for c in categories:
+        cat_filter_list.Add(c)
+
+    multi_filter = ElementMulticategoryFilter(cat_filter_list)
+
     collector = (
         FilteredElementCollector(doc, active_view.Id)
-        .OfCategory(BuiltInCategory.OST_Conduit)
+        .WherePasses(multi_filter)
         .WhereElementIsNotElementType()
     )
 
-    conduit_list = []
+    element_data_list = []
+    counts = {
+        "Conduit": 0,
+        "Conduit Fitting": 0,
+        "Pipe": 0,
+        "Pipe Fitting": 0,
+    }
+
     for elem in collector:
-        loc = elem.Location
-        if loc is None:
+        cat_id = elem.Category.Id.IntegerValue if elem.Category else 0
+
+        # Determine domain and category label
+        if cat_id == int(BuiltInCategory.OST_Conduit):
+            domain = "Conduit"
+            cat_name = "Conduit"
+            is_fitting = False
+        elif cat_id == int(BuiltInCategory.OST_ConduitFitting):
+            domain = "Conduit"
+            cat_name = "Conduit Fitting"
+            is_fitting = True
+        elif cat_id == int(BuiltInCategory.OST_PipeCurves):
+            domain = "Pipe"
+            cat_name = "Pipe"
+            is_fitting = False
+        elif cat_id == int(BuiltInCategory.OST_PipeFitting):
+            domain = "Pipe"
+            cat_name = "Pipe Fitting"
+            is_fitting = True
+        else:
             continue
-        try:
-            curve = loc.Curve
-        except Exception:
-            continue
-        if curve is None:
-            continue
 
-        start_pt = curve.GetEndPoint(0)
-        end_pt   = curve.GetEndPoint(1)
+        # 1. Linear curve elements (Conduit, Pipe)
+        if not is_fitting and hasattr(elem, "Location") and hasattr(elem.Location, "Curve") and elem.Location.Curve:
+            curve = elem.Location.Curve
+            p0 = curve.GetEndPoint(0)
+            p1 = curve.GetEndPoint(1)
+            v = XYZ(p1.X - p0.X, p1.Y - p0.Y, p1.Z - p0.Z)
+            length = _vec_length(v)
+            if length < 1e-9:
+                continue
 
-        diam = 1.0 / 12.0  # fallback: 1 inch
-        diam_param = elem.LookupParameter("Outside Diameter")
-        if diam_param and diam_param.HasValue:
-            diam = diam_param.AsDouble()
+            dir_vec = XYZ(v.X / length, v.Y / length, v.Z / length)
 
-        cd = ConduitData(elem.Id, start_pt, end_pt, diam)
+            # Outside diameter lookup
+            diam = 1.0 / 12.0
+            for p_name in ("Outside Diameter", "Diameter", "Pipe Segment"):
+                p = elem.LookupParameter(p_name)
+                if p and p.HasValue:
+                    try:
+                        diam = p.AsDouble()
+                        break
+                    except Exception:
+                        pass
 
-        if cd.length < 1e-9:
-            continue
+            ed = MEPElementData(elem.Id, domain, cat_name, is_fitting=False)
+            ep0 = EndpointInfo(ed, p0, end_index=0, outward_vec=XYZ(-dir_vec.X, -dir_vec.Y, -dir_vec.Z), diameter=diam)
+            ep1 = EndpointInfo(ed, p1, end_index=1, outward_vec=dir_vec, diameter=diam)
+            ed.endpoints = [ep0, ep1]
+            element_data_list.append(ed)
+            counts[cat_name] += 1
 
-        conduit_list.append(cd)
+        # 2. Fitting elements (ConduitFitting, PipeFitting)
+        elif is_fitting:
+            connectors = []
+            try:
+                if hasattr(elem, "MEPModel") and elem.MEPModel and elem.MEPModel.ConnectorManager:
+                    connectors = list(elem.MEPModel.ConnectorManager.Connectors)
+                elif hasattr(elem, "ConnectorManager") and elem.ConnectorManager:
+                    connectors = list(elem.ConnectorManager.Connectors)
+            except Exception:
+                pass
 
-    return conduit_list
+            if not connectors:
+                continue
+
+            ed = MEPElementData(elem.Id, domain, cat_name, is_fitting=True)
+            eps = []
+            for i, conn in enumerate(connectors):
+                origin = conn.Origin
+                out_vec = conn.CoordinateSystem.BasisZ
+                out_len = _vec_length(out_vec)
+                if out_len > 1e-9:
+                    out_vec = XYZ(out_vec.X / out_len, out_vec.Y / out_len, out_vec.Z / out_len)
+                else:
+                    out_vec = XYZ(0, 0, 1)
+
+                diam = 1.0 / 12.0
+                try:
+                    diam = conn.Radius * 2.0
+                except Exception:
+                    pass
+
+                ep = EndpointInfo(ed, origin, end_index=i, outward_vec=out_vec, diameter=diam)
+                eps.append(ep)
+
+            ed.endpoints = eps
+            element_data_list.append(ed)
+            counts[cat_name] += 1
+
+    return element_data_list, counts
 
 
 # =============================================================================
@@ -433,32 +571,13 @@ def _angle_between_deg(a, b):
     return math.degrees(math.acos(cos_val))
 
 
-def _outward_vec(ep):
-    """Direction pointing AWAY from the junction back along the conduit body."""
-    d = ep.conduit_data.direction
-    return XYZ(-d.X, -d.Y, -d.Z) if ep.end_index == 1 else d
-
-
-def _free_end_vec(ep):
-    """Direction pointing into free space BEYOND the endpoint."""
-    d = ep.conduit_data.direction
-    return XYZ(-d.X, -d.Y, -d.Z) if ep.end_index == 0 else d
-
-
 # =============================================================================
 # STEP 3 — UNIFIED ISSUE DETECTION
 # =============================================================================
 
-def find_all_issues(conduit_list, cfg):
+def find_all_issues(element_data_list, cfg):
     """
-    Single-pass detection of all conduit endpoint issues.
-
-    Args:
-        conduit_list : list of ConduitData
-        cfg          : dict returned by _show_settings_dialog()
-                       Keys (all in feet internally):
-                           angle_tol_deg, offset_tol, min_gap,
-                           gap_max, check_overlap, max_overlap
+    Single-pass detection of all conduit, pipe, and fitting connection issues.
     """
     ANGLE_TOL_DEG = cfg["angle_tol_deg"]
     OFFSET_TOL    = cfg["offset_tol"]      # feet
@@ -469,23 +588,25 @@ def find_all_issues(conduit_list, cfg):
 
     cell_size = GAP_MAX if GAP_MAX > 1e-9 else 0.5
 
-    # Build endpoint list + spatial grid
+    # Build flat endpoint list + spatial grid
     all_eps = []
     grid    = {}
 
-    for cd in conduit_list:
-        for end_idx, pt in ((0, cd.start_pt), (1, cd.end_pt)):
-            ep  = EndpointInfo(cd, pt, end_idx)
-            i   = len(all_eps)
+    for ed in element_data_list:
+        for ep in ed.endpoints:
+            i = len(all_eps)
             all_eps.append(ep)
-            key = _cell_key(pt, cell_size)
+            key = _cell_key(ep.point, cell_size)
             grid.setdefault(key, []).append(i)
 
-    flagged  = []
-    visited  = set()
+    flagged = []
+    visited = set()
+
+    IGNORE_CONDUIT_FITTING_GAPS = cfg.get("ignore_conduit_fitting_gaps", False)
+    IGNORE_PIPE_FITTING_GAPS    = cfg.get("ignore_pipe_fitting_gaps", False)
 
     for idx_a, ep_a in enumerate(all_eps):
-        cd_a = ep_a.conduit_data
+        ed_a = ep_a.element_data
         for nk in _neighbor_keys(_cell_key(ep_a.point, cell_size)):
             if nk not in grid:
                 continue
@@ -493,9 +614,14 @@ def find_all_issues(conduit_list, cfg):
                 if idx_b <= idx_a:
                     continue
                 ep_b = all_eps[idx_b]
-                cd_b = ep_b.conduit_data
+                ed_b = ep_b.element_data
 
-                if cd_a.element_id == cd_b.element_id:
+                # Skip if from different domains (Conduit vs Pipe)
+                if ed_a.domain != ed_b.domain:
+                    continue
+
+                # Skip same element
+                if ed_a.element_id == ed_b.element_id:
                     continue
 
                 pk = (idx_a, idx_b)
@@ -504,10 +630,7 @@ def find_all_issues(conduit_list, cfg):
                 visited.add(pk)
 
                 dist = _distance(ep_a.point, ep_b.point)
-                if dist > GAP_MAX:
-                    continue
-
-                if dist < 1e-9:
+                if dist > GAP_MAX or dist < 1e-9:
                     continue
 
                 vec_ab = XYZ(
@@ -517,7 +640,7 @@ def find_all_issues(conduit_list, cfg):
                 )
 
                 # ── Coaxial filter: reject side-by-side parallel runs ──────
-                d_ref     = cd_a.direction
+                d_ref     = ep_a.outward_vec
                 along     = _dot(vec_ab, d_ref)
                 perp_v    = XYZ(
                     vec_ab.X - along * d_ref.X,
@@ -525,30 +648,34 @@ def find_all_issues(conduit_list, cfg):
                     vec_ab.Z - along * d_ref.Z,
                 )
                 perp_dist = _vec_length(perp_v)
-                max_diam  = max(cd_a.diameter, cd_b.diameter)
+                max_diam  = max(ep_a.diameter, ep_b.diameter)
 
                 if perp_dist > max_diam:
                     continue  # side-by-side — skip
 
                 # ── Facing check ───────────────────────────────────────────
-                free_a = _free_end_vec(ep_a)
-                free_b = _free_end_vec(ep_b)
-
-                if _dot(free_a, free_b) >= 0:
+                # Outward vectors must point toward each other (dot < 0.2)
+                if _dot(ep_a.outward_vec, ep_b.outward_vec) >= 0.2:
                     continue  # not facing each other
 
                 # ── Direction parallelism ──────────────────────────────────
-                angle_dirs    = _angle_between_deg(cd_a.direction, cd_b.direction)
-                angle_parallel = min(angle_dirs, abs(180.0 - angle_dirs))
-                dirs_parallel  = angle_parallel <= ANGLE_TOL_DEG
+                angle_dirs = _angle_between_deg(ep_a.outward_vec, ep_b.outward_vec)
+                dev_3d     = abs(180.0 - angle_dirs)
+                dirs_parallel = dev_3d <= ANGLE_TOL_DEG
 
                 # ── Collinearity (same axis) ───────────────────────────────
                 is_collinear = dirs_parallel and perp_dist <= OFFSET_TOL
 
                 if is_collinear:
-                    dot_facing = _dot(free_a, vec_ab)
+                    dot_facing = _dot(ep_a.outward_vec, vec_ab)
 
                     if dot_facing > 1e-9:
+                        # Check if ignoring gaps between two fittings of same domain
+                        if IGNORE_CONDUIT_FITTING_GAPS and ed_a.domain == "Conduit" and ed_b.domain == "Conduit" and ed_a.is_fitting and ed_b.is_fitting:
+                            continue
+                        if IGNORE_PIPE_FITTING_GAPS and ed_a.domain == "Pipe" and ed_b.domain == "Pipe" and ed_a.is_fitting and ed_b.is_fitting:
+                            continue
+
                         # GAP — flag if >= MIN_GAP
                         if dist >= MIN_GAP:
                             flagged.append(FlaggedPair(ep_a, ep_b, "Gap"))
@@ -559,14 +686,12 @@ def find_all_issues(conduit_list, cfg):
                             flagged.append(FlaggedPair(ep_a, ep_b, "Excessive Overlap"))
 
                 else:
-                    # Not collinear — check angular / offset misalignment.
-                    # Only relevant when endpoints are very close
-                    # (within MAX_OVERLAP, i.e. typical junction range).
+                    # Not collinear — check angular / offset misalignment
                     if dist > MAX_OVERLAP:
                         continue
 
-                    out_a = _outward_vec(ep_a)
-                    out_b = _outward_vec(ep_b)
+                    out_a = ep_a.outward_vec
+                    out_b = ep_b.outward_vec
 
                     # 3D angular deviation
                     angle_3d = _angle_between_deg(out_a, out_b)
@@ -597,11 +722,11 @@ def find_all_issues(conduit_list, cfg):
                         ep_b.point.Y - ep_a.point.Y,
                         ep_b.point.Z - ep_a.point.Z,
                     )
-                    along2 = _dot(delta, cd_a.direction)
+                    along2 = _dot(delta, ep_a.outward_vec)
                     perp2  = XYZ(
-                        delta.X - along2 * cd_a.direction.X,
-                        delta.Y - along2 * cd_a.direction.Y,
-                        delta.Z - along2 * cd_a.direction.Z,
+                        delta.X - along2 * ep_a.outward_vec.X,
+                        delta.Y - along2 * ep_a.outward_vec.Y,
+                        delta.Z - along2 * ep_a.outward_vec.Z,
                     )
                     perp_plan_ft = math.sqrt(perp2.X ** 2 + perp2.Y ** 2)
                     perp_elev_ft = abs(perp2.Z)
@@ -635,16 +760,16 @@ def find_all_issues(conduit_list, cfg):
                     elif elev_bad:
                         issue = "Misaligned (Elevation)"
                     else:
-                        continue  # within tolerance — OK
+                        continue
 
                     flagged.append(FlaggedPair(ep_a, ep_b, issue))
 
-    # ── Deduplicate: one entry per conduit pair per issue type ─────────────
+    # ── Deduplicate: one entry per element pair per issue type ─────────────
     seen_pairs = set()
     result     = []
     for fp in flagged:
-        id_a = fp.ep_a.conduit_data.element_id.IntegerValue
-        id_b = fp.ep_b.conduit_data.element_id.IntegerValue
+        id_a = fp.ep_a.element_data.element_id.IntegerValue
+        id_b = fp.ep_b.element_data.element_id.IntegerValue
         ck   = (min(id_a, id_b), max(id_a, id_b), fp.issue_type)
         if ck not in seen_pairs:
             seen_pairs.add(ck)
@@ -655,12 +780,36 @@ def find_all_issues(conduit_list, cfg):
 
 
 # =============================================================================
-# STEP 4 — REPORT + SELECTION
+# STEP 4 — REPORT & 3D VIEW ISOLATION
 # =============================================================================
 
-def print_report(flagged_pairs, total_conduits, cfg):
+ISSUE_COLORS = {
+    "Gap": {
+        "hex": "#ff8c00",           # Dark Orange
+        "rgb": (255, 140, 0),
+    },
+    "Excessive Overlap": {
+        "hex": "#e53935",           # Crimson Red
+        "rgb": (229, 57, 53),
+    },
+    "Misaligned (Plan)": {
+        "hex": "#1e88e5",           # Blue
+        "rgb": (30, 136, 229),
+    },
+    "Misaligned (Elevation)": {
+        "hex": "#8e24aa",           # Purple
+        "rgb": (142, 36, 170),
+    },
+    "Misaligned (Plan + Elevation)": {
+        "hex": "#d81b60",           # Magenta
+        "rgb": (216, 27, 96),
+    },
+}
+
+
+def print_report(flagged_pairs, counts, cfg):
     """Print a single combined HTML table to the pyRevit output window."""
-    output.set_title("Conduit Alignment Check Results")
+    output.set_title("Conduit & Pipe Alignment Check Results")
 
     S_TABLE = (
         'border-collapse:collapse; width:100%; '
@@ -676,10 +825,12 @@ def print_report(flagged_pairs, total_conduits, cfg):
     def th(text):
         return '<th style="{}">{}</th>'.format(S_TH, text)
 
-    def td(text, center=False):
+    def td(text, center=False, color=None):
         style = S_TD
         if center:
             style += ' text-align:center;'
+        if color:
+            style += ' color:{}; font-weight:bold;'.format(color)
         return '<td style="{}">{}</td>'.format(style, text)
 
     # Count by type
@@ -689,18 +840,28 @@ def print_report(flagged_pairs, total_conduits, cfg):
 
     html = []
     html.append('<div style="font-family:Consolas,monospace; font-size:13px; padding:4px 0;">')
-    html.append('<h2 style="margin:0 0 4px 0;">Conduit Alignment Check</h2>')
+    html.append('<h2 style="margin:0 0 4px 0;">Conduit &amp; Pipe Alignment Check</h2>')
     html.append('<hr style="margin:4px 0 8px 0; border:none; border-top:1px solid #aaa;">')
 
     # Summary
     html.append('<h3 style="margin:0 0 4px 0;">Summary</h3>')
     html.append('<ul style="margin:0 0 8px 16px; padding:0;">')
-    html.append('<li>Conduits scanned: <b>{}</b></li>'.format(total_conduits))
+
+    if cfg.get("check_conduits"):
+        html.append('<li>Conduits scanned: <b>{}</b> &nbsp;|&nbsp; Conduit Fittings: <b>{}</b></li>'.format(
+            counts.get("Conduit", 0), counts.get("Conduit Fitting", 0)
+        ))
+    if cfg.get("check_pipes"):
+        html.append('<li>Pipes scanned: <b>{}</b> &nbsp;|&nbsp; Pipe Fittings: <b>{}</b></li>'.format(
+            counts.get("Pipe", 0), counts.get("Pipe Fitting", 0)
+        ))
+
     html.append('<li>Issues found: <b style="color:{};">{}</b></li>'.format(
         '#cc3300' if flagged_pairs else 'green', len(flagged_pairs)
     ))
     for t in sorted(type_counts):
-        html.append('<li>{}: <b>{}</b></li>'.format(t, type_counts[t]))
+        color = ISSUE_COLORS.get(t, {}).get("hex", "#333")
+        html.append('<li style="color:{};">{}: <b>{}</b></li>'.format(color, t, type_counts[t]))
     html.append('</ul>')
     html.append('<hr style="margin:4px 0 10px 0; border:none; border-top:1px solid #aaa;">')
 
@@ -725,41 +886,55 @@ def print_report(flagged_pairs, total_conduits, cfg):
         )
     )
 
-    # Combined table (no Detail column, no type-cell colouring)
+    # Combined table with issue colors on column 1 (#) and Type column
     if flagged_pairs:
         html.append('<h3 style="margin:0 0 6px 0;">Flagged Issues</h3>')
         html.append('<table style="{}">'.format(S_TABLE))
         html.append('<tr>{}</tr>'.format(
-            ''.join(th(h) for h in ('#', 'Type', 'Conduit A', 'Conduit B'))
+            ''.join(th(h) for h in ('#', 'Type', 'Element A', 'Element B'))
         ))
         for i, fp in enumerate(flagged_pairs, 1):
-            id_a = output.linkify(fp.ep_a.conduit_data.element_id)
-            id_b = output.linkify(fp.ep_b.conduit_data.element_id)
+            id_a  = output.linkify(fp.ep_a.element_data.element_id)
+            id_b  = output.linkify(fp.ep_b.element_data.element_id)
+            cat_a = fp.ep_a.element_data.category_name
+            cat_b = fp.ep_b.element_data.category_name
+
+            label_a = '{} ({})'.format(id_a, cat_a)
+            label_b = '{} ({})'.format(id_b, cat_b)
+
+            color = ISSUE_COLORS.get(fp.issue_type, {}).get("hex", "#cdd6f4")
             html.append('<tr>')
-            html.append(td(str(i), center=True))
-            html.append(td(fp.issue_type))
-            html.append(td(id_a, center=True))
-            html.append(td(id_b, center=True))
+            html.append(td(str(i), center=True, color=color))
+            html.append(td(fp.issue_type, color=color))
+            html.append(td(label_a, center=True))
+            html.append(td(label_b, center=True))
             html.append('</tr>')
         html.append('</table>')
     else:
         html.append(
             '<p style="color:green; font-weight:bold;">&#10003; '
-            'No issues found. All conduit connections are within tolerance.</p>'
+            'No issues found. All connections are within tolerance.</p>'
         )
 
     html.append('</div>')
     output.print_html(''.join(html))
 
 
-def select_elements(flagged_pairs):
-    """Select all flagged conduit elements in Revit."""
+def isolate_flagged_in_3d_view(flagged_pairs):
+    """
+    Finds or creates a 3D Isometric View named 'Conduit & Pipe Align Check - Flagged'.
+    Sets:
+      - View Detail: Fine
+      - Graphic Display: Shaded
+      - Color Overrides on elements matching their misalignment type
+      - Temporarily isolates flagged elements and sets the view active.
+    """
     from System.Collections.Generic import List as NetList
 
     ids = set()
     for fp in flagged_pairs:
-        ids.add(fp.ep_a.conduit_data.element_id.IntegerValue)
-        ids.add(fp.ep_b.conduit_data.element_id.IntegerValue)
+        ids.add(fp.ep_a.element_data.element_id.IntegerValue)
+        ids.add(fp.ep_b.element_data.element_id.IntegerValue)
 
     if not ids:
         return
@@ -767,7 +942,96 @@ def select_elements(flagged_pairs):
     id_list = NetList[ElementId]()
     for int_id in ids:
         id_list.Add(ElementId(int_id))
-    uidoc.Selection.SetElementIds(id_list)
+
+    TARGET_VIEW_NAME = "Conduit & Pipe Align Check - Flagged"
+    target_view = None
+
+    with revit.Transaction("Setup Flagged 3D View"):
+        # 1. Look for existing 3D view with the target name
+        for v in FilteredElementCollector(doc).OfClass(View3D):
+            if not v.IsTemplate and v.Name == TARGET_VIEW_NAME:
+                target_view = v
+                break
+
+        # 2. If not found, create a new one
+        if not target_view:
+            vft_3d = None
+            for vft in FilteredElementCollector(doc).OfClass(ViewFamilyType):
+                if vft.ViewFamily == ViewFamily.ThreeDimensional:
+                    vft_3d = vft
+                    break
+
+            if vft_3d:
+                target_view = View3D.CreateIsometric(doc, vft_3d.Id)
+                target_view.Name = TARGET_VIEW_NAME
+
+        if target_view:
+            # 3. Configure view properties: Fine detail & Shaded display
+            target_view.DetailLevel = ViewDetailLevel.Fine
+            target_view.DisplayStyle = DisplayStyle.Shading
+
+            # 4. Reset previous temporary hide/isolate if active
+            if target_view.IsInTemporaryViewMode(TemporaryViewMode.TemporaryHideIsolate):
+                target_view.DisableTemporaryViewMode(TemporaryViewMode.TemporaryHideIsolate)
+
+            # 5. Clear previous element overrides on MEP elements in this view
+            empty_ogs = OverrideGraphicSettings()
+            mep_cats = NetList[BuiltInCategory]()
+            mep_cats.Add(BuiltInCategory.OST_Conduit)
+            mep_cats.Add(BuiltInCategory.OST_ConduitFitting)
+            mep_cats.Add(BuiltInCategory.OST_PipeCurves)
+            mep_cats.Add(BuiltInCategory.OST_PipeFitting)
+            mep_filter = ElementMulticategoryFilter(mep_cats)
+
+            for c_elem in FilteredElementCollector(doc, target_view.Id).WherePasses(mep_filter):
+                target_view.SetElementOverrides(c_elem.Id, empty_ogs)
+
+            # 6. Find a solid fill pattern for surface coloring
+            solid_fill = None
+            for fp_elem in FilteredElementCollector(doc).OfClass(FillPatternElement):
+                fill_pat = fp_elem.GetFillPattern()
+                if fill_pat and getattr(fill_pat, "IsSolidFill", False):
+                    solid_fill = fp_elem
+                    break
+                if "<solid" in fp_elem.Name.lower() or "solid fill" in fp_elem.Name.lower():
+                    solid_fill = fp_elem
+                    break
+
+            # 7. Apply color overrides per issue type
+            for fp in flagged_pairs:
+                issue_info = ISSUE_COLORS.get(
+                    fp.issue_type,
+                    {"hex": "#e53935", "rgb": (229, 57, 53)}
+                )
+                r, g, b = issue_info["rgb"]
+                rev_color = Color(r, g, b)
+
+                ogs = OverrideGraphicSettings()
+                ogs.SetProjectionLineColor(rev_color)
+                ogs.SetProjectionLineWeight(4)
+
+                if hasattr(ogs, "SetSurfaceForegroundPatternColor"):
+                    ogs.SetSurfaceForegroundPatternColor(rev_color)
+                    if solid_fill:
+                        ogs.SetSurfaceForegroundPatternId(solid_fill.Id)
+                        ogs.SetSurfaceForegroundPatternVisible(True)
+                elif hasattr(ogs, "SetProjectionFillColor"):
+                    ogs.SetProjectionFillColor(rev_color)
+                    if solid_fill:
+                        ogs.SetProjectionFillPatternId(solid_fill.Id)
+
+                target_view.SetElementOverrides(fp.ep_a.element_data.element_id, ogs)
+                target_view.SetElementOverrides(fp.ep_b.element_data.element_id, ogs)
+
+            # 8. Isolate flagged elements temporarily
+            target_view.IsolateElementsTemporary(id_list)
+
+    # 9. Switch active view in Revit UI
+    if target_view:
+        try:
+            uidoc.ActiveView = target_view
+        except Exception as e:
+            logger.warning("Could not set active view: {}".format(e))
 
 
 # =============================================================================
@@ -782,41 +1046,58 @@ def main():
 
     # Convert inch values → feet for internal use; keep inch copies for display
     cfg = {
-        "angle_tol_deg":  raw["angle_tol_deg"],
-        "offset_tol":     raw["offset_tol_in"]  / 12.0,
-        "offset_tol_in":  raw["offset_tol_in"],
-        "min_gap":        raw["min_gap_in"]      / 12.0,
-        "min_gap_in":     raw["min_gap_in"],
-        "gap_max":        raw["gap_max_in"]      / 12.0,
-        "gap_max_in":     raw["gap_max_in"],
-        "check_overlap":  raw["check_overlap"],
-        "max_overlap":    raw["max_overlap_in"]  / 12.0,
-        "max_overlap_in": raw["max_overlap_in"],
+        "check_conduits":              raw["check_conduits"],
+        "ignore_conduit_fitting_gaps": raw["ignore_conduit_fitting_gaps"],
+        "check_pipes":                 raw["check_pipes"],
+        "ignore_pipe_fitting_gaps":    raw["ignore_pipe_fitting_gaps"],
+        "angle_tol_deg":               raw["angle_tol_deg"],
+        "offset_tol":                  raw["offset_tol_in"]  / 12.0,
+        "offset_tol_in":               raw["offset_tol_in"],
+        "min_gap":                     raw["min_gap_in"]      / 12.0,
+        "min_gap_in":                  raw["min_gap_in"],
+        "gap_max":                     raw["gap_max_in"]      / 12.0,
+        "gap_max_in":                  raw["gap_max_in"],
+        "check_overlap":               raw["check_overlap"],
+        "max_overlap":                 raw["max_overlap_in"]  / 12.0,
+        "max_overlap_in":              raw["max_overlap_in"],
     }
 
-    # ── 2. Collect conduits ────────────────────────────────────────────────
-    conduit_list = collect_conduits()
+    # ── 2. Collect MEP elements ────────────────────────────────────────────
+    element_data_list, counts = collect_mep_elements(
+        check_conduits=cfg["check_conduits"],
+        check_pipes=cfg["check_pipes"]
+    )
 
-    if not conduit_list:
+    total_scanned = len(element_data_list)
+    if total_scanned == 0:
+        selected_types = []
+        if cfg["check_conduits"]:
+            selected_types.append("Conduits/Fittings")
+        if cfg["check_pipes"]:
+            selected_types.append("Pipes/Fittings")
+
         forms.alert(
-            "No electrical conduits found in the active view.\n\n"
-            "Make sure you are in a view that contains visible conduit elements.",
-            title="Conduit Align Check — No Conduits",
+            "No {} found in the active view.\n\n"
+            "Make sure you are in a view that contains visible elements.".format(
+                " or ".join(selected_types)
+            ),
+            title="No Elements Found",
         )
         script.exit()
 
-    total = len(conduit_list)
-    logger.debug("Collected {} conduits.".format(total))
+    logger.debug("Collected {} MEP elements from active view.".format(total_scanned))
 
     # ── 3. Detect issues ───────────────────────────────────────────────────
-    flagged = find_all_issues(conduit_list, cfg)
+    flagged = find_all_issues(element_data_list, cfg)
     logger.debug("Found {} flagged issues.".format(len(flagged)))
 
-    # ── 4. Report + select ─────────────────────────────────────────────────
-    print_report(flagged, total, cfg)
-
+    # ── 4. Isolate flagged elements in 3D view BEFORE printing report ──────
     if flagged:
-        select_elements(flagged)
+        isolate_flagged_in_3d_view(flagged)
+
+    # ── 5. Print report table ──────────────────────────────────────────────
+    print_report(flagged, counts, cfg)
 
 
-main()
+if __name__ == "__main__":
+    main()
