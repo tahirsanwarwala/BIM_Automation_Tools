@@ -3,4 +3,5 @@ layout:
   - SplitFloors
   - ConduitAlignCheck
   - ConduitAlignFix
+  - ConduitBendBuilder
 
