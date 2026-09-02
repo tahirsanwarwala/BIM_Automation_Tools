@@ -94,11 +94,18 @@ XAML = u"""
       <Setter Property="Foreground"   Value="#cdd6f4"/>
       <Setter Property="VerticalAlignment" Value="Center"/>
     </Style>
-    <Style TargetType="TextBlock" x:Key="Val">
+    <Style TargetType="TextBox">
+      <Setter Property="Background"   Value="#313244"/>
       <Setter Property="Foreground"   Value="#89b4fa"/>
-      <Setter Property="VerticalAlignment" Value="Center"/>
-      <Setter Property="Width"        Value="46"/>
+      <Setter Property="FontWeight"   Value="SemiBold"/>
+      <Setter Property="BorderBrush"  Value="#45475a"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="Padding"      Value="4,2"/>
+      <Setter Property="Width"        Value="60"/>
+      <Setter Property="HorizontalAlignment" Value="Right"/>
+      <Setter Property="VerticalAlignment"   Value="Center"/>
       <Setter Property="TextAlignment" Value="Right"/>
+      <Setter Property="CaretBrush"   Value="#cdd6f4"/>
     </Style>
     <Style TargetType="Slider">
       <Setter Property="VerticalAlignment" Value="Center"/>
@@ -123,56 +130,74 @@ XAML = u"""
   </Window.Resources>
 
   <StackPanel Margin="24,20,24,20">
-
     <TextBlock Text="Conduit Bend Builder"
                FontSize="16" FontWeight="Bold"
                Foreground="#cba6f7" Margin="0,0,0,4"/>
-    <TextBlock Text="Vertical kick then horizontal bend. Adjust sliders to reposition."
+    <TextBlock Text="Adjust bend offsets and radii using sliders or by typing direct numbers."
                Foreground="#6c7086" FontSize="11" TextWrapping="Wrap"
                Margin="0,0,0,14"/>
 
     <Separator Background="#313244" Margin="0,0,0,14"/>
 
-    <!-- ── Bend 1 Offset ────────────────────────────────────── -->
-    <Grid Margin="0,0,0,10">
-      <Grid.ColumnDefinitions>
-        <ColumnDefinition Width="*"/>
-        <ColumnDefinition Width="46"/>
-      </Grid.ColumnDefinitions>
-      <TextBlock Grid.Column="0" Style="{StaticResource Lbl}" Text="Bend 1 offset along Conduit A"/>
-      <TextBlock Grid.Column="1" Style="{StaticResource Val}" x:Name="LblOff1" Text="0 in"/>
-    </Grid>
-    <Slider x:Name="SldOffset1" Minimum="-36" Maximum="36" Value="0"
-            TickFrequency="1" IsSnapToTickEnabled="False"
-            Margin="0,0,0,14"/>
+    <!-- ── Bend 1 Controls ──────────────────────────────────── -->
+    <TextBlock Text="BEND 1 (Conduit A)" FontSize="11" FontWeight="Bold" Foreground="#cba6f7" Margin="0,0,0,6"/>
 
-    <!-- ── Bend 2 Offset ────────────────────────────────────── -->
-    <Grid Margin="0,0,0,10">
+    <Grid Margin="0,0,0,4">
       <Grid.ColumnDefinitions>
         <ColumnDefinition Width="*"/>
-        <ColumnDefinition Width="46"/>
+        <ColumnDefinition Width="Auto"/>
+        <ColumnDefinition Width="Auto"/>
       </Grid.ColumnDefinitions>
-      <TextBlock Grid.Column="0" Style="{StaticResource Lbl}" Text="Bend 2 offset along Conduit B"/>
-      <TextBlock Grid.Column="1" Style="{StaticResource Val}" x:Name="LblOff2" Text="0 in"/>
+      <TextBlock Grid.Column="0" Style="{StaticResource Lbl}" Text="Offset along Conduit A"/>
+      <TextBox   Grid.Column="1" x:Name="TxtOffset1" Text="0.0"/>
+      <TextBlock Grid.Column="2" Foreground="#6c7086" Margin="4,0,0,0" VerticalAlignment="Center" Text="in"/>
     </Grid>
-    <Slider x:Name="SldOffset2" Minimum="-36" Maximum="36" Value="0"
-            TickFrequency="1" IsSnapToTickEnabled="False"
-            Margin="0,0,0,14"/>
+    <Slider x:Name="SldOffset1" Minimum="-60" Maximum="60" Value="0"
+            TickFrequency="1" IsSnapToTickEnabled="False" Margin="0,0,0,8"/>
 
-    <!-- ── Intermediate Angle ───────────────────────────────── -->
-    <Grid Margin="0,0,0,10">
+    <Grid Margin="0,0,0,4">
       <Grid.ColumnDefinitions>
         <ColumnDefinition Width="*"/>
-        <ColumnDefinition Width="46"/>
+        <ColumnDefinition Width="Auto"/>
+        <ColumnDefinition Width="Auto"/>
       </Grid.ColumnDefinitions>
-      <TextBlock Grid.Column="0" Style="{StaticResource Lbl}" Text="Intermediate angle adjust"/>
-      <TextBlock Grid.Column="1" Style="{StaticResource Val}" x:Name="LblAngle" Text="0°"/>
+      <TextBlock Grid.Column="0" Style="{StaticResource Lbl}" Text="Bend Radius 1"/>
+      <TextBox   Grid.Column="1" x:Name="TxtRadius1" Text="6.0"/>
+      <TextBlock Grid.Column="2" Foreground="#6c7086" Margin="4,0,0,0" VerticalAlignment="Center" Text="in"/>
     </Grid>
-    <Slider x:Name="SldAngle" Minimum="-45" Maximum="45" Value="0"
-            TickFrequency="1" IsSnapToTickEnabled="False"
-            Margin="0,0,0,6"/>
-    <TextBlock Text="Rotates the intermediate conduit around its own axis (in the plane perpendicular to its direction)."
-               Foreground="#6c7086" FontSize="10" TextWrapping="Wrap" Margin="0,0,0,14"/>
+    <Slider x:Name="SldRadius1" Minimum="1" Maximum="48" Value="6"
+            TickFrequency="0.5" IsSnapToTickEnabled="False" Margin="0,0,0,14"/>
+
+    <Separator Background="#313244" Margin="0,0,0,14"/>
+
+    <!-- ── Bend 2 Controls ──────────────────────────────────── -->
+    <TextBlock Text="BEND 2 (Conduit B)" FontSize="11" FontWeight="Bold" Foreground="#cba6f7" Margin="0,0,0,6"/>
+
+    <Grid Margin="0,0,0,4">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="*"/>
+        <ColumnDefinition Width="Auto"/>
+        <ColumnDefinition Width="Auto"/>
+      </Grid.ColumnDefinitions>
+      <TextBlock Grid.Column="0" Style="{StaticResource Lbl}" Text="Offset along Conduit B"/>
+      <TextBox   Grid.Column="1" x:Name="TxtOffset2" Text="0.0"/>
+      <TextBlock Grid.Column="2" Foreground="#6c7086" Margin="4,0,0,0" VerticalAlignment="Center" Text="in"/>
+    </Grid>
+    <Slider x:Name="SldOffset2" Minimum="-60" Maximum="60" Value="0"
+            TickFrequency="1" IsSnapToTickEnabled="False" Margin="0,0,0,8"/>
+
+    <Grid Margin="0,0,0,4">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="*"/>
+        <ColumnDefinition Width="Auto"/>
+        <ColumnDefinition Width="Auto"/>
+      </Grid.ColumnDefinitions>
+      <TextBlock Grid.Column="0" Style="{StaticResource Lbl}" Text="Bend Radius 2"/>
+      <TextBox   Grid.Column="1" x:Name="TxtRadius2" Text="6.0"/>
+      <TextBlock Grid.Column="2" Foreground="#6c7086" Margin="4,0,0,0" VerticalAlignment="Center" Text="in"/>
+    </Grid>
+    <Slider x:Name="SldRadius2" Minimum="1" Maximum="48" Value="6"
+            TickFrequency="0.5" IsSnapToTickEnabled="False" Margin="0,0,0,14"/>
 
     <TextBlock x:Name="TxtError" Foreground="#f38ba8" TextWrapping="Wrap"
                Margin="0,0,0,12" Visibility="Collapsed"
@@ -912,10 +937,89 @@ def _find_open_connector(conduit_elem, target_pt):
 
     return best
 
+def _get_elbow_radius(elbow_elem):
+    """Get the bend radius of an elbow fitting in feet."""
+    if elbow_elem is None:
+        return None
+    bip_names = [
+        "RBS_CONDUIT_RADIUS_PARAM",
+        "RBS_CONDUIT_BEND_RADIUS_PARAM",
+        "RBS_CURVE_RADIUS_PARAM",
+        "GEOM_BEND_RADIUS",
+    ]
+    for bname in bip_names:
+        bip = getattr(BuiltInParameter, bname, None)
+        if bip is not None:
+            try:
+                p = elbow_elem.get_Parameter(bip)
+                if p and p.HasValue:
+                    return p.AsDouble()
+            except Exception:
+                pass
+    for p_name in ["Bend Radius", "Fitting Radius", "Radius", "BendRadius"]:
+        try:
+            p = elbow_elem.LookupParameter(p_name)
+            if p and p.HasValue:
+                return p.AsDouble()
+        except Exception:
+            pass
+    try:
+        symbol = elbow_elem.Symbol
+        if symbol:
+            for p_name in ["Bend Radius", "Fitting Radius", "Radius", "BendRadius"]:
+                p = symbol.LookupParameter(p_name)
+                if p and p.HasValue:
+                    return p.AsDouble()
+    except Exception:
+        pass
+    return None
+
+
+def _set_elbow_radius(elbow_elem, radius_ft):
+    """Set the bend radius of an elbow fitting in feet."""
+    if elbow_elem is None or radius_ft is None or radius_ft <= 0:
+        return False
+    bip_names = [
+        "RBS_CONDUIT_RADIUS_PARAM",
+        "RBS_CONDUIT_BEND_RADIUS_PARAM",
+        "RBS_CURVE_RADIUS_PARAM",
+        "GEOM_BEND_RADIUS",
+    ]
+    for bname in bip_names:
+        bip = getattr(BuiltInParameter, bname, None)
+        if bip is not None:
+            try:
+                p = elbow_elem.get_Parameter(bip)
+                if p and not p.IsReadOnly:
+                    p.Set(radius_ft)
+                    return True
+            except Exception:
+                pass
+    for p_name in ["Bend Radius", "Fitting Radius", "Radius", "BendRadius"]:
+        try:
+            p = elbow_elem.LookupParameter(p_name)
+            if p and not p.IsReadOnly:
+                p.Set(radius_ft)
+                return True
+        except Exception:
+            pass
+    try:
+        symbol = elbow_elem.Symbol
+        if symbol:
+            for p_name in ["Bend Radius", "Fitting Radius", "Radius", "BendRadius"]:
+                p = symbol.LookupParameter(p_name)
+                if p and not p.IsReadOnly:
+                    p.Set(radius_ft)
+                    return True
+    except Exception:
+        pass
+    return False
+
+
 def _create_bend_elements(info_a, info_b, solution, cfg, is_single_bend):
     """
     Create the bend element(s) and intermediate conduit.
-    Returns (True, "") on success, (False, error_msg) on failure.
+    Returns (True, "", (rad1_in, rad2_in)) on success, (False, error_msg, None) on failure.
     """
     conduit_a = info_a["element"]
     conduit_b = info_b["element"]
@@ -952,9 +1056,33 @@ def _create_bend_elements(info_a, info_b, solution, cfg, is_single_bend):
             try:
                 fitting = doc.Create.NewElbowFitting(conn_a, conn_b)
                 if fitting is None:
-                    return False, "Revit was unable to create the elbow fitting. Check routing preferences."
-            except InvalidOperationException as ex:
-                return False, "Failed to create elbow fitting: " + str(ex)
+                    return False, "Revit was unable to create the elbow fitting. Check routing preferences.", None
+            except InvalidOperationException:
+                return False, "Failed to create elbow fitting. Check conduit bend radius and routing preferences.", None
+
+            if cfg.get("radius1_ft"):
+                _set_elbow_radius(fitting, cfg["radius1_ft"])
+
+            # Trim conduit curves back to fitting connectors so no sharp extension is drawn past the fitting
+            doc.Regenerate()
+            try:
+                sock_a = conn_a.Origin
+                sock_b = conn_b.Origin
+                if info_a["open_end_idx"] == 0:
+                    conduit_a.Location.Curve = Line.CreateBound(sock_a, info_a["fixed_pt"])
+                else:
+                    conduit_a.Location.Curve = Line.CreateBound(info_a["fixed_pt"], sock_a)
+
+                if info_b["open_end_idx"] == 0:
+                    conduit_b.Location.Curve = Line.CreateBound(sock_b, info_b["fixed_pt"])
+                else:
+                    conduit_b.Location.Curve = Line.CreateBound(info_b["fixed_pt"], sock_b)
+                doc.Regenerate()
+            except Exception:
+                pass
+
+            rad1_in = (_get_elbow_radius(fitting) or 0.5) * 12.0
+            rad2_in = rad1_in
 
         else:
             # ── TWO BENDS + INTERMEDIATE ────────────────────────────
@@ -972,7 +1100,7 @@ def _create_bend_elements(info_a, info_b, solution, cfg, is_single_bend):
 
                 new_len_a = _distance(new_curve_a.GetEndPoint(0), new_curve_a.GetEndPoint(1))
                 if new_len_a < MIN_CONDUIT_LEN_FT * 0.5:
-                    return False, "Conduit A would be too short after trimming."
+                    return False, "Conduit A would be too short after trimming.", None
                 conduit_a.Location.Curve = new_curve_a
 
                 new_end_b = solution["new_end_b"]
@@ -983,12 +1111,12 @@ def _create_bend_elements(info_a, info_b, solution, cfg, is_single_bend):
 
                 new_len_b = _distance(new_curve_b.GetEndPoint(0), new_curve_b.GetEndPoint(1))
                 if new_len_b < MIN_CONDUIT_LEN_FT * 0.5:
-                    return False, "Conduit B would be too short after trimming."
+                    return False, "Conduit B would be too short after trimming.", None
                 conduit_b.Location.Curve = new_curve_b
 
             inter_len = _distance(inter_start, inter_end)
             if inter_len < MIN_CONDUIT_LEN_FT * 0.5:
-                return False, "Intermediate conduit would be too short. Conduits may be too close."
+                return False, "Intermediate conduit would be too short. Conduits may be too close.", None
 
             intermediate = Conduit.Create(doc, type_id, inter_start, inter_end, level_id)
 
@@ -1002,12 +1130,15 @@ def _create_bend_elements(info_a, info_b, solution, cfg, is_single_bend):
             conn_inter_1 = _find_open_connector(intermediate, inter_start)
 
             if conn_a is None or conn_inter_1 is None:
-                return False, "Could not find connectors for Elbow 1."
+                return False, "Could not find connectors for Elbow 1.", None
 
             try:
                 elbow_1 = doc.Create.NewElbowFitting(conn_a, conn_inter_1)
-            except InvalidOperationException as ex:
-                return False, "Failed to create Elbow 1: " + str(ex)
+            except InvalidOperationException:
+                return False, "Failed to create Elbow 1. Check bend radius or fitting preferences.", None
+
+            if cfg.get("radius1_ft"):
+                _set_elbow_radius(elbow_1, cfg["radius1_ft"])
 
             doc.Regenerate()
 
@@ -1015,17 +1146,48 @@ def _create_bend_elements(info_a, info_b, solution, cfg, is_single_bend):
             conn_b = _find_open_connector(conduit_b, solution["new_end_b"])
 
             if conn_inter_2 is None or conn_b is None:
-                return False, "Could not find connectors for Elbow 2."
+                return False, "Could not find connectors for Elbow 2.", None
 
             try:
                 elbow_2 = doc.Create.NewElbowFitting(conn_inter_2, conn_b)
-            except InvalidOperationException as ex:
-                return False, "Failed to create Elbow 2: " + str(ex)
+            except InvalidOperationException:
+                return False, "Failed to create Elbow 2. Check bend radius or fitting preferences.", None
 
-        return True, ""
+            if cfg.get("radius2_ft"):
+                _set_elbow_radius(elbow_2, cfg["radius2_ft"])
+
+            # Trim all conduit location curves back to actual fitting sockets so no sharp extensions remain
+            doc.Regenerate()
+            try:
+                sock_a = conn_a.Origin
+                sock_inter1 = conn_inter_1.Origin
+                sock_inter2 = conn_inter_2.Origin
+                sock_b = conn_b.Origin
+
+                if info_a["open_end_idx"] == 0:
+                    conduit_a.Location.Curve = Line.CreateBound(sock_a, info_a["fixed_pt"])
+                else:
+                    conduit_a.Location.Curve = Line.CreateBound(info_a["fixed_pt"], sock_a)
+
+                if info_b["open_end_idx"] == 0:
+                    conduit_b.Location.Curve = Line.CreateBound(sock_b, info_b["fixed_pt"])
+                else:
+                    conduit_b.Location.Curve = Line.CreateBound(info_b["fixed_pt"], sock_b)
+
+                if _distance(sock_inter1, sock_inter2) > MIN_CONDUIT_LEN_FT * 0.1:
+                    intermediate.Location.Curve = Line.CreateBound(sock_inter1, sock_inter2)
+
+                doc.Regenerate()
+            except Exception:
+                pass
+
+            rad1_in = (_get_elbow_radius(elbow_1) or 0.5) * 12.0
+            rad2_in = (_get_elbow_radius(elbow_2) or 0.5) * 12.0
+
+        return True, "", (rad1_in, rad2_in)
 
     except Exception as ex:
-        return False, "Unexpected error: " + str(ex)
+        return False, "Unexpected error: " + str(ex), None
 
 
 # =============================================================================
@@ -1036,13 +1198,12 @@ def solve_and_create(info_a, info_b, cfg):
     """
     Analyze the geometry of two conduits and create the appropriate bend(s).
     Always uses Vertical-First strategy.
-    Applies user-specified bend offsets and intermediate angle rotation.
-    Returns (True, "") on success, (False, friendly_error_msg) on failure.
+    Applies user-specified bend offsets and bend radii.
+    Returns (True, "", (rad1_in, rad2_in)) on success, (False, friendly_error_msg, None) on failure.
     """
     allow_single  = cfg["allow_single"]
     offset1_ft    = cfg.get("offset1_ft", 0.0)
     offset2_ft    = cfg.get("offset2_ft", 0.0)
-    angle_deg     = cfg.get("angle_deg", 0.0)
 
     is_coplanar = _check_coplanar(info_a, info_b)
     is_parallel = _check_parallel(info_a, info_b)
@@ -1050,7 +1211,7 @@ def solve_and_create(info_a, info_b, cfg):
     if is_parallel:
         solution = _solve_parallel_offset(info_a, info_b)
         if solution is None:
-            return False, "Conduits are parallel and collinear — no bend is needed, just extend one conduit."
+            return False, "Conduits are parallel and collinear — no bend is needed, just extend one conduit.", None
         return _create_bend_elements(info_a, info_b, solution, cfg, is_single_bend=False)
 
     if is_coplanar and allow_single:
@@ -1077,7 +1238,7 @@ def solve_and_create(info_a, info_b, cfg):
         solution = _solve_single_bend(info_a, info_b)
         if solution is not None:
             return _create_bend_elements(info_a, info_b, solution, cfg, is_single_bend=True)
-        return False, "Could not calculate a bend path between these conduits. Check that the conduits' open ends face each other."
+        return False, "Could not calculate a bend path between these conduits. Check that the conduits' open ends face each other.", None
 
     # Apply offsets: shift each bend point along its parent conduit's outward direction
     if abs(offset1_ft) > 1e-6 or abs(offset2_ft) > 1e-6:
@@ -1108,77 +1269,7 @@ def solve_and_create(info_a, info_b, cfg):
 
         solution["inter_length"] = _distance(solution["inter_start"], solution["inter_end"])
 
-    # Apply intermediate angle rotation around the intermediate conduit's own axis
-    if abs(angle_deg) > 0.1:
-        solution = _apply_inter_angle(solution, info_a, info_b, angle_deg)
-        if solution is None:
-            return False, "Angle adjustment pushed the intermediate conduit out of a modelable range."
-
     return _create_bend_elements(info_a, info_b, solution, cfg, is_single_bend=False)
-
-
-# =============================================================================
-# INTERMEDIATE ANGLE ROTATION HELPER
-# =============================================================================
-
-def _apply_inter_angle(solution, info_a, info_b, angle_deg):
-    """
-    Rotate the intermediate conduit's endpoint (inter_end = bend_pt_2) around
-    the intermediate's own axis by angle_deg degrees.
-    This tilts the intermediate segment sideways while keeping bend_pt_1 fixed.
-    Returns updated solution dict, or None if result is degenerate.
-    """
-    inter_start = solution["inter_start"]
-    inter_end   = solution["inter_end"]
-
-    # Axis of rotation = direction of the intermediate conduit
-    axis = _normalize(XYZ(
-        inter_end.X - inter_start.X,
-        inter_end.Y - inter_start.Y,
-        inter_end.Z - inter_start.Z,
-    ))
-    if _vec_length(axis) < 1e-9:
-        return None
-
-    # Rodrigues' rotation: rotate inter_end around the axis passing through inter_start
-    angle_rad = math.radians(angle_deg)
-    cos_a = math.cos(angle_rad)
-    sin_a = math.sin(angle_rad)
-
-    # Vector from pivot (inter_start) to point being rotated (inter_end)
-    v = XYZ(
-        inter_end.X - inter_start.X,
-        inter_end.Y - inter_start.Y,
-        inter_end.Z - inter_start.Z,
-    )
-
-    # Rodrigues formula: v_rot = v*cos + (k x v)*sin + k*(k.v)*(1-cos)
-    k = axis
-    kdotv = _dot(k, v)
-    kxv   = _cross(k, v)
-
-    v_rot = XYZ(
-        v.X * cos_a + kxv.X * sin_a + k.X * kdotv * (1 - cos_a),
-        v.Y * cos_a + kxv.Y * sin_a + k.Y * kdotv * (1 - cos_a),
-        v.Z * cos_a + kxv.Z * sin_a + k.Z * kdotv * (1 - cos_a),
-    )
-
-    new_inter_end = XYZ(
-        inter_start.X + v_rot.X,
-        inter_start.Y + v_rot.Y,
-        inter_start.Z + v_rot.Z,
-    )
-
-    new_len = _distance(inter_start, new_inter_end)
-    if new_len < MIN_CONDUIT_LEN_FT * 0.5:
-        return None
-
-    updated = dict(solution)
-    updated["inter_end"]    = new_inter_end
-    updated["bend_pt_2"]    = new_inter_end
-    updated["inter_length"] = new_len
-    # new_end_b stays fixed on Conduit B — the elbow connector will adjust
-    return updated
 
 
 # =============================================================================
@@ -1197,27 +1288,46 @@ class PreviewDialog:
         self.confirmed = False
         self.outer_transaction = Transaction(doc, "Conduit Bend Builder")
         self.outer_transaction.Start()
-        self.active_sub  = None
-        self.is_loaded   = False
-        self._updating   = False  # guard against recursive slider events
+        self.active_sub = None
+        self.is_loaded  = False
+        self._syncing   = False
+        self.radii_initialized = False
 
-        self.BtnConfirm  = self.win.FindName("BtnConfirm")
-        self.BtnCancel   = self.win.FindName("BtnCancel")
-        self.TxtError    = self.win.FindName("TxtError")
-        self.SldOffset1  = self.win.FindName("SldOffset1")
-        self.SldOffset2  = self.win.FindName("SldOffset2")
-        self.SldAngle    = self.win.FindName("SldAngle")
-        self.LblOff1     = self.win.FindName("LblOff1")
-        self.LblOff2     = self.win.FindName("LblOff2")
-        self.LblAngle    = self.win.FindName("LblAngle")
+        self.BtnConfirm = self.win.FindName("BtnConfirm")
+        self.BtnCancel  = self.win.FindName("BtnCancel")
+        self.TxtError   = self.win.FindName("TxtError")
+        self.SldOffset1 = self.win.FindName("SldOffset1")
+        self.SldOffset2 = self.win.FindName("SldOffset2")
+        self.TxtOffset1 = self.win.FindName("TxtOffset1")
+        self.TxtOffset2 = self.win.FindName("TxtOffset2")
+        self.SldRadius1 = self.win.FindName("SldRadius1")
+        self.SldRadius2 = self.win.FindName("SldRadius2")
+        self.TxtRadius1 = self.win.FindName("TxtRadius1")
+        self.TxtRadius2 = self.win.FindName("TxtRadius2")
 
-        self.SldOffset1.ValueChanged += self.on_slider_changed
-        self.SldOffset2.ValueChanged += self.on_slider_changed
-        self.SldAngle.ValueChanged   += self.on_slider_changed
-        self.BtnConfirm.Click  += self.on_confirm
-        self.BtnCancel.Click   += self.on_cancel
-        self.win.Closed        += self.on_closed
-        self.win.Loaded        += self.on_loaded
+        # Events for Offset Sliders
+        self.SldOffset1.ValueChanged += self.on_slider_off1_changed
+        self.SldOffset2.ValueChanged += self.on_slider_off2_changed
+
+        # Events for Radius Sliders
+        self.SldRadius1.ValueChanged += self.on_slider_rad1_changed
+        self.SldRadius2.ValueChanged += self.on_slider_rad2_changed
+
+        # Events for TextBoxes (direct numerical entry)
+        self.TxtOffset1.LostFocus += self.on_text_off1_changed
+        self.TxtOffset2.LostFocus += self.on_text_off2_changed
+        self.TxtOffset1.KeyDown   += self.on_text_off1_key
+        self.TxtOffset2.KeyDown   += self.on_text_off2_key
+
+        self.TxtRadius1.LostFocus += self.on_text_rad1_changed
+        self.TxtRadius2.LostFocus += self.on_text_rad2_changed
+        self.TxtRadius1.KeyDown   += self.on_text_rad1_key
+        self.TxtRadius2.KeyDown   += self.on_text_rad2_key
+
+        self.BtnConfirm.Click += self.on_confirm
+        self.BtnCancel.Click  += self.on_cancel
+        self.win.Closed       += self.on_closed
+        self.win.Loaded       += self.on_loaded
 
     def on_loaded(self, sender, e):
         self.is_loaded = True
@@ -1226,63 +1336,154 @@ class PreviewDialog:
     def show_dialog(self):
         return self.win.ShowDialog()
 
-    def _get_values(self):
-        """Read current slider values. Returns (offset1_ft, offset2_ft, angle_deg)."""
-        off1 = self.SldOffset1.Value / 12.0   # slider in inches, convert to feet
-        off2 = self.SldOffset2.Value / 12.0
-        ang  = self.SldAngle.Value             # already in degrees
-        return off1, off2, ang
+    def on_slider_off1_changed(self, sender, e):
+        if not self.is_loaded or self._syncing:
+            return
+        self._syncing = True
+        try:
+            self.TxtOffset1.Text = "{:.1f}".format(self.SldOffset1.Value)
+        finally:
+            self._syncing = False
+        self.update_preview()
 
-    def _update_labels(self):
-        """Sync the live value labels next to each slider."""
-        self.LblOff1.Text  = "{:.1f} in".format(self.SldOffset1.Value)
-        self.LblOff2.Text  = "{:.1f} in".format(self.SldOffset2.Value)
-        self.LblAngle.Text = "{:.0f}\u00b0".format(self.SldAngle.Value)
+    def on_slider_off2_changed(self, sender, e):
+        if not self.is_loaded or self._syncing:
+            return
+        self._syncing = True
+        try:
+            self.TxtOffset2.Text = "{:.1f}".format(self.SldOffset2.Value)
+        finally:
+            self._syncing = False
+        self.update_preview()
+
+    def on_slider_rad1_changed(self, sender, e):
+        if not self.is_loaded or self._syncing:
+            return
+        self._syncing = True
+        try:
+            self.TxtRadius1.Text = "{:.1f}".format(self.SldRadius1.Value)
+        finally:
+            self._syncing = False
+        self.update_preview()
+
+    def on_slider_rad2_changed(self, sender, e):
+        if not self.is_loaded or self._syncing:
+            return
+        self._syncing = True
+        try:
+            self.TxtRadius2.Text = "{:.1f}".format(self.SldRadius2.Value)
+        finally:
+            self._syncing = False
+        self.update_preview()
+
+    def _sync_text_to_slider(self, txt_box, slider):
+        if not self.is_loaded or self._syncing:
+            return
+        try:
+            val = float(txt_box.Text.strip())
+        except Exception:
+            txt_box.Text = "{:.1f}".format(slider.Value)
+            return
+
+        self._syncing = True
+        try:
+            if val < slider.Minimum:
+                slider.Minimum = val - 5
+            if val > slider.Maximum:
+                slider.Maximum = val + 5
+            slider.Value = val
+            txt_box.Text = "{:.1f}".format(val)
+        finally:
+            self._syncing = False
+        self.update_preview()
+
+    def on_text_off1_changed(self, sender, e):
+        self._sync_text_to_slider(self.TxtOffset1, self.SldOffset1)
+
+    def on_text_off2_changed(self, sender, e):
+        self._sync_text_to_slider(self.TxtOffset2, self.SldOffset2)
+
+    def on_text_off1_key(self, sender, e):
+        import System.Windows.Input as SWI
+        if e.Key == SWI.Key.Enter:
+            self._sync_text_to_slider(self.TxtOffset1, self.SldOffset1)
+
+    def on_text_off2_key(self, sender, e):
+        import System.Windows.Input as SWI
+        if e.Key == SWI.Key.Enter:
+            self._sync_text_to_slider(self.TxtOffset2, self.SldOffset2)
+
+    def on_text_rad1_changed(self, sender, e):
+        self._sync_text_to_slider(self.TxtRadius1, self.SldRadius1)
+
+    def on_text_rad2_changed(self, sender, e):
+        self._sync_text_to_slider(self.TxtRadius2, self.SldRadius2)
+
+    def on_text_rad1_key(self, sender, e):
+        import System.Windows.Input as SWI
+        if e.Key == SWI.Key.Enter:
+            self._sync_text_to_slider(self.TxtRadius1, self.SldRadius1)
+
+    def on_text_rad2_key(self, sender, e):
+        import System.Windows.Input as SWI
+        if e.Key == SWI.Key.Enter:
+            self._sync_text_to_slider(self.TxtRadius2, self.SldRadius2)
 
     def update_preview(self):
         from Autodesk.Revit.DB import SubTransaction, TransactionStatus
-        if self._updating:
-            return
-        self._updating = True
-        try:
-            self._update_labels()
 
-            if self.active_sub is not None:
-                if self.active_sub.GetStatus() == TransactionStatus.Started:
-                    self.active_sub.RollBack()
-                self.active_sub = None
+        if self.active_sub is not None:
+            if self.active_sub.GetStatus() == TransactionStatus.Started:
+                self.active_sub.RollBack()
+            self.active_sub = None
 
-            self.active_sub = SubTransaction(doc)
-            self.active_sub.Start()
+        self.active_sub = SubTransaction(doc)
+        self.active_sub.Start()
 
-            offset1_ft, offset2_ft, angle_deg = self._get_values()
+        off1_ft = self.SldOffset1.Value / 12.0
+        off2_ft = self.SldOffset2.Value / 12.0
+        rad1_ft = self.SldRadius1.Value / 12.0 if self.radii_initialized else None
+        rad2_ft = self.SldRadius2.Value / 12.0 if self.radii_initialized else None
 
-            cfg = {
-                "strategy":      STRATEGY_VERT_FIRST,
-                "allow_single":  True,
-                "trim_conduits": True,
-                "offset1_ft":    offset1_ft,
-                "offset2_ft":    offset2_ft,
-                "angle_deg":     angle_deg,
-            }
+        cfg = {
+            "strategy":      STRATEGY_VERT_FIRST,
+            "allow_single":  True,
+            "trim_conduits": True,
+            "offset1_ft":    off1_ft,
+            "offset2_ft":    off2_ft,
+            "radius1_ft":    rad1_ft,
+            "radius2_ft":    rad2_ft,
+        }
 
-            success, msg = solve_and_create(self.info_a, self.info_b, cfg)
+        success, msg, created_radii_in = solve_and_create(self.info_a, self.info_b, cfg)
 
-            if success:
-                self.TxtError.Visibility   = SW.Visibility.Collapsed
-                self.BtnConfirm.IsEnabled  = True
-            else:
-                self.TxtError.Text         = msg
-                self.TxtError.Visibility   = SW.Visibility.Visible
-                self.BtnConfirm.IsEnabled  = False
+        if success:
+            self.TxtError.Visibility  = SW.Visibility.Collapsed
+            self.BtnConfirm.IsEnabled = True
 
-            uidoc.RefreshActiveView()
-        finally:
-            self._updating = False
+            # On initial run, initialize radius sliders with actual fitting defaults
+            if not self.radii_initialized and created_radii_in:
+                r1_in, r2_in = created_radii_in
+                self._syncing = True
+                try:
+                    if r1_in > self.SldRadius1.Maximum:
+                        self.SldRadius1.Maximum = r1_in + 10
+                    if r2_in > self.SldRadius2.Maximum:
+                        self.SldRadius2.Maximum = r2_in + 10
 
-    def on_slider_changed(self, sender, e):
-        if self.is_loaded:
-            self.update_preview()
+                    self.SldRadius1.Value = r1_in
+                    self.TxtRadius1.Text  = "{:.1f}".format(r1_in)
+                    self.SldRadius2.Value = r2_in
+                    self.TxtRadius2.Text  = "{:.1f}".format(r2_in)
+                    self.radii_initialized = True
+                finally:
+                    self._syncing = False
+        else:
+            self.TxtError.Text        = msg
+            self.TxtError.Visibility  = SW.Visibility.Visible
+            self.BtnConfirm.IsEnabled = False
+
+        uidoc.RefreshActiveView()
 
     def on_confirm(self, sender, e):
         from Autodesk.Revit.DB import TransactionStatus

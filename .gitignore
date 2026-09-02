@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+**/__pycache__/
+**/.venv/
+**/venv/
+
+# Revit files
+*.rvt
+*.rfa
+*.rte
+*.rft
+
+# IDE / Tools
+.vscode/
+.idea/
+*.log

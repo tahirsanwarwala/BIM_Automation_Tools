@@ -1,0 +1,5 @@
+layout:
+  - SplitWalls
+  - SplitSkinAtOpening
+  - SweepToWall
+  - WindowToCurtainWall
