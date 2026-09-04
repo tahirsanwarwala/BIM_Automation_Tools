@@ -80,6 +80,7 @@ from Tahir import (
     wall_chain,
     wall_constraints,
     wall_materials,
+    wall_miter,
     wall_naming,
     wall_skin,
 )
@@ -762,6 +763,257 @@ def band_walls(wall_jobs, sweep_jobs, levels, notes):
 
 
 # ===========================================================================
+# BUILDING
+# ===========================================================================
+
+def set_location_line(wall, value):
+    """Set the Location Line parameter on *wall*."""
+    try:
+        p = wall.get_Parameter(BuiltInParameter.WALL_KEY_REF_PARAM)
+        if p and p.HasValue and not p.IsReadOnly:
+            p.Set(value)
+        doc.Regenerate()
+    except Exception:
+        pass
+
+
+def set_bg_profile(wall, value):
+    """Write *value* into the wall's BG_PROFILE parameter.
+
+    Returns False when the parameter is absent, read-only, or not a text
+    parameter -- the caller reports that rather than failing the wall,
+    since the wall itself is correct either way.
+    """
+    p = find_parameter(wall, BG_PROFILE_PARAM)
+    if p is None or p.IsReadOnly:
+        return False
+    try:
+        return bool(p.Set(value))
+    except Exception:
+        return False
+
+
+def apply_constraints(wall, band):
+    """Bind *wall*'s base and top to the levels *band* names.
+
+    The base level was already set at creation, so only the offset is
+    written here; the top is bound outright, which is what turns an
+    unconnected wall into one that follows its level.
+    """
+    try:
+        p = wall.get_Parameter(BuiltInParameter.WALL_BASE_OFFSET)
+        if p and not p.IsReadOnly:
+            p.Set(band["base_offset"])
+    except Exception as ex:
+        logger.debug("Could not set base offset: {}".format(ex))
+
+    try:
+        p = wall.get_Parameter(BuiltInParameter.WALL_HEIGHT_TYPE)
+        if p and not p.IsReadOnly:
+            p.Set(band["top_level_id"])
+        p = wall.get_Parameter(BuiltInParameter.WALL_TOP_OFFSET)
+        if p and not p.IsReadOnly:
+            p.Set(band["top_offset"])
+        doc.Regenerate()
+    except Exception as ex:
+        logger.debug("Could not bind top constraint: {}".format(ex))
+
+
+def create_sweep_wall(curve, frame, wall_type, band):
+    """Create one wall of a sweep's run and return it.
+
+    *curve* is the new wall's CENTRELINE, worked out beforehand so its
+    interior face lands on the host wall's exterior face.  Placing the
+    centreline explicitly is what makes this dependable: relying on
+    Revit's Location Line to shift the wall put the centreline on the
+    host wall's face instead of the interior face.  Location Line is set
+    to 'Finish Face: Interior' afterwards, which re-references the wall
+    without moving it.
+    """
+    height   = band["height"]
+    base_off = band["base_offset"]
+    level_id = band["base_level_id"]
+
+    wall = Wall.Create(doc, curve, wall_type.Id, level_id,
+                       height, base_off, False, False)
+    doc.Regenerate()
+
+    set_location_line(wall, LOC_LINE_CENTRELINE)
+
+    # Face the same way as the host wall, so 'interior' is the side
+    # against it.  Reversing the curve keeps the same endpoints, so a
+    # mitred corner survives the swap and the centreline does not move.
+    try:
+        if frame.normal.DotProduct(wall.Orientation) < 0:
+            doc.Delete(wall.Id)
+            doc.Regenerate()
+            wall = Wall.Create(doc, curve.CreateReversed(), wall_type.Id,
+                               level_id, height, base_off, False, False)
+            doc.Regenerate()
+            set_location_line(wall, LOC_LINE_CENTRELINE)
+    except Exception:
+        pass
+
+    set_location_line(wall, LOC_LINE_FINISH_FACE_INTERIOR)
+    apply_constraints(wall, band)
+    return wall
+
+
+def build_sweep_walls(sweep_jobs, levels, notes):
+    """Create the walls for every measured sweep.  Inside a transaction.
+
+    Mitring is per sweep: each sweep is its own run of walls, and its
+    corners are closed against its own neighbours only.
+    """
+    for job in sweep_jobs:
+        try:
+            band = wall_constraints.constraints_for(
+                job.base_z, job.top_z, levels)
+        except ValueError as ex:
+            note(notes, job.label, "could not constrain sweep: {}".format(ex))
+            continue
+
+        half = job.wall_type.Width / 2.0
+
+        # Interior face of the new wall on the exterior face of the host,
+        # so its centreline sits half a thickness further out again.
+        segments = [wall_chain.Segment(frame, offset + half)
+                    for frame, offset in zip(job.frames, job.offsets)]
+        curves   = wall_chain.mitre_segments(segments)
+
+        unwritten = 0
+        for segment, curve in zip(segments, curves):
+            label = get_element_name(segment.frame.wall.WallType)
+            if curve is None:
+                note(notes, label, "could not build a curve for this wall")
+                continue
+            try:
+                wall = create_sweep_wall(
+                    curve, segment.frame, job.wall_type, band)
+            except Exception as ex:
+                note(notes, label, "wall creation failed: {}".format(ex))
+                continue
+
+            if job.type_mark and not set_bg_profile(wall, job.type_mark):
+                unwritten += 1
+
+        if unwritten:
+            note(notes, job.label,
+                 "{} could not be written on {} wall(s) - parameter "
+                 "missing, read-only, or not a text parameter".format(
+                     BG_PROFILE_PARAM, unwritten))
+
+
+def prepare_bands(wall_jobs, skin_plans, notes):
+    """Work out a centreline and a type for every band, building nothing.
+
+    Creation is deferred so that bands sharing an elevation can have
+    their corners mitred against each other first.
+
+    Returns [{"job", "band", "curve", "type"}].
+    """
+    prepared = []
+
+    for job in wall_jobs:
+        if not job.bands:
+            continue
+
+        key  = skin_plan_key(job.cs, job.source_doc)
+        plan = skin_plans.get(key)
+        if plan is None or plan.get("action") == "skip":
+            note(notes, job.label,
+                 plan.get("reason", "no wall type resolved")
+                 if plan else "no wall type resolved")
+            continue
+
+        skin_type = wall_materials.execute_skin_wall_type_plan(
+            doc, plan, _material_of_layer(job.cs, 0, job.source_doc),
+            job.source_doc)
+        if skin_type is None:
+            note(notes, job.label, "no wall type resolved")
+            continue
+
+        first_core = job.cs.GetFirstCoreLayerIndex()
+        last_core  = job.cs.GetLastCoreLayerIndex()
+        skin_w, gap_w, core_w, _int_w, _ext = wall_skin.layer_group_widths(
+            job.cs, first_core, last_core)
+
+        if job.loc_to_ext is not None:
+            d = job.loc_to_ext
+        else:
+            d = wall_skin.dist_loc_to_exterior(
+                job.loc_line, job.total_width, skin_w, gap_w, core_w)
+
+        curve = wall_skin.skin_centreline(
+            job.loc_curve, job.orientation, d, skin_w)
+
+        for band in job.bands:
+            prepared.append({"job": job, "band": band,
+                             "curve": curve, "type": skin_type})
+
+    return prepared
+
+
+def mitre_prepared(prepared):
+    """Close the corners between bands that sit at the same elevation.
+
+    Adjacency is judged on the ORIGINAL wall curves, which still share
+    their endpoints; the corner point is where the two OFFSET lines
+    cross.  Bands at different elevations are mitred separately -- two
+    walls that never touch must not have a corner dragged between them.
+
+    Curves are replaced in place inside *prepared*.
+    """
+    groups = {}
+    for item in prepared:
+        key = wall_bands.elevation_group_key(
+            item["band"]["base_z"], item["band"]["top_z"])
+        groups.setdefault(key, []).append(item)
+
+    for items in groups.values():
+        if len(items) < 2:
+            continue
+
+        originals = []
+        offsets   = []
+        zs        = []
+        for item in items:
+            oc = item["job"].loc_curve
+            sc = item["curve"]
+            o0, o1 = oc.GetEndPoint(0), oc.GetEndPoint(1)
+            s0, s1 = sc.GetEndPoint(0), sc.GetEndPoint(1)
+            originals.append(((o0.X, o0.Y), (o1.X, o1.Y)))
+            offsets.append(((s0.X, s0.Y), (s1.X, s1.Y)))
+            zs.append((s0.Z, s1.Z))
+
+        mitred = wall_miter.miter_chain(originals, offsets)
+
+        for idx, item in enumerate(items):
+            (x0, y0), (x1, y1) = mitred[idx]
+            z0, z1 = zs[idx]
+            item["curve"] = Line.CreateBound(XYZ(x0, y0, z0),
+                                             XYZ(x1, y1, z1))
+
+
+def build_bands(prepared, notes):
+    """Create one skin wall per prepared band.  Inside a transaction."""
+    for item in prepared:
+        job  = item["job"]
+        band = item["band"]
+        try:
+            wall = wall_skin.create_oriented_wall(
+                doc, item["curve"], item["type"].Id,
+                band["base_level_id"], band["height"],
+                band["base_offset"], job.structural, job.orientation)
+            apply_constraints(wall, band)
+        except Exception as ex:
+            note(notes, job.label,
+                 "band {} to {} failed: {}".format(
+                     feet_text(band["base_z"]), feet_text(band["top_z"]),
+                     ex))
+
+
+# ===========================================================================
 # REPORTING
 # ===========================================================================
 
@@ -782,9 +1034,9 @@ def main():
     if not wall_picks and not sweep_picks:
         return          # cancelled: create nothing, report nothing
 
-    notes       = []
-    sweep_jobs  = []
-    wall_jobs   = []
+    notes      = []
+    sweep_jobs = []
+    wall_jobs  = []
 
     for link_inst, sweep in sweep_picks:
         job, job_notes = plan_sweep(link_inst, sweep)
@@ -798,35 +1050,37 @@ def main():
         if job is not None:
             wall_jobs.append(job)
 
-    sweep_jobs = resolve_sweep_types(sweep_jobs, notes)
-    skin_plans = collect_skin_plans(wall_jobs)
+    if not sweep_jobs and not wall_jobs:
+        report(notes)
+        return
 
     levels = host_levels()
     if not levels:
         report(notes + [["-", "this model has no levels"]])
         return
 
+    # Every dialog happens here, before the transaction opens.
+    sweep_jobs = resolve_sweep_types(sweep_jobs, notes)
+    skin_plans = collect_skin_plans(wall_jobs)
+
     band_walls(wall_jobs, sweep_jobs, levels, notes)
 
-    # TEMPORARY diagnostic, replaced in Task 7 by the build.
-    rows = []
-    for job in sweep_jobs:
-        rows.append([job.label,
-                     "sweep {} to {} on {} wall(s), type '{}' -> {}".format(
-                         feet_text(job.base_z), feet_text(job.top_z),
-                         len(job.frames), job.type_name,
-                         get_element_name(job.wall_type))])
-    for job in wall_jobs:
-        for band in job.bands:
-            rows.append([job.label,
-                         "band {} to {}".format(
-                             feet_text(band["base_z"]),
-                             feet_text(band["top_z"]))])
-    rows.append(["-", "{} skin type plan(s) resolved".format(
-        len(skin_plans))])
-    output.print_md("### {} - measured".format(TOOL_TITLE))
-    output.print_table(table_data=rows, columns=["Element", "Measured"])
+    t = Transaction(doc, "Multi Wall Creation")
+    t.Start()
+    try:
+        build_sweep_walls(sweep_jobs, levels, notes)
 
+        prepared = prepare_bands(wall_jobs, skin_plans, notes)
+        mitre_prepared(prepared)
+        build_bands(prepared, notes)
+
+        t.Commit()
+    except Exception:
+        if t.HasStarted() and not t.HasEnded():
+            t.RollBack()
+        raise
+
+    # Silence on success: only problems open the output window.
     report(notes)
 
 
