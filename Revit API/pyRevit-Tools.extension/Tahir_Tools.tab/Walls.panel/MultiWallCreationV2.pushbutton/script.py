@@ -110,6 +110,7 @@ from Tahir import (
     wall_miter,
     wall_naming,
     wall_skin,
+    wall_sketch,
     window_cw,
 )
 
@@ -2134,6 +2135,114 @@ def build_bands(prepared, notes):
 
 
 # ===========================================================================
+# OPENINGS
+# ===========================================================================
+
+def opening_profile(wall, hole, base, top):
+    """Curves for *wall*'s elevation with *hole* cut out of it.
+
+    Returns the wall's own rectangle followed by the hole's, both as
+    closed loops in the wall's elevation plane.  Revit takes the first
+    loop as the outline and the rest as holes in it.
+
+    *hole* is (along_lo, along_hi, z_lo, z_hi) measured along the SOURCE
+    wall; it is re-projected onto this wall here, because the skin wall
+    is offset from the source and may be a merged run of several.
+
+    *base* and *top* are the elevations this wall was actually BUILT to
+    -- the matching entry from job.built_bands -- not read back off the
+    wall's own parameters.  Every wall this tool builds is level-bound,
+    so Unconnected Height does not govern its true extent, and
+    level.Elevation is in level space while this function works in
+    geometry space, which differ whenever the Project Base Point is not
+    at zero.
+    """
+    curve = wall.Location.Curve
+    p0 = curve.GetEndPoint(0)
+    p1 = curve.GetEndPoint(1)
+    direction = (p1 - p0).Normalize()
+    normal = XYZ(-direction.Y, direction.X, 0.0)
+
+    length = p0.DistanceTo(p1)
+
+    def at(along, z):
+        return XYZ(p0.X + direction.X * along,
+                   p0.Y + direction.Y * along,
+                   z)
+
+    outline = [(0.0, base), (length, base), (length, top), (0.0, top)]
+    lo, hi, z_lo, z_hi = hole
+    lo = max(lo, wall_bands.TOL)
+    hi = min(hi, length - wall_bands.TOL)
+    z_lo = max(z_lo, base + wall_bands.TOL)
+    z_hi = min(z_hi, top - wall_bands.TOL)
+    if hi - lo < MIN_RUN_LENGTH or z_hi - z_lo < MIN_RUN_LENGTH:
+        return None, normal
+
+    inner = [(lo, z_lo), (hi, z_lo), (hi, z_hi), (lo, z_hi)]
+
+    curves = []
+    for loop in (outline, inner):
+        for idx in range(len(loop)):
+            a = loop[idx]
+            b = loop[(idx + 1) % len(loop)]
+            curves.append(Line.CreateBound(at(a[0], a[1]), at(b[0], b[1])))
+    return curves, normal
+
+
+def cut_openings(wall_jobs, notes):
+    """Cut every rectangular opening out of the skin wall covering it.
+
+    Runs AFTER the transaction has committed, and it has no choice:
+    SketchEditScope refuses to start inside an open transaction, and a
+    sketched profile is drawn against the wall's constraints, so those
+    have to be final first.  Window To Curtain Wall sequences it the
+    same way, for the same reasons.
+
+    A failure here therefore cannot roll the walls back -- they are
+    already committed.  That is the right trade: a wall standing uncut
+    is worth more than a run that throws away everything it built.
+    """
+    for job in wall_jobs:
+        for lo, hi, z_lo, z_hi, opening in job.rect_openings:
+            mid = (z_lo + z_hi) / 2.0
+
+            host = None
+            host_base = host_top = None
+            for base_z, top_z, wall in job.built_bands:
+                if (base_z - wall_bands.TOL <= z_lo
+                        and z_hi <= top_z + wall_bands.TOL):
+                    host = wall
+                    host_base = base_z
+                    host_top = top_z
+                    break
+
+            if host is None:
+                note(notes, job.label,
+                     "opening {} spans more than one band, or no band "
+                     "covers it - left uncut".format(
+                         opening.Id.IntegerValue))
+                continue
+
+            curves, _normal = opening_profile(
+                host, (lo, hi, z_lo, z_hi), host_base, host_top)
+            if curves is None:
+                note(notes, job.label,
+                     "opening {} is too small or falls outside the wall "
+                     "- left uncut".format(opening.Id.IntegerValue))
+                continue
+
+            failure = wall_sketch.apply_profile(
+                doc, host, curves,
+                "Create skin profile sketch",
+                "Cut the opening out of the skin wall")
+            if failure:
+                note(notes, job.label,
+                     "opening {}: {}".format(
+                         opening.Id.IntegerValue, failure))
+
+
+# ===========================================================================
 # REPORTING
 # ===========================================================================
 
@@ -2219,6 +2328,11 @@ def main():
         if t.HasStarted() and not t.HasEnded():
             t.RollBack()
         raise
+
+    # After the transaction, and it cannot be otherwise: SketchEditScope
+    # will not start inside one, and a sketched profile is drawn against
+    # constraints that have to be final first.
+    cut_openings(wall_jobs, notes)
 
     # Silence on success: only problems open the output window.
     report(notes)
