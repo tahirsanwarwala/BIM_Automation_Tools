@@ -39,9 +39,10 @@ stretch.  Sweep walls at the same height and of the same type mitre into
 each other at corners, whether or not they came from the same sweep, so
 they trim instead of crossing.
 
-Skin walls stop at openings the same way.  What they do NOT do is turn
-into the reveal: a sweep or finish that wraps into an opening is left
-ending at the jamb, with the reveal empty.
+Only the SWEEPS break at openings.  A skin wall runs the whole length of
+the wall it came from, openings and all -- cutting it at them was tried
+and taken back out.  Neither turns into a reveal: a sweep that wraps
+into an opening is left ending at the jamb.
 
 The linked model is never modified.
 """
@@ -379,8 +380,11 @@ def sweep_host_walls(sweep):
 def _sweep_edge_spans(sweep, transform, frames):
     """Split a sweep's solid between its host walls.
 
-    Returns a list per frame of (along_lo, along_hi, z_lo, z_hi) tuples,
-    one per edge of the sweep's solid, plus the dominant material name.
+    Returns (per_frame, reach, material_name).  *per_frame* is a list
+    per frame of (along_lo, along_hi, z_lo, z_hi) tuples, one per edge
+    of the sweep's solid.  *reach* is a list per frame of how far the
+    sweep's furthest point stands off that wall's location curve, which
+    is the scale its mitres are set back by at an inside corner.
 
     Each edge is assigned to the host wall it is nearest to, judged on
     its midpoint in plan.  That is what lets a sweep's real extent be
@@ -395,6 +399,7 @@ def _sweep_edge_spans(sweep, transform, frames):
         segments.append(((p0.X, p0.Y), (p1.X, p1.Y)))
 
     per_frame = [[] for _f in frames]
+    reach     = [0.0 for _f in frames]
     areas = {}
 
     for sol in wall_chain.iter_solids(sweep):
@@ -428,6 +433,9 @@ def _sweep_edge_spans(sweep, transform, frames):
                             pt.Z - frame.origin.Z)
                 alongs.append(delta.DotProduct(frame.direction))
                 zs.append(pt.Z)
+                sideways = delta.DotProduct(frame.normal)
+                if sideways > reach[idx]:
+                    reach[idx] = sideways
 
             per_frame[idx].append((min(alongs), max(alongs),
                                    min(zs), max(zs)))
@@ -448,7 +456,7 @@ def _sweep_edge_spans(sweep, transform, frames):
         material_name = get_element_name(
             sweep.Document.GetElement(ElementId(best)))
 
-    return per_frame, material_name
+    return per_frame, reach, material_name
 
 
 def sweep_runs(sweep, transform, frames, wall_keys, openings):
@@ -474,7 +482,8 @@ def sweep_runs(sweep, transform, frames, wall_keys, openings):
     intervals is what makes the sweep wall stop on the same line as the
     skin wall under it.
     """
-    per_frame, material_name = _sweep_edge_spans(sweep, transform, frames)
+    per_frame, reach, material_name = _sweep_edge_spans(
+        sweep, transform, frames)
 
     runs = []
     for idx, frame in enumerate(frames):
@@ -504,16 +513,32 @@ def sweep_runs(sweep, transform, frames, wall_keys, openings):
             if z_lo is None or (z_hi - z_lo) < MIN_RUN_LENGTH:
                 continue
 
-            # Snap a run end that all but reaches the wall end onto it.
-            # Clamping alone only handles the overshoot of a mitred
-            # corner; a sweep that RETURNS into the corner instead stops
-            # at the neighbour's face, half a wall thickness short.
-            # That is far more than wall_miter's join tolerance, so the
-            # two runs would not be seen as adjacent and the corner
-            # would be left open -- the very thing this is fixing.  A
-            # host wall's own thickness is the scale of that shortfall,
-            # so it is the scale the snap works at.
-            snap = frame.width
+            # Snap a run end that all but reaches the wall end onto it,
+            # so mitre_chain sees the two runs as adjacent.  Clamping
+            # alone only covers an OUTSIDE corner, where the sweep wraps
+            # round and overshoots the wall end.  Two cases fall short
+            # instead, and both must be caught or the corner is left
+            # open:
+            #
+            #   * a sweep that RETURNS into an outside corner rather
+            #     than wrapping it stops at the neighbour's face, up to
+            #     a wall thickness short;
+            #   * at an INSIDE corner the two sweeps' offset faces
+            #     converge, so Revit mitres the solids BACK from the
+            #     corner by about the distance they stand off the wall
+            #     -- which is why inside turns were the ones left
+            #     crossing while outside turns came out right.
+            #
+            # Each case has its own scale, and the snap allows the
+            # larger: a wall thickness for the return, and the sweep's
+            # measured reach past the location curve for the inside
+            # mitre.  Measured, not guessed at from the wall -- a deep
+            # cornice is set back much further than a shallow band, and
+            # a fixed allowance would either miss the one or over-reach
+            # for the other.  The snap runs BEFORE the openings are
+            # subtracted, so an opening genuinely sitting within that
+            # distance of the corner still cuts the run back.
+            snap = max(frame.width, reach[idx])
             if along_min < snap:
                 along_min = 0.0
             if along_max > frame.length - snap:
@@ -661,8 +686,7 @@ class WallJob(object):
 
     __slots__ = ("label", "wall_id", "cs", "source_doc", "loc_curve",
                  "orientation", "total_width", "loc_line", "loc_to_ext",
-                 "base_z", "top_z", "structural", "bands", "openings",
-                 "length")
+                 "base_z", "top_z", "structural", "bands")
 
 
 def _length_param(elements, names, builtin_names):
@@ -985,9 +1009,6 @@ def plan_wall(link_inst, wall):
     job.base_z      = base_z
     job.top_z       = top_z
     job.structural  = structural
-    job.length      = pt0.DistanceTo(pt1)
-    job.openings    = cached_wall_openings(
-        job.wall_id, wall, link_tf, pt0, (pt1 - pt0).Normalize())
     job.bands       = []          # filled in by band_walls
     return job, notes_none()
 
@@ -1391,28 +1412,19 @@ def build_sweep_walls(sweep_jobs, levels, notes):
     report_unwritten(notes, no_level, BG_LEVEL_PARAM)
 
 
-def _along(start, heading, distance):
-    """The point *distance* feet from *start* along *heading*."""
-    return XYZ(start.X + heading.X * distance,
-               start.Y + heading.Y * distance,
-               start.Z + heading.Z * distance)
-
-
 def prepare_bands(wall_jobs, skin_plans, notes):
     """Work out a centreline and a type for every band, building nothing.
 
     Creation is deferred so that bands sharing an elevation can have
     their corners mitred against each other first.
 
-    A band is also cut in PLAN, at every opening whose own height range
-    overlaps it: a band running past a window at window height becomes
-    two walls, one either side, while a band well below the sill stays
-    whole.  What it does not do is turn into the reveal -- the wall
-    stops at the jamb and the reveal is left empty.
+    A band runs the whole length of the wall it came from.  Cutting it
+    in plan at the wall's openings was tried and taken back out: only
+    the sweeps break at openings.
 
     Returns [{"job", "band", "curve", "original", "type"}], where
-    "original" is the source wall's own centreline over just this
-    stretch, which is what mitre_prepared judges adjacency on.
+    "original" is the source wall's own centreline, which is what
+    mitre_prepared judges adjacency on.
     """
     prepared = []
     executed = {}
@@ -1456,43 +1468,18 @@ def prepare_bands(wall_jobs, skin_plans, notes):
             curve = wall_skin.skin_centreline(
                 job.loc_curve, job.orientation, d, skin_w)
 
-            # The skin centreline runs parallel to the source wall's, so
-            # one direction and one pair of start points parameterise
-            # both, and a stretch can be cut from each at the same two
-            # distances along.
-            o_start = job.loc_curve.GetEndPoint(0)
-            s_start = curve.GetEndPoint(0)
-            heading = (job.loc_curve.GetEndPoint(1) - o_start).Normalize()
+            o0 = job.loc_curve.GetEndPoint(0)
+            o1 = job.loc_curve.GetEndPoint(1)
+            original = ((o0.X, o0.Y), (o1.X, o1.Y))
 
             for band in job.bands:
-                cutters = [(lo, hi) for lo, hi, z_lo, z_hi in job.openings
-                           if z_hi > band["base_z"] + wall_bands.TOL
-                           and z_lo < band["top_z"] - wall_bands.TOL]
-
-                # MIN_RUN_LENGTH, not the default 1/16 inch: a half-inch
-                # pier between two adjacent windows is not a wall worth
-                # making, and the sweeps use the same threshold.
-                runs, dropped = wall_bands.subtract_spans(
-                    (0.0, job.length), cutters, MIN_RUN_LENGTH)
-
-                for lo, hi in dropped:
-                    note(notes, job.label,
-                         "stretch between openings at {} to {} along the "
-                         "wall is too narrow to build".format(
-                             feet_text(lo), feet_text(hi)))
-
-                for along_min, along_max in runs:
-                    o0 = _along(o_start, heading, along_min)
-                    o1 = _along(o_start, heading, along_max)
-                    s0 = _along(s_start, heading, along_min)
-                    s1 = _along(s_start, heading, along_max)
-                    prepared.append({
-                        "job": job,
-                        "band": band,
-                        "curve": Line.CreateBound(s0, s1),
-                        "original": ((o0.X, o0.Y), (o1.X, o1.Y)),
-                        "type": skin_type,
-                    })
+                prepared.append({
+                    "job": job,
+                    "band": band,
+                    "curve": curve,
+                    "original": original,
+                    "type": skin_type,
+                })
         except Exception as ex:
             note(notes, job.label, "could not prepare bands: {}".format(ex))
             continue
@@ -1503,13 +1490,11 @@ def prepare_bands(wall_jobs, skin_plans, notes):
 def mitre_prepared(prepared, notes):
     """Close the corners between bands that sit at the same elevation.
 
-    Adjacency is judged on the source wall's centreline over the same
-    stretch, which still shares its endpoints with its neighbour; the
-    corner point is where the two OFFSET lines cross.  It is the
-    stretch's ends rather than the whole wall's, so a band that stops at
-    an opening is never dragged out to a corner it does not reach.
-    Bands at different elevations are mitred separately -- two walls
-    that never touch must not have a corner dragged between them.
+    Adjacency is judged on the source wall's centreline, which still
+    shares its endpoints with its neighbour; the corner point is where
+    the two OFFSET lines cross.  Bands at different elevations are
+    mitred separately -- two walls that never touch must not have a
+    corner dragged between them.
 
     Curves are replaced in place inside *prepared*.  A group whose
     mitre fails (a very shallow corner can push the intersection past
