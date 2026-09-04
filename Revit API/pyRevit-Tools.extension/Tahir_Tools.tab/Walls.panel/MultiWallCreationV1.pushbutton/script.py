@@ -39,10 +39,11 @@ stretch.  Sweep walls at the same height and of the same type mitre into
 each other at corners, whether or not they came from the same sweep, so
 they trim instead of crossing.
 
-Only the SWEEPS break at openings.  A skin wall runs the whole length of
-the wall it came from, openings and all -- cutting it at them was tried
-and taken back out.  Neither turns into a reveal: a sweep that wraps
-into an opening is left ending at the jamb.
+Only the SWEEPS break at openings, and only at a DOOR or a CURTAIN WALL.
+A band course runs on under a window sill.  A skin wall runs the whole
+length of the wall it came from, openings and all -- cutting it at them
+was tried and taken back out.  Neither turns into a reveal: a sweep that
+stops at an opening is left ending at the jamb.
 
 The linked model is never modified.
 """
@@ -860,20 +861,65 @@ def cached_wall_openings(wall_key, wall, link_tf, origin, direction):
     return _OPENING_CACHE[wall_key]
 
 
+def is_category(elem, bic):
+    """True when *elem* belongs to the given BuiltInCategory."""
+    try:
+        cat = elem.Category
+        if cat is None:
+            return False
+    except Exception:
+        return False
+    try:
+        return cat.BuiltInCategory == bic
+    except Exception:
+        pass
+    try:
+        return cat.Id.IntegerValue == ElementId(bic).IntegerValue
+    except Exception:
+        return False
+
+
+def is_curtain_wall(elem):
+    """True when *elem* is a curtain wall."""
+    if not isinstance(elem, Wall):
+        return False
+    try:
+        return elem.WallType.Kind == WallKind.Curtain
+    except Exception:
+        return False
+
+
+def breaks_a_sweep(insert):
+    """True when a sweep running past *insert* has to stop at it.
+
+    Only a door or a curtain wall does.  A window does NOT, whatever its
+    geometry suggests: a band course runs on under the sill, and it is
+    the sill and apron hanging below the opening that made a window look
+    like it reached down to the course at all.  Measuring harder would
+    not have fixed that -- a window that genuinely interrupts a course
+    and one that merely hangs trim into it are the same shape.  Which
+    openings break a run is a decision about the building, so it is
+    written here as one.
+    """
+    if is_curtain_wall(insert):
+        return True
+    return is_category(insert, BuiltInCategory.OST_Doors)
+
+
 def wall_openings(wall, link_tf, origin, direction):
-    """Return the openings in *wall* as (along_lo, along_hi, z_lo, z_hi).
+    """Openings in *wall* that break a sweep, as (lo, hi, z_lo, z_hi).
+
+    Only the inserts breaks_a_sweep() accepts -- doors and curtain walls
+    -- appear here.  Windows are left out entirely, so a band course
+    runs on under their sills.
 
     Measured in the wall's own frame: *along* from *origin* along
-    *direction*, both already in host coordinates.  A skin wall stops at
-    these the way the sweeps do, so a band does not run solid across a
-    window.
-
-    Along the wall the extent is the ROUGH OPENING, the void actually
-    cut in the wall, so a new wall stops on the same line as the wall
-    behind it.  Vertically it is the insert's whole solid, which errs
-    the generous way on an arched head or a projecting sill and is only
-    ever asked whether an opening reaches a given course.  See
-    _insert_extent for why the two ends are measured differently.
+    *direction*, both already in host coordinates.  Along the wall the
+    extent is the ROUGH OPENING, the void actually cut in the wall, so
+    a sweep wall stops on the same line as the wall behind it.
+    Vertically it is the insert's whole solid, which is only ever asked
+    whether an opening reaches a given course.  See _insert_extent for
+    why the two ends are measured differently.
     """
     try:
         ids = list(wall.FindInserts(True, False, True, True))
@@ -885,7 +931,7 @@ def wall_openings(wall, link_tf, origin, direction):
     found    = []
     for iid in ids:
         insert = link_doc.GetElement(iid)
-        if insert is None:
+        if insert is None or not breaks_a_sweep(insert):
             continue
         extent = _insert_extent(insert, link_tf, origin, direction)
         if extent is not None:
