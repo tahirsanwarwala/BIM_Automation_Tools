@@ -8,16 +8,17 @@ in that link, then pick the host-model wall it belongs on.  A curtain
 wall is created on that wall to match what was picked.
 
 From a WINDOW, sizes come from the family's own parameters: Sill Height
-above the window's level for the base, then Rough Width/Height or
+above the window's level for the base - read from both the instance and
+the type, the higher of the two winning - then Rough Width/Height or
 Width/Height, falling back to measured geometry only where a parameter
 is missing.  Measuring the solids would start the wall at the bottom of
 any sill trim, apron or cast stone hanging below the opening - but the
 parameter is only trusted while it agrees with where the solids are, so
 a family measuring Sill Height from something else cannot throw the wall
-a storey out.  The head is traced from the linked geometry and the new
-wall's elevation profile is re-sketched to suit: a head that fits one
-circle becomes a true arc, and one that does not - a segmental head
-carrying trim, say - is followed as a simplified polyline instead.
+a storey out.  The wall is always a plain rectangle, arched windows
+included: an arched head can only be recovered by tracing tessellated
+solids, and that trace is not dependable enough to build from, so the
+rectangle is simply made tall enough to cover the arch.
 
 From a CURTAIN WALL, everything is read off that wall instead: its
 length, its base and top constraints with their offsets, and - when its
@@ -52,8 +53,8 @@ __doc__    = (
     "The type comes from the Type Mark prefix (WA12 -> WA_Window, "
     "W04 -> W_Window); you are asked to pick a type when no match "
     "exists.\n"
-    "A window gives its width, height and sill from its own parameters, "
-    "and arched heads are reproduced where they can be fitted; a linked "
+    "A window gives its width, height and sill from its own parameters "
+    "and always comes out rectangular, arched ones included; a linked "
     "curtain wall gives its length, constraints and sketched profile.\n"
     "Repeats until Esc.  The linked model is left untouched."
 )
@@ -68,19 +69,14 @@ from Autodesk.Revit.DB import (
     Arc,
     BuiltInCategory,
     BuiltInParameter,
-    CurveElement,
     ElementId,
-    FailureProcessingResult,
-    FailureSeverity,
     FamilyInstance,
     FilteredElementCollector,
     GeometryInstance,
-    IFailuresPreprocessor,
     Level,
     Line,
     Options,
     Sketch,
-    SketchEditScope,
     Solid,
     StorageType,
     Transaction,
@@ -95,6 +91,8 @@ from Autodesk.Revit.Exceptions import OperationCanceledException
 from Autodesk.Revit.UI.Selection import ISelectionFilter, ObjectType
 from pyrevit import revit, forms, script
 
+from Tahir import wall_sketch
+
 doc    = revit.doc
 uidoc  = revit.uidoc
 logger = script.get_logger()
@@ -102,22 +100,29 @@ output = script.get_output()
 
 LEVEL_TOL       = 1e-4    # feet, when matching a level under the sill
 MIN_EXTENT      = 0.02    # feet, below this a measured width/height is junk
-FLAT_TOP_TOL    = 0.01    # feet (~3 mm), rise below this counts as a flat head
-ARC_FIT_TOL     = 0.02    # feet (~6 mm), max deviation of the fitted arch
-POLY_SIMPLIFY_TOL = 0.01  # feet (~3 mm), chord error kept when tracing a head
 SILL_TRIM_MAX   = 2.0     # feet; further than this below the opening and a
                           # Sill Height reading is wrong, not just trimmed
-TOP_SAMPLE_BINS = 48      # buckets used to trace the window's top boundary
+CENTRE_TOL_FRACTION = 0.25  # how far off centre an insertion point may sit,
+                            # as a fraction of the window's width
 CURTAIN_SUFFIX  = "_Window"
+
+# Where a window's sill height can be written.  Built-in parameters are
+# named rather than referenced so one missing from this Revit version is
+# skipped instead of raising; the plain names catch family parameters.
+SILL_INSTANCE_KEYS = ["INSTANCE_SILL_HEIGHT_PARAM", "Sill Height"]
+SILL_TYPE_KEYS     = ["FAMILY_SILL_HEIGHT_PARAM", "WINDOW_SILL_HEIGHT",
+                      "Sill Height", "Default Sill Height"]
 
 # Shared parameters filled on every wall this tool makes.  BG_PROFILE is
 # deliberately left alone.
 BG_NUMBER_NAME  = "BG_WINDOW NUMBER"
 BG_COPIED_NAMES = ["BG_BUILDING ID", "BG_ELEVATION", "BG_LEVEL"]
 
-# Print the measurements every run while the tool is being dialled in.
-# Set to False once the numbers are trusted and it goes quiet on success.
-VERBOSE         = True
+# Print the measurements table every run.  Off by default: a run that
+# worked has nothing to say, and printing is what opens the output
+# window, so a clean run now shows nothing at all.  Turn it on while
+# dialling the numbers in on a troublesome window.
+VERBOSE         = False
 
 
 # ===============================================================================
@@ -544,23 +549,22 @@ def prompt_curtain_type(types, mark, prefix):
 class WindowPlan(object):
     """Everything needed to build one curtain wall, in host coordinates.
 
-    A plan built from a window carries *top_profile*, the traced outline
-    its arched head is fitted from.  A plan built from a linked curtain
-    wall instead carries *profile_curves* - that wall's own sketched
-    profile, already in host coordinates - together with *src_origin* and
-    *src_dir*, the frame those curves are measured in, so the profile can
-    be moved onto whichever wall is picked.
+    A plan built from a linked curtain wall carries *profile_curves* -
+    that wall's own sketched profile, already in host coordinates -
+    together with *src_origin* and *src_dir*, the frame those curves are
+    measured in, so the profile can be moved onto whichever wall is
+    picked.  A plan built from a window carries none of that: it always
+    becomes a plain rectangle.
     """
 
     __slots__ = ("window_id", "link_name", "mark", "prefix",
                  "centre", "width", "height", "sill",
-                 "top_profile", "profile_curves", "src_origin", "src_dir",
+                 "profile_curves", "src_origin", "src_dir",
                  "wall_dir", "notes", "source_kind", "level_name",
                  "base_offset", "new_wall_id", "grid_removed",
                  "sill_param", "geom_bottom")
 
     def __init__(self):
-        self.top_profile    = None
         self.profile_curves = None
         self.src_origin     = None
         self.src_dir        = None
@@ -603,6 +607,41 @@ def window_centre(window, transform):
     return None
 
 
+def sill_height_candidates(window, link_doc):
+    """Every Sill Height reading a window offers, instance and type.
+
+    Both are collected rather than the first one found: a family can
+    carry a sill height on the instance and another on the type, and
+    which of the two is the real one varies by family.
+    """
+    win_type = None
+    try:
+        win_type = link_doc.GetElement(window.GetTypeId())
+    except Exception:
+        pass
+
+    found = []
+    for elem, keys in ((window, SILL_INSTANCE_KEYS),
+                       (win_type, SILL_TYPE_KEYS)):
+        if elem is None:
+            continue
+        for key in keys:
+            p = None
+            bip = getattr(BuiltInParameter, key, None)
+            try:
+                p = elem.get_Parameter(bip) if bip is not None \
+                    else elem.LookupParameter(key)
+            except Exception:
+                p = None
+            if p is None or not p.HasValue:
+                continue
+            try:
+                found.append(p.AsDouble())
+            except Exception:
+                continue
+    return found
+
+
 def sill_from_parameters(window, link_doc, transform):
     """Return the window's sill elevation in host coordinates, or None.
 
@@ -610,24 +649,15 @@ def sill_from_parameters(window, link_doc, transform):
     off the solids: sill trims, cast stone and aprons routinely hang below
     the sill, and measuring would start the curtain wall at the bottom of
     those instead of at the opening.
+
+    The instance and type readings are both taken and the HIGHEST wins.
+    A type default of zero left behind on a family whose instance carries
+    the real height would otherwise drop the wall to the floor.
     """
-    sill = None
-    for name_or_bip in ("INSTANCE_SILL_HEIGHT_PARAM", "Sill Height"):
-        p = None
-        bip = getattr(BuiltInParameter, name_or_bip, None)
-        try:
-            p = window.get_Parameter(bip) if bip is not None \
-                else window.LookupParameter(name_or_bip)
-        except Exception:
-            p = None
-        if p is not None and p.HasValue:
-            try:
-                sill = p.AsDouble()
-                break
-            except Exception:
-                sill = None
-    if sill is None:
+    candidates = sill_height_candidates(window, link_doc)
+    if not candidates:
         return None
+    sill = max(candidates)
 
     try:
         level = link_doc.GetElement(window.LevelId)
@@ -720,9 +750,9 @@ def measure_window(link_inst, window, host_wall):
     sill = plan.sill_param
     if sill is None:
         sill = z_min
-        plan.notes.append("sill measured from geometry")
+        logger.debug("No Sill Height parameter; measured the sill from geometry")
     elif abs(sill - z_min) > SILL_TRIM_MAX:
-        plan.notes.append(
+        logger.debug(
             "Sill Height puts the base at {} but the geometry starts at {}; "
             "used the geometry".format(feet_text(sill), feet_text(z_min)))
         sill = z_min
@@ -730,29 +760,42 @@ def measure_window(link_inst, window, host_wall):
 
     if width is None:
         width = geo_width
-        plan.notes.append("width measured from geometry")
+        logger.debug("No width parameter; measured the width from geometry")
     if height is None:
         # Measure up from the real sill, not from the bottom of whatever
         # trim hangs below it, so the head still lands in the right place.
         height = z_max - sill
-        plan.notes.append("height measured from geometry")
+        logger.debug("No height parameter; measured the height from geometry")
         if height < MIN_EXTENT:
             return None, "window head sits at or below its sill height"
 
     plan.width  = width
     plan.height = height
 
-    centre = window_centre(window, transform)
-    if centre is None:
-        mid_u  = (u_min + u_max) / 2.0
-        centre = XYZ(origin.X + direction.X * mid_u,
-                     origin.Y + direction.Y * mid_u,
-                     sill)
-    plan.centre = centre
+    # Centre the wall on the middle of the solids, not on the family's
+    # insertion point.  A stock window is inserted at the centre of its
+    # opening, but a Generic Model standing in for one can be inserted at
+    # an edge or a corner, which throws the wall sideways by half a window
+    # - and drags the head trace off the geometry with it.  The insertion
+    # point is more precise when it is there to be had, so it wins while
+    # it agrees with the solids.
+    geom_u = (u_min + u_max) / 2.0
+    u_centre = geom_u
 
-    u_centre = (centre - origin).DotProduct(direction)
-    plan.top_profile = trace_top_boundary(u_vals, z_vals, u_centre,
-                                          plan.width, plan.sill, plan.height)
+    located = window_centre(window, transform)
+    if located is not None:
+        located_u = (located - origin).DotProduct(direction)
+        if abs(located_u - geom_u) <= width * CENTRE_TOL_FRACTION:
+            u_centre = located_u
+        else:
+            logger.debug(
+                "Insertion point sits {} off the middle of the geometry; "
+                "centred on the geometry"
+                .format(feet_text(located_u - geom_u)))
+
+    plan.centre = XYZ(origin.X + direction.X * u_centre,
+                      origin.Y + direction.Y * u_centre,
+                      sill)
     return plan, None
 
 
@@ -947,386 +990,6 @@ def profile_extent(curves, ref, direction):
     if (u_hi - u_lo) < MIN_EXTENT or (z_hi - z_lo) < MIN_EXTENT:
         return None
     return u_lo, u_hi, z_lo, z_hi
-
-
-def trace_top_boundary(u_vals, z_vals, u_centre, width, sill, height):
-    """Return the window's upper outline as normalised (s, t) samples.
-
-    *s* runs 0..1 across the curtain wall's width, measured out from the
-    window's centre, and *t* runs 0..1 from its sill to its head, so the
-    samples replay onto the wall that is actually built rather than onto
-    the raw extents of the geometry.  Returns None when the outline
-    cannot be traced.
-    """
-    if width < MIN_EXTENT or height < MIN_EXTENT:
-        return None
-
-    tops = {}
-    for u, z in zip(u_vals, z_vals):
-        s = ((u - u_centre) + width / 2.0) / width
-        if s < 0.0 or s > 1.0:
-            continue        # trim reaching past the jambs is not the outline
-        i = int(round(s * (TOP_SAMPLE_BINS - 1)))
-        if i < 0:
-            i = 0
-        elif i > TOP_SAMPLE_BINS - 1:
-            i = TOP_SAMPLE_BINS - 1
-        if i not in tops or z > tops[i]:
-            tops[i] = z
-
-    if len(tops) < TOP_SAMPLE_BINS / 2:
-        return None
-
-    samples = []
-    for i in sorted(tops.keys()):
-        s = float(i) / (TOP_SAMPLE_BINS - 1)
-        t = (tops[i] - sill) / height
-        samples.append((s, t))
-    return samples
-
-
-# ===============================================================================
-# ARCHED HEAD
-# ===============================================================================
-
-def plane_point(origin, direction, u, z):
-    """A point in the wall's plane, *u* along it and at absolute height *z*."""
-    return XYZ(origin.X + direction.X * u,
-               origin.Y + direction.Y * u,
-               z)
-
-
-def solve3(matrix, rhs):
-    """Solve a 3x3 system by Gaussian elimination.  None if singular."""
-    m = [list(row) + [rhs[i]] for i, row in enumerate(matrix)]
-    for col in range(3):
-        pivot = max(range(col, 3), key=lambda r: abs(m[r][col]))
-        if abs(m[pivot][col]) < 1e-12:
-            return None
-        m[col], m[pivot] = m[pivot], m[col]
-        for r in range(3):
-            if r == col:
-                continue
-            factor = m[r][col] / m[col][col]
-            for c in range(col, 4):
-                m[r][c] -= factor * m[col][c]
-    return [m[i][3] / m[i][i] for i in range(3)]
-
-
-def fit_circle(points):
-    """Least-squares circle through (x, y) *points*.  (cx, cy, r) or None.
-
-    Uses the algebraic form x^2 + y^2 + Dx + Ey + F = 0, which is linear in
-    D, E and F, so three normal equations settle it.
-    """
-    if len(points) < 3:
-        return None
-
-    sxx = sxy = syy = sx = sy = 0.0
-    sxz = syz = sz = 0.0
-    n = float(len(points))
-    for x, y in points:
-        z = x * x + y * y
-        sxx += x * x
-        sxy += x * y
-        syy += y * y
-        sx  += x
-        sy  += y
-        sxz += x * z
-        syz += y * z
-        sz  += z
-
-    sol = solve3([[sxx, sxy, sx],
-                  [sxy, syy, sy],
-                  [sx,  sy,  n]],
-                 [-sxz, -syz, -sz])
-    if sol is None:
-        return None
-
-    d, e, f = sol
-    cx, cy = -d / 2.0, -e / 2.0
-    inner = cx * cx + cy * cy - f
-    if inner <= 0:
-        return None
-    return cx, cy, inner ** 0.5
-
-
-def fit_circle_trimmed(points):
-    """Fit a circle, drop the worst outliers, refit.  (cx, cy, r, worst).
-
-    Head trim that stops short of the jambs, or a transom sitting proud of
-    the arch, throws a handful of samples well off the curve.  Refitting
-    without them recovers the arch the rest of the samples describe.
-    """
-    fit = fit_circle(points)
-    if fit is None:
-        return None
-
-    def residuals(circle, pts):
-        cx, cy, r = circle
-        return [abs((((x - cx) ** 2 + (y - cy) ** 2) ** 0.5) - r)
-                for x, y in pts]
-
-    res = residuals(fit, points)
-    ordered = sorted(res)
-    median = ordered[len(ordered) // 2]
-    cutoff = max(median * 3.0, ARC_FIT_TOL)
-
-    kept = [p for p, d in zip(points, res) if d <= cutoff]
-    if len(kept) >= max(3, len(points) // 2) and len(kept) < len(points):
-        refit = fit_circle(kept)
-        if refit is not None:
-            fit = refit
-            res = residuals(fit, kept)
-
-    return fit[0], fit[1], fit[2], (max(res) if res else 0.0)
-
-
-def simplify_chain(points, tolerance):
-    """Douglas-Peucker reduction of a (x, y) polyline."""
-    if len(points) < 3:
-        return list(points)
-
-    x0, y0 = points[0]
-    x1, y1 = points[-1]
-    dx, dy = x1 - x0, y1 - y0
-    span = (dx * dx + dy * dy) ** 0.5
-
-    worst_i = 0
-    worst_d = 0.0
-    for i in range(1, len(points) - 1):
-        x, y = points[i]
-        if span < 1e-9:
-            d = ((x - x0) ** 2 + (y - y0) ** 2) ** 0.5
-        else:
-            d = abs(dy * x - dx * y + x1 * y0 - y1 * x0) / span
-        if d > worst_d:
-            worst_d, worst_i = d, i
-
-    if worst_d <= tolerance:
-        return [points[0], points[-1]]
-    left  = simplify_chain(points[:worst_i + 1], tolerance)
-    right = simplify_chain(points[worst_i:], tolerance)
-    return left[:-1] + right
-
-
-def close_profile(top_chain, origin, direction, width, base_z):
-    """Close a left-to-right *top_chain* of (u, z) into a wall profile."""
-    p_bl = plane_point(origin, direction, 0.0, base_z)
-    p_br = plane_point(origin, direction, width, base_z)
-
-    curves = [Line.CreateBound(p_bl, p_br)]
-    previous = p_br
-    for u, z in reversed(top_chain):
-        point = plane_point(origin, direction, u, z)
-        if previous.DistanceTo(point) > 1e-6:
-            curves.append(Line.CreateBound(previous, point))
-        previous = point
-    if previous.DistanceTo(p_bl) > 1e-6:
-        curves.append(Line.CreateBound(previous, p_bl))
-    return curves
-
-
-def build_arch_profile(samples, origin, direction, width, height, base_z):
-    """Return (curves, reason) for the head shape *samples* describe.
-
-    A head that fits one circle becomes a true arc with straight jambs.
-    One that does not - a segmental head carrying trim, say - is followed
-    as a simplified polyline instead, which is far better than throwing
-    the shape away and leaving a rectangle.  *curves* is None only when
-    the head is flat, and then *reason* is None too.
-    """
-    if not samples:
-        return None, "top of the window could not be traced"
-
-    t_top  = max(t for _s, t in samples)
-    t_side = min(t for _s, t in samples)
-    if (t_top - t_side) * height < FLAT_TOP_TOL:
-        return None, None          # flat head: the rectangle is already right
-
-    points = sorted((s * width, base_z + t * height) for s, t in samples)
-
-    fit = fit_circle_trimmed(points)
-    if fit is not None:
-        cx, cy, r, worst = fit
-
-        def on_circle(u):
-            """Height of the circle's upper half at *u*, or None."""
-            inner = r * r - (u - cx) ** 2
-            if inner < 0:
-                return None
-            return cy + inner ** 0.5
-
-        z_left  = on_circle(0.0)
-        z_apex  = on_circle(width / 2.0)
-        z_right = on_circle(width)
-
-        if (worst <= ARC_FIT_TOL and None not in (z_left, z_apex, z_right)
-                and cy < base_z + t_top * height
-                and min(z_left, z_right) >= base_z):
-            p_left  = plane_point(origin, direction, 0.0, z_left)
-            p_right = plane_point(origin, direction, width, z_right)
-            p_apex  = plane_point(origin, direction, width / 2.0, z_apex)
-            p_bl    = plane_point(origin, direction, 0.0, base_z)
-            p_br    = plane_point(origin, direction, width, base_z)
-            try:
-                arc = Arc.Create(p_right, p_left, p_apex)
-            except Exception as ex:
-                return None, "arched head could not be fitted ({})".format(ex)
-
-            curves = [Line.CreateBound(p_bl, p_br)]
-            if p_br.DistanceTo(p_right) > 1e-6:
-                curves.append(Line.CreateBound(p_br, p_right))
-            curves.append(arc)
-            if p_left.DistanceTo(p_bl) > 1e-6:
-                curves.append(Line.CreateBound(p_left, p_bl))
-            return curves, None
-
-        note = ("head is not a single arc (off by {:.3f} ft); "
-                "followed as a polyline".format(worst))
-    else:
-        note = "head could not be fitted to an arc; followed as a polyline"
-
-    # Pin the ends to the jambs so the profile closes on the wall's sides.
-    chain = [(0.0, points[0][1])] + \
-            [p for p in points if 0.0 < p[0] < width] + \
-            [(width, points[-1][1])]
-    chain = simplify_chain(chain, POLY_SIMPLIFY_TOL)
-    if len(chain) < 2:
-        return None, "head shape could not be traced into a profile"
-    return close_profile(chain, origin, direction, width, base_z), note
-
-
-class SketchFailureSwallower(IFailuresPreprocessor):
-    """Keep Revit's failure dialog out of the way.
-
-    Warnings are dropped outright.  Errors are resolved by deleting the
-    elements that failed - in practice mullions Revit could not keep on a
-    reshaped wall - so the edit commits instead of stopping on a dialog
-    the script cannot answer.
-    """
-
-    def PreprocessFailures(self, failures_accessor):
-        try:
-            failures_accessor.DeleteAllWarnings()
-        except Exception:
-            pass
-
-        removed = False
-        try:
-            for failure in failures_accessor.GetFailureMessages():
-                if failure.GetSeverity() != FailureSeverity.Error:
-                    continue
-                ids = list(failure.GetFailingElementIds())
-                if not ids:
-                    continue
-                if failures_accessor.IsElementsDeletionPermitted(ids):
-                    failures_accessor.DeleteElements(ids)
-                    removed = True
-        except Exception as ex:
-            logger.debug("Could not resolve a failure: {}".format(ex))
-
-        if removed:
-            return FailureProcessingResult.ProceedWithCommit
-        return FailureProcessingResult.Continue
-
-
-def sketch_curve_ids(sketch):
-    """Return the element ids of a sketch's profile curves.
-
-    A sketch owns more than its curves - reference planes and dimensions
-    live there too - so the ids are filtered down to CurveElements before
-    anything gets deleted.
-    """
-    ids = []
-    try:
-        for cid in sketch.GetAllElements():
-            if isinstance(doc.GetElement(cid), CurveElement):
-                ids.append(cid)
-    except Exception:
-        pass
-    if ids:
-        return ids
-
-    try:
-        for arr in sketch.Profile:
-            for curve in arr:
-                ref = curve.Reference
-                if ref is not None:
-                    ids.append(ref.ElementId)
-    except Exception:
-        pass
-    return ids
-
-
-def apply_arch_profile(wall, curves):
-    """Re-sketch *wall*'s elevation profile.  Returns None, or a reason.
-
-    Runs outside any open transaction: SketchEditScope refuses to start
-    inside one.
-    """
-    t = Transaction(doc, "Create wall profile sketch")
-    try:
-        t.Start()
-        sketch_id = wall.SketchId
-        if sketch_id is None or sketch_id == ElementId.InvalidElementId:
-            # CreateProfileSketch hands back the Sketch itself, not its id.
-            sketch_id = as_element_id(wall.CreateProfileSketch())
-        t.Commit()
-    except Exception as ex:
-        if t.HasStarted() and not t.HasEnded():
-            t.RollBack()
-        return "profile sketch unavailable on this wall ({})".format(ex)
-
-    if sketch_id is None:
-        return "profile sketch could not be created"
-
-    sketch = doc.GetElement(sketch_id)
-    if not isinstance(sketch, Sketch):
-        return "profile sketch could not be read back"
-
-    scope = SketchEditScope(doc, "Reshape curtain wall to the window")
-    try:
-        scope.Start(sketch.Id)
-    except Exception as ex:
-        return "profile sketch could not be opened ({})".format(ex)
-
-    inner = Transaction(doc, "Replace profile curves")
-    try:
-        inner.Start()
-        try:
-            opts = inner.GetFailureHandlingOptions()
-            opts.SetFailuresPreprocessor(SketchFailureSwallower())
-            inner.SetFailureHandlingOptions(opts)
-        except Exception as ex:
-            logger.debug("Could not set failure handling: {}".format(ex))
-        plane = sketch.SketchPlane
-        for cid in sketch_curve_ids(sketch):
-            try:
-                doc.Delete(cid)
-            except Exception:
-                continue
-        for curve in curves:
-            doc.Create.NewModelCurve(curve, plane)
-        inner.Commit()
-    except Exception as ex:
-        if inner.HasStarted() and not inner.HasEnded():
-            inner.RollBack()
-        try:
-            scope.Cancel()
-        except Exception:
-            pass
-        return "profile could not be re-sketched ({})".format(ex)
-
-    try:
-        scope.Commit(SketchFailureSwallower())
-    except Exception as ex:
-        try:
-            scope.Cancel()
-        except Exception:
-            pass
-        return "profile edit was rejected ({})".format(ex)
-    return None
 
 
 # ===============================================================================
@@ -1533,7 +1196,13 @@ def create_curtain_wall(plan, host_wall, wall_type):
 # ===============================================================================
 
 def report(rows):
-    """Print the notes table, or nothing at all when there is nothing to say."""
+    """Print the problems table, or nothing when there were none.
+
+    Only genuine shortfalls reach here - a window skipped, a profile that
+    could not be applied, a BG_ parameter left blank.  A fallback that
+    worked is logged instead, so a run that produced the right walls says
+    nothing at all.
+    """
     if not rows:
         return
     output.print_md("### Window To Curtain Wall - {} note(s)".format(len(rows)))
@@ -1612,7 +1281,14 @@ def move_profile(curves, src_origin, src_dir, dst_origin, dst_dir):
 
 
 def resolve_profile(plan, wall):
-    """Reshape *wall* to match its source, recording any note."""
+    """Reshape *wall* to the profile sketched on its source, if any.
+
+    Only a linked curtain wall carries one.  A window always produces a
+    plain rectangle: its head shape can only be recovered by tracing
+    tessellated solids, and that trace is not reliable enough to put in
+    the model - an arched window gets a rectangle tall enough to cover
+    the arch instead.
+    """
     if plan.profile_curves:
         try:
             curve = wall.Location.Curve
@@ -1629,33 +1305,12 @@ def resolve_profile(plan, wall):
             plan.notes.append("profile could not be carried over ({})"
                               .format(ex))
             return
-        failure = apply_arch_profile(wall, moved)
+        failure = wall_sketch.apply_profile(
+            doc, wall, moved,
+            "Create wall profile sketch",
+            "Reshape curtain wall to the window")
         if failure:
             plan.notes.append(failure)
-        return
-
-    curves = None
-    reason = None
-    try:
-        curve = wall.Location.Curve
-        if isinstance(curve, Line):
-            curves, reason = build_arch_profile(
-                plan.top_profile, curve.GetEndPoint(0), plan.wall_dir,
-                plan.width, plan.height, plan.sill)
-        elif plan.top_profile:
-            t_top  = max(x[1] for x in plan.top_profile)
-            t_side = min(x[1] for x in plan.top_profile)
-            if (t_top - t_side) * plan.height >= FLAT_TOP_TOL:
-                reason = "shaped head on a curved wall; left rectangular"
-    except Exception as ex:
-        reason = "arch check failed ({})".format(ex)
-
-    if curves:
-        failure = apply_arch_profile(wall, curves)
-        if failure:
-            plan.notes.append(failure)
-    elif reason:
-        plan.notes.append(reason)
 
 
 def main():
@@ -1700,7 +1355,8 @@ def main():
             if wall_type is None:
                 wall_type = prompt_curtain_type(types, plan.mark, plan.prefix)
                 if wall_type is not None:
-                    plan.notes.append("type picked by hand")
+                    logger.debug("Type picked by hand for prefix {}"
+                                 .format(plan.prefix))
             chosen[key] = wall_type
 
         wall_type = chosen[key]
@@ -1717,7 +1373,7 @@ def main():
 
     # ---- Create every wall in one transaction.  Arched heads are re-sketched
     # ---- afterwards: SketchEditScope cannot run inside a transaction.
-    arch_queue = []
+    made = []
 
     t = Transaction(doc, "Create curtain walls from linked windows")
     t.Start()
@@ -1725,7 +1381,7 @@ def main():
         # Clearing the grid raises the same mullion errors the profile edit
         # does, so this transaction answers them the same way.
         opts = t.GetFailureHandlingOptions()
-        opts.SetFailuresPreprocessor(SketchFailureSwallower())
+        opts.SetFailuresPreprocessor(wall_sketch.SketchFailureSwallower())
         opts.SetClearAfterRollback(True)
         t.SetFailureHandlingOptions(opts)
     except Exception as ex:
@@ -1745,29 +1401,29 @@ def main():
             if reason:
                 plan.notes.append(reason)
             plan.new_wall_id = eid_value(wall.Id)
-            arch_queue.append((plan, wall))
+            made.append((plan, wall))
         t.Commit()
     except Exception:
         if t.HasStarted() and not t.HasEnded():
             t.RollBack()
         raise
 
-    for plan, wall in arch_queue:
+    for plan, wall in made:
         resolve_profile(plan, wall)
 
-    if arch_queue:
+    if made:
         # Revit rebuilds the grid from the type's layout when a wall is
         # reshaped, so the panels have to be cleared again afterwards.
         cleanup = Transaction(doc, "Remove curtain grid")
         cleanup.Start()
         try:
             opts = cleanup.GetFailureHandlingOptions()
-            opts.SetFailuresPreprocessor(SketchFailureSwallower())
+            opts.SetFailuresPreprocessor(wall_sketch.SketchFailureSwallower())
             cleanup.SetFailureHandlingOptions(opts)
         except Exception as ex:
             logger.debug("Could not set failure handling: {}".format(ex))
         try:
-            for plan, wall in arch_queue:
+            for plan, wall in made:
                 plan.grid_removed.append(strip_curtain_grid(wall))
             cleanup.Commit()
         except Exception:
@@ -1775,13 +1431,13 @@ def main():
                 cleanup.RollBack()
             raise
 
-    for plan, wall in arch_queue:
+    for plan, wall in made:
         if plan.notes:
             rows.append([plan.window_id, plan.link_name, plan.mark or "-",
                          "; ".join(plan.notes)])
 
     # Silence on a clean run: only notes are worth opening the output for.
-    report_measurements([p for p, _w in arch_queue])
+    report_measurements([p for p, _w in made])
     report(rows)
 
 
