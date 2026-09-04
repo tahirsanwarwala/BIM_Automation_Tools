@@ -26,8 +26,11 @@ Only sweeps you actually pick cut a wall, and only sweeps hosted on that
 wall -- the link's own GetHostIds() decides, so a sweep running along a
 neighbouring wall never shortens this one.
 
-Nothing is rounded.  A band end has to sit exactly on a sweep face or a
-level, or a gap opens up in the elevation.
+Nothing is rounded.  A band end has to sit exactly on a sweep face or
+a level, or a gap opens up in the elevation.  The one thing that does
+move is an end within an inch of a level, which is pulled onto it --
+once, on the measured extents, before anything is banded, so the sweep
+and the walls above and below it all move together and stay met.
 
 Sweep wall types are automatic: a sweep whose type name or material name
 says STONE gets SKIN_CAST STONE PROFILE_0' 2", one that says EIFS gets
@@ -1361,6 +1364,39 @@ def sweep_cuts_walls(job):
     return get_element_name(job.wall_type) == wall_bands.CAST_STONE_TYPE_NAME
 
 
+def snap_to_levels(wall_jobs, sweep_jobs, levels):
+    """Pull every end that all but reaches a level onto it.
+
+    A sweep an inch shy of a level binds its base to the level BELOW
+    that one and its top to the one above -- the house rule working as
+    written and reading as nonsense, a parapet spanning LEVEL 03 to
+    LEVEL 05 when it plainly sits on 04.
+
+    This runs ONCE, here, on the measured extents, before anything is
+    banded or built.  That is the whole reason it can be done safely: a
+    sweep's run and the wall bands above and below it are cut from the
+    SAME number, so moving it moves all three together and no gap or
+    overlap can open between them.  Snapping the finished walls one at
+    a time afterwards is what would open one.
+
+    Each end moves on its own, so a span is stretched onto the levels
+    rather than slid between them.  A span too short to survive it --
+    a shallow sweep sitting astride a level, both ends reaching for it
+    -- is left exactly where it was.
+    """
+    for job in sweep_jobs:
+        for run in job.runs:
+            run.base_z, run.top_z, _moved = \
+                wall_constraints.snap_span_to_levels(
+                    run.base_z, run.top_z, levels,
+                    min_height=MIN_RUN_LENGTH)
+
+    for job in wall_jobs:
+        job.base_z, job.top_z, _moved = \
+            wall_constraints.snap_span_to_levels(
+                job.base_z, job.top_z, levels, min_height=MIN_RUN_LENGTH)
+
+
 def band_walls(wall_jobs, sweep_jobs, levels, notes):
     """Work out the bands each wall is cut into.
 
@@ -1950,6 +1986,11 @@ def main():
     # Every dialog happens here, before the transaction opens.
     sweep_jobs = resolve_sweep_types(sweep_jobs, notes)
     skin_plans = collect_skin_plans(wall_jobs)
+
+    # Before banding: the bands are cut at the sweeps' own elevations,
+    # so the snap has to reach the sweeps first or the walls would be
+    # cut where the sweeps used to be.
+    snap_to_levels(wall_jobs, sweep_jobs, levels)
 
     band_walls(wall_jobs, sweep_jobs, levels, notes)
 
