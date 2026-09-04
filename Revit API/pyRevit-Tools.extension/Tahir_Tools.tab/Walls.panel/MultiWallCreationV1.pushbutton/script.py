@@ -403,8 +403,16 @@ def _sweep_edge_spans(sweep, transform, frames):
             if not pts:
                 continue
 
-            mid = pts[len(pts) // 2]
-            idx = wall_bands.nearest_segment_index((mid.X, mid.Y), segments)
+            # The CENTROID, not pts[len(pts) // 2].  Edge.Tessellate()
+            # returns just two points for a straight edge -- and almost
+            # every edge of a sweep solid is straight -- so indexing the
+            # middle picks the edge's END.  At a corner both host walls
+            # are equidistant from that end, the tie hands the edge to
+            # whichever wall came first, and one wall then swallows the
+            # other's geometry while the other gets no run at all.
+            cx = sum(pt.X for pt in pts) / len(pts)
+            cy = sum(pt.Y for pt in pts) / len(pts)
+            idx = wall_bands.nearest_segment_index((cx, cy), segments)
             if idx is None:
                 continue
 
@@ -426,7 +434,8 @@ def _sweep_edge_spans(sweep, transform, frames):
                 mid_id = face.MaterialElementId
                 if mid_id is None or mid_id == ElementId.InvalidElementId:
                     continue
-                areas[mid_id.IntegerValue] =                     areas.get(mid_id.IntegerValue, 0.0) + face.Area
+                key = mid_id.IntegerValue
+                areas[key] = areas.get(key, 0.0) + face.Area
             except Exception:
                 continue
 
@@ -461,6 +470,10 @@ def sweep_runs(sweep, transform, frames, wall_keys):
         if not spans:
             continue
 
+        # Once per wall, not once per run: it tessellates the whole host
+        # wall solid.
+        exterior_offset = wall_chain.wall_exterior_offset(frame, transform)
+
         intervals = [(lo, hi) for lo, hi, _z0, _z1 in spans]
         for along_min, along_max in wall_bands.merge_intervals(
                 intervals, SWEEP_GAP_TOL):
@@ -479,9 +492,24 @@ def sweep_runs(sweep, transform, frames, wall_keys):
             if z_lo is None or (z_hi - z_lo) < MIN_RUN_LENGTH:
                 continue
 
+            # Snap a run end that all but reaches the wall end onto it.
+            # Clamping alone only handles the overshoot of a mitred
+            # corner; a sweep that RETURNS into the corner instead stops
+            # at the neighbour's face, half a wall thickness short.
+            # That is far more than wall_miter's join tolerance, so the
+            # two runs would not be seen as adjacent and the corner
+            # would be left open -- the very thing this is fixing.  A
+            # host wall's own thickness is the scale of that shortfall,
+            # so it is the scale the snap works at.
+            snap = frame.width
+            if along_min < snap:
+                along_min = 0.0
+            if along_max > frame.length - snap:
+                along_max = frame.length
+
             run = SweepRun()
             run.frame     = frame
-            run.offset    = wall_chain.wall_exterior_offset(frame, transform)
+            run.offset    = exterior_offset
             run.along_min = max(along_min, 0.0)
             run.along_max = min(along_max, frame.length)
             run.base_z    = z_lo
@@ -607,6 +635,58 @@ class WallJob(object):
                  "length")
 
 
+def _insert_extent(insert, link_tf, origin, direction):
+    """Return (along_lo, along_hi, z_lo, z_hi) for one insert, or None.
+
+    Measured off the insert's own SOLID where it has one.  A bounding
+    box is axis-aligned to the link's model axes, not to the wall, so on
+    a wall running diagonally to those axes the box projects up to a
+    whole wall thickness wider than the opening really is -- and the
+    skin either side gets cut back that far for no reason.  The solid
+    has no such bias.
+
+    Falls back to the bounding box when the insert has no readable
+    solid, which is better than not cutting at all.
+    """
+    alongs = []
+    zs     = []
+
+    def take(pt):
+        world = link_tf.OfPoint(pt)
+        delta = XYZ(world.X - origin.X,
+                    world.Y - origin.Y,
+                    world.Z - origin.Z)
+        alongs.append(delta.DotProduct(direction))
+        zs.append(world.Z)
+
+    try:
+        for sol in wall_chain.iter_solids(insert):
+            for edge in sol.Edges:
+                try:
+                    for pt in edge.Tessellate():
+                        take(pt)
+                except Exception:
+                    continue
+    except Exception as ex:
+        logger.debug("Could not read insert geometry: {}".format(ex))
+
+    if not alongs:
+        try:
+            bbox = insert.get_BoundingBox(None)
+        except Exception:
+            return None
+        if bbox is None:
+            return None
+        for x in (bbox.Min.X, bbox.Max.X):
+            for y in (bbox.Min.Y, bbox.Max.Y):
+                for z in (bbox.Min.Z, bbox.Max.Z):
+                    take(XYZ(x, y, z))
+
+    if not alongs:
+        return None
+    return min(alongs), max(alongs), min(zs), max(zs)
+
+
 def wall_openings(wall, link_tf, origin, direction):
     """Return the openings in *wall* as (along_lo, along_hi, z_lo, z_hi).
 
@@ -615,12 +695,11 @@ def wall_openings(wall, link_tf, origin, direction):
     these the way the sweeps do, so a band does not run solid across a
     window.
 
-    Each insert is measured from its bounding box.  That is a little
-    generous -- it takes in the frame and any trim, not just the rough
-    opening -- but the finish genuinely stops at the trim, and the box
-    is the one measurement every insert family can be relied on to give.
-    An arched head means the box reaches the crown, so a band crossing
-    only the springing line is still cut the full width.
+    The extent taken in is the insert's whole solid -- frame and trim,
+    not just the rough opening -- which is right for a finish that stops
+    against the trim.  An arched head means the extent reaches the
+    crown, so a band crossing only the springing line is still cut the
+    full width.
     """
     try:
         ids = list(wall.FindInserts(True, False, True, True))
@@ -634,28 +713,9 @@ def wall_openings(wall, link_tf, origin, direction):
         insert = link_doc.GetElement(iid)
         if insert is None:
             continue
-        try:
-            bbox = insert.get_BoundingBox(None)
-        except Exception:
-            continue
-        if bbox is None:
-            continue
-
-        alongs = []
-        zs     = []
-        for x in (bbox.Min.X, bbox.Max.X):
-            for y in (bbox.Min.Y, bbox.Max.Y):
-                for z in (bbox.Min.Z, bbox.Max.Z):
-                    pt = link_tf.OfPoint(XYZ(x, y, z))
-                    delta = XYZ(pt.X - origin.X,
-                                pt.Y - origin.Y,
-                                pt.Z - origin.Z)
-                    alongs.append(delta.DotProduct(direction))
-                    zs.append(pt.Z)
-
-        if not alongs:
-            continue
-        found.append((min(alongs), max(alongs), min(zs), max(zs)))
+        extent = _insert_extent(insert, link_tf, origin, direction)
+        if extent is not None:
+            found.append(extent)
 
     return found
 
@@ -1049,6 +1109,14 @@ def create_sweep_wall(curve, frame, wall_type, band):
     return wall
 
 
+def report_unwritten(notes, tally, param_name):
+    """Report a parameter that could not be written, once per element."""
+    for label, count in tally.items():
+        note(notes, label,
+             "{} could not be written on {} wall(s) - parameter missing, "
+             "read-only, or not a text parameter".format(param_name, count))
+
+
 def unmitred_curve(segment):
     """The segment's own offset line, for when mitring could not run.
 
@@ -1069,9 +1137,9 @@ def apply_bg_level(wall, band):
 
     The level comes from the band the wall was built to rather than from
     the wall itself, so it says the same thing the constraint does even
-    if Revit later re-hosts the wall.  A missing, read-only or non-text
-    parameter is not worth failing a wall over -- it is reported by the
-    caller and the wall stands.
+    if Revit later re-hosts the wall.  Returns False when the parameter
+    is missing, read-only or not text -- the wall itself is correct
+    either way, so the caller reports it rather than failing the wall.
     """
     level = doc.GetElement(band["base_level_id"])
     if level is None:
@@ -1127,6 +1195,7 @@ def build_sweep_walls(sweep_jobs, levels, notes):
             (span_id, item["job"].wall_type.Id.IntegerValue), []).append(item)
 
     unwritten = {}
+    no_level  = {}
     for group in groups.values():
         try:
             curves = wall_chain.mitre_segments(
@@ -1163,15 +1232,13 @@ def build_sweep_walls(sweep_jobs, levels, notes):
                 note(notes, label, "wall creation failed: {}".format(ex))
                 continue
 
-            apply_bg_level(wall, band)
+            if not apply_bg_level(wall, band):
+                no_level[job.label] = no_level.get(job.label, 0) + 1
             if job.type_mark and not set_bg_profile(wall, job.type_mark):
                 unwritten[job.label] = unwritten.get(job.label, 0) + 1
 
-    for job_label, count in unwritten.items():
-        note(notes, job_label,
-             "{} could not be written on {} wall(s) - parameter missing, "
-             "read-only, or not a text parameter".format(
-                 BG_PROFILE_PARAM, count))
+    report_unwritten(notes, unwritten, BG_PROFILE_PARAM)
+    report_unwritten(notes, no_level, BG_LEVEL_PARAM)
 
 
 def _along(start, heading, distance):
@@ -1252,8 +1319,17 @@ def prepare_bands(wall_jobs, skin_plans, notes):
                            if z_hi > band["base_z"] + wall_bands.TOL
                            and z_lo < band["top_z"] - wall_bands.TOL]
 
-                runs, _dropped = wall_bands.subtract_spans(
-                    (0.0, job.length), cutters)
+                # MIN_RUN_LENGTH, not the default 1/16 inch: a half-inch
+                # pier between two adjacent windows is not a wall worth
+                # making, and the sweeps use the same threshold.
+                runs, dropped = wall_bands.subtract_spans(
+                    (0.0, job.length), cutters, MIN_RUN_LENGTH)
+
+                for lo, hi in dropped:
+                    note(notes, job.label,
+                         "stretch between openings at {} to {} along the "
+                         "wall is too narrow to build".format(
+                             feet_text(lo), feet_text(hi)))
 
                 for along_min, along_max in runs:
                     o0 = _along(o_start, heading, along_min)
@@ -1329,6 +1405,7 @@ def mitre_prepared(prepared, notes):
 
 def build_bands(prepared, notes):
     """Create one skin wall per prepared band.  Inside a transaction."""
+    no_level = {}
     for item in prepared:
         job  = item["job"]
         band = item["band"]
@@ -1338,12 +1415,15 @@ def build_bands(prepared, notes):
                 band["base_level_id"], band["height"],
                 band["base_offset"], job.structural, job.orientation)
             apply_constraints(wall, band)
-            apply_bg_level(wall, band)
+            if not apply_bg_level(wall, band):
+                no_level[job.label] = no_level.get(job.label, 0) + 1
         except Exception as ex:
             note(notes, job.label,
                  "band {} to {} failed: {}".format(
                      feet_text(band["base_z"]), feet_text(band["top_z"]),
                      ex))
+
+    report_unwritten(notes, no_level, BG_LEVEL_PARAM)
 
 
 # ===========================================================================
