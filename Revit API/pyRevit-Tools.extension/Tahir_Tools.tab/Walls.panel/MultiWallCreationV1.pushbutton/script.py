@@ -603,6 +603,113 @@ def notes_none():
 
 
 # ===========================================================================
+# WALL TYPES
+# ===========================================================================
+
+def find_wall_type_by_name(name):
+    """Return the host WallType named exactly *name*, or None."""
+    from Autodesk.Revit.DB import WallType
+    for wt in FilteredElementCollector(doc).OfClass(WallType):
+        if get_element_name(wt) == name:
+            return wt
+    return None
+
+
+def resolve_sweep_types(sweep_jobs, notes):
+    """Give every sweep job a wall type, asking only where it must.
+
+    The STONE / EIFS name rule answers most of them outright.  What it
+    cannot read -- and any profile whose named type is missing from this
+    model -- falls back to one dialog per sweep TYPE, so a run with
+    twenty identical sweeps asks once.
+
+    Returns the jobs that ended up with a type.  A sweep left without
+    one is dropped: it neither becomes a wall nor cuts one, and it is
+    reported.
+    """
+    asked = {}          # sweep type name -> WallType or None
+    resolved = []
+
+    for job in sweep_jobs:
+        wanted = wall_bands.sweep_wall_type_name(job.type_name, job.material)
+
+        if wanted is not None:
+            wall_type = find_wall_type_by_name(wanted)
+            if wall_type is not None:
+                job.wall_type = wall_type
+                resolved.append(job)
+                continue
+            note(notes, job.label,
+                 "wall type '{}' is not in this model - asking "
+                 "instead".format(wanted))
+
+        key = job.type_name or "<unnamed sweep type>"
+        if key not in asked:
+            asked[key] = wall_materials.pick_skin_wall_type(
+                doc,
+                "Pick the wall type for sweep type '{}'".format(key),
+                job.material or "<unknown>",
+                wall_naming.feet_to_imperial(job.top_z - job.base_z))
+
+        if asked[key] is None:
+            note(notes, job.label,
+                 "no wall type chosen for sweep type '{}' - skipped, and "
+                 "it does not cut any wall".format(key))
+            continue
+
+        job.wall_type = asked[key]
+        resolved.append(job)
+
+    return resolved
+
+
+def _material_of_layer(cs, layer_index, source_doc):
+    """Return the Material element for a layer, or None.
+
+    The material belongs to *source_doc*, which is the linked document.
+    """
+    try:
+        mat_id = cs.GetMaterialId(layer_index)
+    except Exception:
+        return None
+    if mat_id and mat_id != ElementId.InvalidElementId:
+        return source_doc.GetElement(mat_id)
+    return None
+
+
+def skin_plan_key(cs, source_doc):
+    """Key a wall by the SKIN type it needs, so each is resolved once.
+
+    Walls whose finishes share a Mark share a wall type; a finish with
+    no Mark falls back to its material name, so those are still only
+    asked about once each.
+    """
+    source_mat = _material_of_layer(cs, 0, source_doc)
+    mark       = wall_materials.material_mark(source_mat)
+    if not mark:
+        mark = "name:{}".format(
+            wall_materials.element_name(source_mat) or "Unknown")
+    return wall_materials.type_match_key(mark, cs.GetLayerWidth(0))
+
+
+def collect_skin_plans(wall_jobs):
+    """Resolve the SKIN wall type once per Mark across the selection.
+
+    Returns {skin_plan_key: plan}.  Called before the transaction opens
+    so the dialogs do not appear mid-transaction.
+    """
+    plans = {}
+    for job in wall_jobs:
+        key = skin_plan_key(job.cs, job.source_doc)
+        if key in plans:
+            continue
+        plans[key] = wall_materials.plan_skin_wall_type(
+            doc, _material_of_layer(job.cs, 0, job.source_doc),
+            job.source_doc, job.cs.GetLayerWidth(0), TOOL_TITLE)
+    return plans
+
+
+# ===========================================================================
 # REPORTING
 # ===========================================================================
 
@@ -639,17 +746,23 @@ def main():
         if job is not None:
             wall_jobs.append(job)
 
+    sweep_jobs = resolve_sweep_types(sweep_jobs, notes)
+    skin_plans = collect_skin_plans(wall_jobs)
+
     # TEMPORARY diagnostic, replaced in Task 7 by the build.
     rows = []
     for job in sweep_jobs:
         rows.append([job.label,
-                     "sweep {} to {} on {} wall(s), type '{}'".format(
+                     "sweep {} to {} on {} wall(s), type '{}' -> {}".format(
                          feet_text(job.base_z), feet_text(job.top_z),
-                         len(job.frames), job.type_name)])
+                         len(job.frames), job.type_name,
+                         get_element_name(job.wall_type))])
     for job in wall_jobs:
         rows.append([job.label,
                      "wall {} to {}".format(
                          feet_text(job.base_z), feet_text(job.top_z))])
+    rows.append(["-", "{} skin type plan(s) resolved".format(
+        len(skin_plans))])
     output.print_md("### {} - measured".format(TOOL_TITLE))
     output.print_table(table_data=rows, columns=["Element", "Measured"])
 
