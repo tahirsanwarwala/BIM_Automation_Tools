@@ -913,48 +913,58 @@ def prepare_bands(wall_jobs, skin_plans, notes):
     Returns [{"job", "band", "curve", "type"}].
     """
     prepared = []
+    executed = {}
 
     for job in wall_jobs:
         if not job.bands:
             continue
 
-        key  = skin_plan_key(job.cs, job.source_doc)
-        plan = skin_plans.get(key)
-        if plan is None or plan.get("action") == "skip":
-            note(notes, job.label,
-                 plan.get("reason", "no wall type resolved")
-                 if plan else "no wall type resolved")
+        try:
+            key  = skin_plan_key(job.cs, job.source_doc)
+            plan = skin_plans.get(key)
+            if plan is None or plan.get("action") == "skip":
+                note(notes, job.label,
+                     plan.get("reason", "no wall type resolved")
+                     if plan else "no wall type resolved")
+                continue
+
+            if key in executed:
+                skin_type = executed[key]
+            else:
+                skin_type = wall_materials.execute_skin_wall_type_plan(
+                    doc, plan, _material_of_layer(job.cs, 0, job.source_doc),
+                    job.source_doc)
+                executed[key] = skin_type
+
+            if skin_type is None:
+                note(notes, job.label, "no wall type resolved")
+                continue
+
+            first_core = job.cs.GetFirstCoreLayerIndex()
+            last_core  = job.cs.GetLastCoreLayerIndex()
+            skin_w, gap_w, core_w, _int_w, _ext = \
+                wall_skin.layer_group_widths(job.cs, first_core, last_core)
+
+            if job.loc_to_ext is not None:
+                d = job.loc_to_ext
+            else:
+                d = wall_skin.dist_loc_to_exterior(
+                    job.loc_line, job.total_width, skin_w, gap_w, core_w)
+
+            curve = wall_skin.skin_centreline(
+                job.loc_curve, job.orientation, d, skin_w)
+
+            for band in job.bands:
+                prepared.append({"job": job, "band": band,
+                                 "curve": curve, "type": skin_type})
+        except Exception as ex:
+            note(notes, job.label, "could not prepare bands: {}".format(ex))
             continue
-
-        skin_type = wall_materials.execute_skin_wall_type_plan(
-            doc, plan, _material_of_layer(job.cs, 0, job.source_doc),
-            job.source_doc)
-        if skin_type is None:
-            note(notes, job.label, "no wall type resolved")
-            continue
-
-        first_core = job.cs.GetFirstCoreLayerIndex()
-        last_core  = job.cs.GetLastCoreLayerIndex()
-        skin_w, gap_w, core_w, _int_w, _ext = wall_skin.layer_group_widths(
-            job.cs, first_core, last_core)
-
-        if job.loc_to_ext is not None:
-            d = job.loc_to_ext
-        else:
-            d = wall_skin.dist_loc_to_exterior(
-                job.loc_line, job.total_width, skin_w, gap_w, core_w)
-
-        curve = wall_skin.skin_centreline(
-            job.loc_curve, job.orientation, d, skin_w)
-
-        for band in job.bands:
-            prepared.append({"job": job, "band": band,
-                             "curve": curve, "type": skin_type})
 
     return prepared
 
 
-def mitre_prepared(prepared):
+def mitre_prepared(prepared, notes):
     """Close the corners between bands that sit at the same elevation.
 
     Adjacency is judged on the ORIGINAL wall curves, which still share
@@ -962,7 +972,10 @@ def mitre_prepared(prepared):
     cross.  Bands at different elevations are mitred separately -- two
     walls that never touch must not have a corner dragged between them.
 
-    Curves are replaced in place inside *prepared*.
+    Curves are replaced in place inside *prepared*.  A group whose
+    mitre fails (a very shallow corner can push the intersection past
+    Revit's maximum curve length) is left with its unmitred curves --
+    an open corner is a far better outcome than losing the whole run.
     """
     groups = {}
     for item in prepared:
@@ -970,29 +983,35 @@ def mitre_prepared(prepared):
             item["band"]["base_z"], item["band"]["top_z"])
         groups.setdefault(key, []).append(item)
 
-    for items in groups.values():
+    for key, items in groups.items():
         if len(items) < 2:
             continue
 
-        originals = []
-        offsets   = []
-        zs        = []
-        for item in items:
-            oc = item["job"].loc_curve
-            sc = item["curve"]
-            o0, o1 = oc.GetEndPoint(0), oc.GetEndPoint(1)
-            s0, s1 = sc.GetEndPoint(0), sc.GetEndPoint(1)
-            originals.append(((o0.X, o0.Y), (o1.X, o1.Y)))
-            offsets.append(((s0.X, s0.Y), (s1.X, s1.Y)))
-            zs.append((s0.Z, s1.Z))
+        try:
+            originals = []
+            offsets   = []
+            zs        = []
+            for item in items:
+                oc = item["job"].loc_curve
+                sc = item["curve"]
+                o0, o1 = oc.GetEndPoint(0), oc.GetEndPoint(1)
+                s0, s1 = sc.GetEndPoint(0), sc.GetEndPoint(1)
+                originals.append(((o0.X, o0.Y), (o1.X, o1.Y)))
+                offsets.append(((s0.X, s0.Y), (s1.X, s1.Y)))
+                zs.append((s0.Z, s1.Z))
 
-        mitred = wall_miter.miter_chain(originals, offsets)
+            mitred = wall_miter.miter_chain(originals, offsets)
 
-        for idx, item in enumerate(items):
-            (x0, y0), (x1, y1) = mitred[idx]
-            z0, z1 = zs[idx]
-            item["curve"] = Line.CreateBound(XYZ(x0, y0, z0),
-                                             XYZ(x1, y1, z1))
+            for idx, item in enumerate(items):
+                (x0, y0), (x1, y1) = mitred[idx]
+                z0, z1 = zs[idx]
+                item["curve"] = Line.CreateBound(XYZ(x0, y0, z0),
+                                                 XYZ(x1, y1, z1))
+        except Exception as ex:
+            note(notes, "elevation group {}".format(key),
+                 "could not mitre corners for this band - left unmitred: "
+                 "{}".format(ex))
+            continue
 
 
 def build_bands(prepared, notes):
@@ -1071,7 +1090,7 @@ def main():
         build_sweep_walls(sweep_jobs, levels, notes)
 
         prepared = prepare_bands(wall_jobs, skin_plans, notes)
-        mitre_prepared(prepared)
+        mitre_prepared(prepared, notes)
         build_bands(prepared, notes)
 
         t.Commit()
