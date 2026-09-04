@@ -1,5 +1,7 @@
 layout:
+  - WallConstraints
   - SplitWalls
-  - SplitSkinAtOpening
   - SweepToWall
+  - MultiWallCreationV1
   - WindowToCurtainWall
+  - CurtainWallTrim
