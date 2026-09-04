@@ -665,18 +665,54 @@ class WallJob(object):
                  "length")
 
 
-def _insert_extent(insert, link_tf, origin, direction):
-    """Return (along_lo, along_hi, z_lo, z_hi) for one insert, or None.
+def _length_param(elements, names, builtin_names):
+    """First length found on *elements*, in feet, or None.
 
-    Measured off the insert's own SOLID where it has one.  A bounding
-    box is axis-aligned to the link's model axes, not to the wall, so on
-    a wall running diagonally to those axes the box projects up to a
-    whole wall thickness wider than the opening really is -- and the
-    skin either side gets cut back that far for no reason.  The solid
-    has no such bias.
+    Built-in parameters first, fetched by name so one missing from this
+    Revit version cannot raise, then plain lookups.  The same order
+    WindowToCurtainWall reads a window's size in.
+    """
+    for elem in elements:
+        if elem is None:
+            continue
+        for bip_name in builtin_names:
+            bip = getattr(BuiltInParameter, bip_name, None)
+            if bip is None:
+                continue
+            try:
+                param = elem.get_Parameter(bip)
+            except Exception:
+                continue
+            if param is not None and param.HasValue:
+                try:
+                    value = param.AsDouble()
+                except Exception:
+                    continue
+                if value > MIN_RUN_LENGTH:
+                    return value
 
-    Falls back to the bounding box when the insert has no readable
-    solid, which is better than not cutting at all.
+    for elem in elements:
+        if elem is None:
+            continue
+        for name in names:
+            try:
+                param = elem.LookupParameter(name)
+            except Exception:
+                continue
+            if param is not None and param.HasValue:
+                try:
+                    value = param.AsDouble()
+                except Exception:
+                    continue
+                if value > MIN_RUN_LENGTH:
+                    return value
+    return None
+
+
+def _insert_solid_extent(insert, link_tf, origin, direction):
+    """(along_lo, along_hi, z_lo, z_hi) from the insert's solid, or None.
+
+    Falls back to the bounding box when there is no readable solid.
     """
     alongs = []
     zs     = []
@@ -717,19 +753,64 @@ def _insert_extent(insert, link_tf, origin, direction):
     return min(alongs), max(alongs), min(zs), max(zs)
 
 
-# Reading a wall's inserts means tessellating each one's solid, and a
-# single wall is commonly host to several picked sweeps as well as being
-# picked itself.  The script runs once, so caching for its lifetime is
-# enough; the key is the (link id, wall id) pair used everywhere else.
-_OPENING_CACHE = {}
+def _insert_extent(insert, link_tf, origin, direction):
+    """Return (along_lo, along_hi, z_lo, z_hi) for one insert, or None.
 
+    The ALONG extent is the rough opening -- the void actually cut in
+    the wall -- taken from the insert's Rough Width, or its Width where
+    there is no rough dimension, centred on its location point.  It is
+    emphatically NOT the width of the insert's solid: a window family
+    carries exterior trim and casing that lap onto the wall either side
+    of the opening, and cutting the skin and sweep walls back to that
+    ate into the pier between two openings and left both standing
+    narrower than the wall behind them.
 
-def cached_wall_openings(wall_key, wall, link_tf, origin, direction):
-    """wall_openings, remembered per wall for the life of the run."""
-    if wall_key not in _OPENING_CACHE:
-        _OPENING_CACHE[wall_key] = wall_openings(
-            wall, link_tf, origin, direction)
-    return _OPENING_CACHE[wall_key]
+    The HEIGHT range still comes from the solid.  Vertically the solid
+    errs the right way -- an arched head, a projecting sill or a deep
+    surround all mean the opening genuinely interrupts more of the
+    elevation than a bare rough height would say -- and this range is
+    only ever used to ask whether an opening reaches a given course.
+
+    Falls back to the solid for the along extent too when the insert
+    carries no width parameter, which is the case for a plain
+    rectangular opening.
+    """
+    solid = _insert_solid_extent(insert, link_tf, origin, direction)
+    if solid is None:
+        return None
+
+    try:
+        symbol = insert.Document.GetElement(insert.GetTypeId())
+    except Exception:
+        symbol = None
+
+    width = _length_param(
+        [insert, symbol],
+        ["Rough Width", "Width"],
+        ["FAMILY_ROUGH_WIDTH_PARAM", "WINDOW_WIDTH", "DOOR_WIDTH",
+         "FAMILY_WIDTH_PARAM", "GENERIC_WIDTH"])
+    if width is None:
+        return solid
+
+    centre = None
+    try:
+        loc = insert.Location
+        if loc is not None and hasattr(loc, "Point"):
+            world = link_tf.OfPoint(loc.Point)
+            delta = XYZ(world.X - origin.X,
+                        world.Y - origin.Y,
+                        world.Z - origin.Z)
+            centre = delta.DotProduct(direction)
+    except Exception:
+        centre = None
+
+    if centre is None:
+        # No location point to centre the rough width on -- the solid's
+        # own midpoint is the best available stand-in.
+        centre = (solid[0] + solid[1]) / 2.0
+
+    half = width / 2.0
+    return centre - half, centre + half, solid[2], solid[3]
 
 
 def wall_openings(wall, link_tf, origin, direction):
@@ -740,11 +821,12 @@ def wall_openings(wall, link_tf, origin, direction):
     these the way the sweeps do, so a band does not run solid across a
     window.
 
-    The extent taken in is the insert's whole solid -- frame and trim,
-    not just the rough opening -- which is right for a finish that stops
-    against the trim.  An arched head means the extent reaches the
-    crown, so a band crossing only the springing line is still cut the
-    full width.
+    Along the wall the extent is the ROUGH OPENING, the void actually
+    cut in the wall, so a new wall stops on the same line as the wall
+    behind it.  Vertically it is the insert's whole solid, which errs
+    the generous way on an arched head or a projecting sill and is only
+    ever asked whether an opening reaches a given course.  See
+    _insert_extent for why the two ends are measured differently.
     """
     try:
         ids = list(wall.FindInserts(True, False, True, True))
