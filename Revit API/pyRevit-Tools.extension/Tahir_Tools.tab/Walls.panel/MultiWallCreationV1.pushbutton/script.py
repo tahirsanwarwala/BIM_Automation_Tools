@@ -932,14 +932,21 @@ _OPENING_CACHE = {}
 def openings_along(walls, link_tf, origin, direction, wall_keys):
     """Every opening in *walls*, as distances along one shared frame.
 
-    Cached on the set of walls rather than on any one of them, because
-    the answer depends on the frame they are being measured against and
-    that frame belongs to the run, not to a member.  Several sweeps
-    commonly share a run of host walls, and reading the inserts means
-    tessellating each one's solid, so the second sweep should not pay
-    for it again.
+    Cached on the set of walls AND the frame, because the answer is in
+    distances along that frame -- and the frame is not settled by the
+    member set alone.  Its direction comes from the longest member, and
+    two members of equal length tie, so the same walls reached in a
+    different order can give a frame pointing the other way.  Keyed on
+    the walls alone, the second sweep would then read the first one's
+    openings mirrored end for end and stop in the wrong places.
+
+    Several sweeps commonly share a run of host walls, and reading the
+    inserts means tessellating each one's solid, so where the frame IS
+    the same the second sweep should not pay for it again.
     """
-    cache_key = tuple(sorted(wall_keys))
+    cache_key = (tuple(sorted(wall_keys)),
+                 round(origin.X, 4), round(origin.Y, 4),
+                 round(direction.X, 4), round(direction.Y, 4))
     if cache_key not in _OPENING_CACHE:
         found = []
         for wall in walls:
@@ -1502,13 +1509,15 @@ def create_sweep_wall(curve, frame, wall_type, band):
     return wall
 
 
-def join_at_junctions(built, notes):
+def join_at_junctions(built, reach):
     """Join new walls that meet, so Revit cleans the junction itself.
 
     *built* is [(original_segment, wall)] for one mitre group, where
     the segment is the source centreline the mitring judged adjacency
-    on.  wall_miter.junction_pairs finds the same corners and tees it
-    found there, and each pair is handed to Revit to resolve.
+    on, and *reach* is the same tee reach the mitring used -- pass a
+    different one and the joining would act on a different set of
+    junctions from the trimming.  wall_miter.junction_pairs finds those
+    same corners and tees, and each pair is handed to Revit to resolve.
 
     Mitring puts the two walls in the right place; joining is what stops
     a line being drawn between them and lets Revit sort out the overlap
@@ -1516,7 +1525,8 @@ def join_at_junctions(built, notes):
     join that Revit refuses -- the walls do not actually intersect, or
     they are already joined -- is not worth a word to the user.
     """
-    pairs = wall_miter.junction_pairs([seg for seg, _w in built])
+    pairs = wall_miter.junction_pairs(
+        [seg for seg, _w in built], tee_reach=reach)
     for i, j in pairs:
         first = built[i][1]
         second = built[j][1]
@@ -1620,8 +1630,14 @@ def build_sweep_walls(sweep_jobs, levels, notes):
     for group in groups.values():
         built = []
         try:
+            # tee_reach at the thickest host wall in the group: a sweep
+            # can end on the FACE of the wall it turns into rather than
+            # on its centreline, and that is half a thickness short of
+            # where a junction is looked for otherwise.
+            reach = max(item["segment"].frame.width for item in group)
             curves = wall_chain.mitre_segments(
-                [item["segment"] for item in group])
+                [item["segment"] for item in group],
+                tees=True, tee_reach=reach)
         except Exception as ex:
             # An unmitred corner is a far better outcome than no wall.
             note(notes, group[0]["job"].label,
@@ -1661,7 +1677,7 @@ def build_sweep_walls(sweep_jobs, levels, notes):
 
             built.append((segment.centre_ends, wall))
 
-        join_at_junctions(built, notes)
+        join_at_junctions(built, reach)
 
     report_unwritten(notes, unwritten, BG_PROFILE_PARAM)
     report_unwritten(notes, no_level, BG_LEVEL_PARAM)
@@ -1789,7 +1805,11 @@ def mitre_prepared(prepared, notes):
                 offsets.append(((s0.X, s0.Y), (s1.X, s1.Y)))
                 zs.append((s0.Z, s1.Z))
 
-            mitred = wall_miter.miter_chain(originals, offsets)
+            # See the matching note in build_sweep_walls for why the
+            # reach is the thickest wall in the group.
+            reach = max(item["job"].total_width for item in items)
+            mitred = wall_miter.miter_chain(originals, offsets,
+                                            tees=True, tee_reach=reach)
 
             for idx, item in enumerate(items):
                 (x0, y0), (x1, y1) = mitred[idx]
@@ -1840,7 +1860,8 @@ def build_bands(prepared, notes):
         by_group.setdefault(item.get("group"), []).append(item)
     for group in by_group.values():
         join_at_junctions(
-            [(item["original"], item["wall"]) for item in group], notes)
+            [(item["original"], item["wall"]) for item in group],
+            max(item["job"].total_width for item in group))
 
     report_unwritten(notes, no_level, BG_LEVEL_PARAM)
 

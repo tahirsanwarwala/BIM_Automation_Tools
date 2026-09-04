@@ -24,6 +24,13 @@ Revit.  Everything here is plain 2D (x, y); the caller keeps track of Z.
 # Coincident-endpoint tolerance, in feet (about 1/64 inch)
 TOL_JOIN = 0.0013
 
+# Below this sine of the angle between two walls -- about 5.7 degrees --
+# one is running ALONGSIDE the other, not into it.  Their offset lines
+# still cross, but far away: at two degrees a foot of offset puts the
+# crossing fifty-seven feet off, and trimming a wall to it would stretch
+# it across the building.
+MIN_TEE_SINE = 0.1
+
 
 def line_intersection_2d(p1, d1, p2, d2, tol=1e-12):
     """Intersect two infinite 2D lines given as point + direction.
@@ -49,13 +56,22 @@ def _is_close(a, b, tol):
     return abs(a[0] - b[0]) <= tol and abs(a[1] - b[1]) <= tol
 
 
-def _touches_interior(point, seg, tol):
+def _touches_interior(point, seg, tol, reach=None):
     """True when *point* lands on *seg* but not at either of its ends.
 
     The ends are excluded because a point there is a CORNER, which is
     already handled and handled differently -- both walls move for a
     corner, only one for a tee.
+
+    *reach* is how far short of the segment *point* may stop and still
+    count, and it defaults to *tol*.  A wall is often modelled to the
+    FACE of the wall it meets rather than to its centreline, which
+    leaves its end half a thickness short; a caller that knows the
+    thickness can say so and have those found.
     """
+    if reach is None:
+        reach = tol
+
     (ax, ay), (bx, by) = seg
     dx = bx - ax
     dy = by - ay
@@ -69,7 +85,7 @@ def _touches_interior(point, seg, tol):
         return False
 
     foot = (ax + dx * t, ay + dy * t)
-    if not _is_close(point, foot, tol):
+    if abs(px - foot[0]) > reach or abs(py - foot[1]) > reach:
         return False
 
     return not (_is_close(point, (ax, ay), tol)
@@ -85,7 +101,63 @@ def _corner_hit(originals, i, j, tol):
     return None
 
 
-def junction_pairs(originals, tol=TOL_JOIN):
+def _unit(seg):
+    """Unit direction of a segment, or None when it has no length."""
+    dx, dy = _direction(seg)
+    length = (dx * dx + dy * dy) ** 0.5
+    if length <= 0.0:
+        return None
+    return (dx / length, dy / length)
+
+
+def _side_of(point, seg):
+    """Which side of *seg*'s infinite line *point* falls, as a sign."""
+    (ax, ay), (bx, by) = seg
+    return ((bx - ax) * (point[1] - ay)) - ((by - ay) * (point[0] - ax))
+
+
+def _tee_target(originals, offsets, i, a, j):
+    """Where end *a* of segment *i* should go, teeing into *j*, or None.
+
+    Two things it refuses to do.
+
+    It will not trim a wall THROUGH the wall it meets.  The offset lines
+    of the two cross on whichever side *j*'s own offset lies, and when
+    the arriving wall comes from the other side that crossing is past
+    *j* altogether -- trimming to it would bury the wall in its host and
+    push it out the far face.  In that case the wall stops at *j*'s
+    centreline instead, which is as far as it can go without going
+    through.
+
+    It will not act on two walls that are nearly parallel: they are
+    running alongside each other, and their offset lines cross so far
+    away that trimming would stretch the wall across the building.
+    """
+    u_i = _unit(offsets[i])
+    u_j = _unit(offsets[j])
+    if u_i is None or u_j is None:
+        return None
+    if abs(u_i[0] * u_j[1] - u_i[1] * u_j[0]) < MIN_TEE_SINE:
+        return None
+
+    hit = line_intersection_2d(
+        offsets[i][0], _direction(offsets[i]),
+        offsets[j][0], _direction(offsets[j]))
+    if hit is None:
+        return None
+
+    # The arriving wall's body is its OTHER end; that is the side of the
+    # through wall it lives on, and the side its trimmed end must stay.
+    body = originals[i][1 - a]
+    if _side_of(hit, originals[j]) * _side_of(body, originals[j]) < 0.0:
+        return line_intersection_2d(
+            offsets[i][0], _direction(offsets[i]),
+            originals[j][0], _direction(originals[j]))
+
+    return hit
+
+
+def junction_pairs(originals, tol=TOL_JOIN, tee_reach=None):
     """Index pairs of segments that meet, whether at a corner or a tee.
 
     The same adjacency miter_chain acts on, handed back so a caller can
@@ -100,24 +172,34 @@ def junction_pairs(originals, tol=TOL_JOIN):
             if _corner_hit(originals, i, j, tol) is not None:
                 pairs.append((i, j))
                 continue
-            if (_touches_interior(originals[i][0], originals[j], tol)
-                    or _touches_interior(originals[i][1], originals[j], tol)
-                    or _touches_interior(originals[j][0], originals[i], tol)
-                    or _touches_interior(originals[j][1], originals[i], tol)):
+            if (_touches_interior(originals[i][0], originals[j], tol,
+                                  tee_reach)
+                    or _touches_interior(originals[i][1], originals[j], tol,
+                                         tee_reach)
+                    or _touches_interior(originals[j][0], originals[i], tol,
+                                         tee_reach)
+                    or _touches_interior(originals[j][1], originals[i], tol,
+                                         tee_reach)):
                 pairs.append((i, j))
     return pairs
 
 
-def miter_chain(originals, offsets, tol=TOL_JOIN):
+def miter_chain(originals, offsets, tol=TOL_JOIN, tees=False,
+                tee_reach=None):
     """Close the corners of a chain of offset wall centrelines.
 
     *originals* and *offsets* are parallel lists of ((x0,y0),(x1,y1)).
     Adjacency is decided on the ORIGINAL curves -- those still share their
     endpoints -- while the intersection is computed on the OFFSET lines.
 
-    A segment that ends partway along another is trimmed to it instead:
-    only the ending segment moves, because the one running past has no
-    corner there to close.
+    With *tees* on, a segment that ends partway along another is trimmed
+    to it instead: only the ending segment moves, because the one
+    running past has no corner there to close.  It is OFF by default
+    because this module is shared, and a caller that mitres a whole
+    selection in one go would start trimming every interior wall whose
+    end lands on an exterior wall -- a change it never asked for.
+    *tee_reach* widens how far short of a wall an end may stop and still
+    count as meeting it; see _touches_interior.
 
     Returns a new list of offsets; the inputs are left untouched.  Pairs
     whose offset lines are parallel (straight-on continuations, where
@@ -145,14 +227,22 @@ def miter_chain(originals, offsets, tol=TOL_JOIN):
                 offsets[i][0], _direction(offsets[i]),
                 offsets[j][0], _direction(offsets[j]),
             )
-            if corner is None:
-                continue  # parallel: nothing to mitre
-
             a, b = hit
+            if corner is None:
+                # Straight-on continuation: nothing to mitre, but these
+                # ends have still met each other, and letting a tee
+                # claim one afterwards would move only that one.
+                cornered.add((i, a))
+                cornered.add((j, b))
+                continue
+
             result[i][a] = corner
             result[j][b] = corner
             cornered.add((i, a))
             cornered.add((j, b))
+
+    if not tees:
+        return [(seg[0], seg[1]) for seg in result]
 
     # Then tees, on whatever ends the corners did not claim.
     for i in range(count):
@@ -162,15 +252,13 @@ def miter_chain(originals, offsets, tol=TOL_JOIN):
             for j in range(count):
                 if j == i:
                     continue
-                if not _touches_interior(originals[i][a], originals[j], tol):
+                if not _touches_interior(originals[i][a], originals[j], tol,
+                                         tee_reach):
                     continue
 
-                meeting = line_intersection_2d(
-                    offsets[i][0], _direction(offsets[i]),
-                    offsets[j][0], _direction(offsets[j]),
-                )
+                meeting = _tee_target(originals, offsets, i, a, j)
                 if meeting is None:
-                    continue  # parallel: it runs alongside, not into
+                    continue  # alongside, not into
 
                 result[i][a] = meeting
                 break

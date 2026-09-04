@@ -140,7 +140,7 @@ class TestTeeJunctions(unittest.TestCase):
         # short, nor at (11, -1), through the other wall.
         originals = [self.THROUGH, self.SPUR]
         offsets = [((0.0, 1.0), (20.0, 1.0)), ((11.0, 0.0), (11.0, 8.0))]
-        out = wm.miter_chain(originals, offsets)
+        out = wm.miter_chain(originals, offsets, tees=True)
 
         self.assertEqual(out[0], ((0.0, 1.0), (20.0, 1.0)))   # untouched
         self.assertAlmostEqual(out[1][0][0], 11.0)
@@ -150,7 +150,7 @@ class TestTeeJunctions(unittest.TestCase):
     def test_the_through_wall_is_never_shortened_by_a_spur(self):
         originals = [self.THROUGH, self.SPUR]
         offsets = [((0.0, 1.0), (20.0, 1.0)), ((11.0, 0.0), (11.0, 8.0))]
-        out = wm.miter_chain(originals, offsets)
+        out = wm.miter_chain(originals, offsets, tees=True)
         self.assertEqual(out[0], ((0.0, 1.0), (20.0, 1.0)))
 
     def test_a_spur_meeting_the_far_end_is_mitred_not_teed(self):
@@ -173,15 +173,17 @@ class TestTeeJunctions(unittest.TestCase):
     def test_a_spur_teeing_from_the_other_side_still_trims(self):
         originals = [self.THROUGH, ((10.0, 0.0), (10.0, -8.0))]
         offsets = [((0.0, 1.0), (20.0, 1.0)), ((9.0, 0.0), (9.0, -8.0))]
-        out = wm.miter_chain(originals, offsets)
+        out = wm.miter_chain(originals, offsets, tees=True)
         self.assertAlmostEqual(out[1][0][0], 9.0)
-        self.assertAlmostEqual(out[1][0][1], 1.0)
+        # Approaching from below a skin that sits above: stops at the
+        # centreline rather than being driven through the host wall.
+        self.assertAlmostEqual(out[1][0][1], 0.0)
 
     def test_a_spur_teeing_by_its_far_end_trims_that_end(self):
         # Drawn away from the through wall, so it is end 1 that touches.
         originals = [self.THROUGH, ((10.0, 8.0), (10.0, 0.0))]
         offsets = [((0.0, 1.0), (20.0, 1.0)), ((11.0, 8.0), (11.0, 0.0))]
-        out = wm.miter_chain(originals, offsets)
+        out = wm.miter_chain(originals, offsets, tees=True)
         self.assertEqual(out[1][0], (11.0, 8.0))
         self.assertAlmostEqual(out[1][1][0], 11.0)
         self.assertAlmostEqual(out[1][1][1], 1.0)
@@ -200,7 +202,7 @@ class TestTeeJunctions(unittest.TestCase):
         offsets = [((0.0, 1.0), (20.0, 1.0)),
                    ((6.0, 0.0), (6.0, 8.0)),
                    ((16.0, 0.0), (16.0, 8.0))]
-        out = wm.miter_chain(originals, offsets)
+        out = wm.miter_chain(originals, offsets, tees=True)
         self.assertEqual(out[0], ((0.0, 1.0), (20.0, 1.0)))
         self.assertAlmostEqual(out[1][0][1], 1.0)
         self.assertAlmostEqual(out[2][0][1], 1.0)
@@ -237,6 +239,116 @@ class TestJunctionPairs(unittest.TestCase):
                      ((10.0, 0.0), (10.0, 8.0)),
                      ((10.0, 8.0), (0.0, 8.0))]
         self.assertEqual(wm.junction_pairs(originals), [(0, 1), (1, 2)])
+
+
+class TestTeesAreOptIn(unittest.TestCase):
+    """Tee trimming must not reach tools that never asked for it.
+
+    wall_miter is shared. SplitWalls mitres every picked wall in one
+    ungrouped call, so switching tees on by default would start trimming
+    any interior wall whose end lands on an exterior wall's mid-span --
+    a change nobody asked it for.
+    """
+
+    THROUGH = ((0.0, 0.0), (20.0, 0.0))
+    SPUR = ((10.0, 0.0), (10.0, 8.0))
+    OFFSETS = [((0.0, 1.0), (20.0, 1.0)), ((11.0, 0.0), (11.0, 8.0))]
+
+    def test_off_by_default(self):
+        out = wm.miter_chain([self.THROUGH, self.SPUR], self.OFFSETS)
+        self.assertEqual(out[1], ((11.0, 0.0), (11.0, 8.0)))
+
+    def test_on_when_asked_for(self):
+        out = wm.miter_chain([self.THROUGH, self.SPUR], self.OFFSETS,
+                             tees=True)
+        self.assertAlmostEqual(out[1][0][1], 1.0)
+
+    def test_corners_still_work_with_tees_off(self):
+        originals = [self.THROUGH, ((20.0, 0.0), (20.0, 8.0))]
+        offsets = [((0.0, 1.0), (20.0, 1.0)), ((21.0, 0.0), (21.0, 8.0))]
+        out = wm.miter_chain(originals, offsets)
+        self.assertAlmostEqual(out[0][1][0], 21.0)
+        self.assertAlmostEqual(out[0][1][1], 1.0)
+
+
+class TestTeeGuards(unittest.TestCase):
+
+    THROUGH = ((0.0, 0.0), (20.0, 0.0))
+
+    def test_a_spur_is_never_trimmed_through_the_wall_it_meets(self):
+        # Spur runs DOWN from the through wall, whose skin is UP at
+        # y = +1.  Trimming to that offset line would bury a foot of
+        # spur in the host wall and push it out the far face.  The spur
+        # must stop at the through wall's centreline instead.
+        spur = ((10.0, 0.0), (10.0, -10.0))
+        offsets = [((0.0, 1.0), (20.0, 1.0)), ((11.0, 0.0), (11.0, -10.0))]
+        out = wm.miter_chain([self.THROUGH, spur], offsets, tees=True)
+        self.assertAlmostEqual(out[1][0][0], 11.0)
+        self.assertAlmostEqual(out[1][0][1], 0.0)
+
+    def test_a_spur_on_the_same_side_still_reaches_the_offset(self):
+        spur = ((10.0, 0.0), (10.0, 8.0))
+        offsets = [((0.0, 1.0), (20.0, 1.0)), ((11.0, 0.0), (11.0, 8.0))]
+        out = wm.miter_chain([self.THROUGH, spur], offsets, tees=True)
+        self.assertAlmostEqual(out[1][0][1], 1.0)
+
+    def test_a_shallow_tee_is_left_alone(self):
+        # Two degrees off parallel: the offset lines cross 57 ft away.
+        # That is a wall running alongside another, not into it.
+        import math
+        angle = math.radians(2.0)
+        far = (10.0 + 30.0 * math.cos(angle), 30.0 * math.sin(angle))
+        spur = ((10.0, 0.0), far)
+        offsets = [((0.0, 1.0), (20.0, 1.0)),
+                   ((10.0, 1.0), (far[0], far[1] + 1.0))]
+        out = wm.miter_chain([self.THROUGH, spur], offsets, tees=True)
+        self.assertEqual(out[1][0], (10.0, 1.0))
+
+    def test_a_square_tee_is_well_inside_the_angle_guard(self):
+        spur = ((10.0, 0.0), (10.0, 8.0))
+        offsets = [((0.0, 1.0), (20.0, 1.0)), ((11.0, 0.0), (11.0, 8.0))]
+        out = wm.miter_chain([self.THROUGH, spur], offsets, tees=True)
+        self.assertAlmostEqual(out[1][0][1], 1.0)
+
+    def test_a_forty_five_degree_tee_still_trims(self):
+        spur = ((10.0, 0.0), (18.0, 8.0))
+        offsets = [((0.0, 1.0), (20.0, 1.0)), ((10.0, 0.0), (18.0, 8.0))]
+        out = wm.miter_chain([self.THROUGH, spur], offsets, tees=True)
+        self.assertAlmostEqual(out[1][0][1], 1.0)
+        self.assertAlmostEqual(out[1][0][0], 11.0)
+
+
+class TestTeeReach(unittest.TestCase):
+    """A wall modelled to the through wall's FACE, not its centreline."""
+
+    THROUGH = ((0.0, 0.0), (20.0, 0.0))
+
+    def test_a_spur_stopping_short_is_missed_at_the_default_tolerance(self):
+        spur = ((10.0, 0.4), (10.0, 8.0))
+        offsets = [((0.0, 1.0), (20.0, 1.0)), ((11.0, 0.4), (11.0, 8.0))]
+        out = wm.miter_chain([self.THROUGH, spur], offsets, tees=True)
+        self.assertEqual(out[1][0], (11.0, 0.4))
+
+    def test_a_wider_reach_catches_it(self):
+        spur = ((10.0, 0.4), (10.0, 8.0))
+        offsets = [((0.0, 1.0), (20.0, 1.0)), ((11.0, 0.4), (11.0, 8.0))]
+        out = wm.miter_chain([self.THROUGH, spur], offsets,
+                             tees=True, tee_reach=0.6)
+        self.assertAlmostEqual(out[1][0][1], 1.0)
+
+    def test_reach_does_not_drag_in_a_wall_that_is_simply_far_away(self):
+        spur = ((10.0, 3.0), (10.0, 8.0))
+        offsets = [((0.0, 1.0), (20.0, 1.0)), ((11.0, 3.0), (11.0, 8.0))]
+        out = wm.miter_chain([self.THROUGH, spur], offsets,
+                             tees=True, tee_reach=0.6)
+        self.assertEqual(out[1][0], (11.0, 3.0))
+
+    def test_junction_pairs_takes_the_same_reach(self):
+        spur = ((10.0, 0.4), (10.0, 8.0))
+        self.assertEqual(wm.junction_pairs([self.THROUGH, spur]), [])
+        self.assertEqual(
+            wm.junction_pairs([self.THROUGH, spur], tee_reach=0.6),
+            [(0, 1)])
 
 
 if __name__ == "__main__":
