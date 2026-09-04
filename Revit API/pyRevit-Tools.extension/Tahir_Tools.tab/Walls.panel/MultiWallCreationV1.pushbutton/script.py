@@ -451,7 +451,7 @@ def _sweep_edge_spans(sweep, transform, frames):
     return per_frame, material_name
 
 
-def sweep_runs(sweep, transform, frames, wall_keys):
+def sweep_runs(sweep, transform, frames, wall_keys, openings):
     """Return (runs, material_name) for one sweep.
 
     The sweep's solid is split between its host walls, each wall's share
@@ -464,6 +464,15 @@ def sweep_runs(sweep, transform, frames, wall_keys):
     Each run's height is measured from the edges inside that run alone,
     so a sweep that steps down partway along a building is built, and
     cuts, at the height it actually runs at on each stretch.
+
+    Each run is then cut by *openings* -- the same insert extents the
+    skin walls are cut by, one list per frame.  The sweep's own geometry
+    is not enough on its own: a sweep that mitres round into an opening
+    reveal reaches, at its outer face, the better part of its own
+    projection PAST the jamb, so a run measured from the solid alone
+    stands proud of the wall behind it.  Cutting both with the same
+    intervals is what makes the sweep wall stop on the same line as the
+    skin wall under it.
     """
     per_frame, material_name = _sweep_edge_spans(sweep, transform, frames)
 
@@ -510,17 +519,30 @@ def sweep_runs(sweep, transform, frames, wall_keys):
             if along_max > frame.length - snap:
                 along_max = frame.length
 
-            run = SweepRun()
-            run.frame     = frame
-            run.offset    = exterior_offset
-            run.along_min = max(along_min, 0.0)
-            run.along_max = min(along_max, frame.length)
-            run.base_z    = z_lo
-            run.top_z     = z_hi
-            run.wall_key  = wall_keys[idx]
-            if run.along_max - run.along_min < MIN_RUN_LENGTH:
-                continue
-            runs.append(run)
+            along_min = max(along_min, 0.0)
+            along_max = min(along_max, frame.length)
+
+            # Cut by the openings this stretch actually passes through,
+            # by height, so an opening well above or below the sweep
+            # leaves it alone.
+            cutters = [(o_lo, o_hi)
+                       for o_lo, o_hi, o_z_lo, o_z_hi in openings[idx]
+                       if o_z_hi > z_lo + wall_bands.TOL
+                       and o_z_lo < z_hi - wall_bands.TOL]
+
+            pieces, _dropped = wall_bands.subtract_spans(
+                (along_min, along_max), cutters, MIN_RUN_LENGTH)
+
+            for piece_min, piece_max in pieces:
+                run = SweepRun()
+                run.frame     = frame
+                run.offset    = exterior_offset
+                run.along_min = piece_min
+                run.along_max = piece_max
+                run.base_z    = z_lo
+                run.top_z     = z_hi
+                run.wall_key  = wall_keys[idx]
+                runs.append(run)
 
     return runs, material_name
 
@@ -580,6 +602,7 @@ def plan_sweep(link_inst, sweep):
 
     frames    = []
     wall_keys = []
+    openings  = []
     for host in walls:
         host_label = "{} (id {})".format(get_element_name(host.WallType),
                                          host.Id.IntegerValue)
@@ -603,12 +626,16 @@ def plan_sweep(link_inst, sweep):
         # this back to just the element id -- plan_wall's job.wall_id is
         # keyed the same way, and band_walls's membership test compares
         # the two.
-        wall_keys.append((link_inst.Id.IntegerValue, host.Id.IntegerValue))
+        wall_key = (link_inst.Id.IntegerValue, host.Id.IntegerValue)
+        wall_keys.append(wall_key)
+        openings.append(cached_wall_openings(
+            wall_key, host, transform, frame.origin, frame.direction))
 
     if not frames:
         return None, notes
 
-    runs, material_name = sweep_runs(sweep, transform, frames, wall_keys)
+    runs, material_name = sweep_runs(
+        sweep, transform, frames, wall_keys, openings)
     if not runs:
         return None, notes + [[label,
                                "no usable sweep geometry (check the "
@@ -688,6 +715,21 @@ def _insert_extent(insert, link_tf, origin, direction):
     if not alongs:
         return None
     return min(alongs), max(alongs), min(zs), max(zs)
+
+
+# Reading a wall's inserts means tessellating each one's solid, and a
+# single wall is commonly host to several picked sweeps as well as being
+# picked itself.  The script runs once, so caching for its lifetime is
+# enough; the key is the (link id, wall id) pair used everywhere else.
+_OPENING_CACHE = {}
+
+
+def cached_wall_openings(wall_key, wall, link_tf, origin, direction):
+    """wall_openings, remembered per wall for the life of the run."""
+    if wall_key not in _OPENING_CACHE:
+        _OPENING_CACHE[wall_key] = wall_openings(
+            wall, link_tf, origin, direction)
+    return _OPENING_CACHE[wall_key]
 
 
 def wall_openings(wall, link_tf, origin, direction):
@@ -839,8 +881,8 @@ def plan_wall(link_inst, wall):
     job.top_z       = top_z
     job.structural  = structural
     job.length      = pt0.DistanceTo(pt1)
-    job.openings    = wall_openings(
-        wall, link_tf, pt0, (pt1 - pt0).Normalize())
+    job.openings    = cached_wall_openings(
+        job.wall_id, wall, link_tf, pt0, (pt1 - pt0).Normalize())
     job.bands       = []          # filled in by band_walls
     return job, notes_none()
 
