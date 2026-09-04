@@ -34,6 +34,9 @@ from Autodesk.Revit.DB import (
     Wall,
     XYZ,
 )
+from pyrevit import script
+
+logger = script.get_logger()
 
 
 def _iter_solid_points(elem, transform=None):
@@ -182,8 +185,8 @@ def _center_wall_on_curve(doc, wall, target_curve, orient):
                            n.Z * -center_err)
             ElementTransformUtils.MoveElement(doc, wall.Id, move_vec)
             doc.Regenerate()
-    except Exception:
-        pass
+    except Exception as ex:
+        logger.debug("Could not re-centre new wall: {}".format(ex))
 
 
 def create_oriented_wall(doc, curve, type_id, level_id, height, base_off,
