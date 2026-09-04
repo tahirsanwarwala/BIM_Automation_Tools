@@ -31,10 +31,17 @@ SKIN_EIFS PROFILE_0' 2".  Anything the rule cannot read is asked about
 once, per sweep type.  Wall skins resolve their type from the finish
 material's Mark, as Split Walls does.
 
-KNOWN LIMITATION: a sweep is measured as one vertical envelope across
-all its host walls, as Sweep To Wall measures it.  A stepped sweep that
-runs at different heights on different walls is therefore built, and
-cuts, at its overall extent.  Split such a sweep in the link first.
+Where a sweep goes in plan is read off its own solid, not assumed to be
+its host wall's full length.  A sweep that stops at an opening stops
+there; one interrupted part-way along becomes two walls; and one that
+steps down is built, and cuts, at the height it truly runs at on each
+stretch.  Sweep walls at the same height and of the same type mitre into
+each other at corners, whether or not they came from the same sweep, so
+they trim instead of crossing.
+
+Skin walls stop at openings the same way.  What they do NOT do is turn
+into the reveal: a sweep or finish that wraps into an opening is left
+ending at the jamb, with the reveal empty.
 
 The linked model is never modified.
 """
@@ -100,8 +107,15 @@ MIN_RUN_LENGTH = 0.05
 LOC_LINE_CENTRELINE           = 0
 LOC_LINE_FINISH_FACE_INTERIOR = 3
 
-# The sweep type's Type Mark is carried onto each sweep wall here.
+# The sweep type's Type Mark is carried onto each sweep wall here, and
+# the name of each new wall's Base Constraint level goes here.
 BG_PROFILE_PARAM = "BG_PROFILE"
+BG_LEVEL_PARAM   = "BG_LEVEL"
+
+# A break in a sweep shorter than this, in feet, is not a break: abutting
+# sweep solids leave hairline seams and a mitred corner leaves a notch.
+# Anything longer is an opening the sweep genuinely stops at.  One inch.
+SWEEP_GAP_TOL = 1.0 / 12.0
 
 TOOL_TITLE = "Multi Wall Creation V1"
 
@@ -318,12 +332,29 @@ def pick_sources():
 # SWEEPS
 # ===========================================================================
 
+class SweepRun(object):
+    """One continuous stretch of a sweep along one of its host walls.
+
+    A sweep is not one wall's worth of anything.  It runs along several
+    walls, it stops at the openings in them, and it can sit at a
+    different height on each -- so the unit that becomes a wall is a
+    RUN: one uninterrupted stretch, on one host wall, at one height.
+
+    *along_min* and *along_max* are measured from the host wall frame's
+    origin along its direction.  *wall_key* is the (link instance id,
+    wall id) pair of the host wall, so band_walls can tell which wall
+    this run cuts.
+    """
+
+    __slots__ = ("frame", "offset", "along_min", "along_max",
+                 "base_z", "top_z", "wall_key")
+
+
 class SweepJob(object):
     """One sweep, measured and ready to build once its type is known."""
 
-    __slots__ = ("label", "sweep", "frames", "offsets", "host_ids",
-                 "base_z", "top_z", "material", "type_mark", "type_name",
-                 "wall_type")
+    __slots__ = ("label", "sweep", "runs", "material", "type_mark",
+                 "type_name", "wall_type")
 
 
 def sweep_host_walls(sweep):
@@ -342,41 +373,62 @@ def sweep_host_walls(sweep):
     return walls
 
 
-def sweep_extent(sweep, transform):
-    """Return (base_z, top_z, material_name) measured off the sweep.
+def _sweep_edge_spans(sweep, transform, frames):
+    """Split a sweep's solid between its host walls.
 
-    Elevations come back in HOST coordinates.  Only the vertical
-    envelope is taken from the sweep -- where each wall goes in plan
-    comes from the host wall itself, which is far more dependable than
-    working out which stretch of a sweep belongs to which host wall.
+    Returns a list per frame of (along_lo, along_hi, z_lo, z_hi) tuples,
+    one per edge of the sweep's solid, plus the dominant material name.
+
+    Each edge is assigned to the host wall it is nearest to, judged on
+    its midpoint in plan.  That is what lets a sweep's real extent be
+    read off its own geometry instead of being assumed to be its host
+    wall's full length -- the assumption behind every sweep that ran
+    straight past an opening or crossed another at a corner.
     """
-    z_min = z_max = None
+    segments = []
+    for frame in frames:
+        p0 = frame.curve.GetEndPoint(0)
+        p1 = frame.curve.GetEndPoint(1)
+        segments.append(((p0.X, p0.Y), (p1.X, p1.Y)))
+
+    per_frame = [[] for _f in frames]
     areas = {}
 
     for sol in wall_chain.iter_solids(sweep):
         for edge in sol.Edges:
             try:
-                for pt in edge.Tessellate():
-                    z = transform.OfPoint(pt).Z
-                    if z_min is None or z < z_min:
-                        z_min = z
-                    if z_max is None or z > z_max:
-                        z_max = z
+                pts = [transform.OfPoint(pt) for pt in edge.Tessellate()]
             except Exception:
                 continue
+            if not pts:
+                continue
+
+            mid = pts[len(pts) // 2]
+            idx = wall_bands.nearest_segment_index((mid.X, mid.Y), segments)
+            if idx is None:
+                continue
+
+            frame = frames[idx]
+            alongs = []
+            zs     = []
+            for pt in pts:
+                delta = XYZ(pt.X - frame.origin.X,
+                            pt.Y - frame.origin.Y,
+                            pt.Z - frame.origin.Z)
+                alongs.append(delta.DotProduct(frame.direction))
+                zs.append(pt.Z)
+
+            per_frame[idx].append((min(alongs), max(alongs),
+                                   min(zs), max(zs)))
 
         for face in sol.Faces:
             try:
-                mid = face.MaterialElementId
-                if mid is None or mid == ElementId.InvalidElementId:
+                mid_id = face.MaterialElementId
+                if mid_id is None or mid_id == ElementId.InvalidElementId:
                     continue
-                areas[mid.IntegerValue] = \
-                    areas.get(mid.IntegerValue, 0.0) + face.Area
+                areas[mid_id.IntegerValue] =                     areas.get(mid_id.IntegerValue, 0.0) + face.Area
             except Exception:
                 continue
-
-    if z_min is None:
-        return None, None, None
 
     material_name = None
     if areas:
@@ -384,7 +436,62 @@ def sweep_extent(sweep, transform):
         material_name = get_element_name(
             sweep.Document.GetElement(ElementId(best)))
 
-    return z_min, z_max, material_name
+    return per_frame, material_name
+
+
+def sweep_runs(sweep, transform, frames, wall_keys):
+    """Return (runs, material_name) for one sweep.
+
+    The sweep's solid is split between its host walls, each wall's share
+    is unioned along that wall's axis, and every stretch that survives
+    becomes a SweepRun.  Gaps shorter than SWEEP_GAP_TOL are bridged --
+    abutting sweep solids leave seams and a mitred corner leaves a
+    notch, and neither is a break.  Anything longer is an opening the
+    sweep genuinely stops at.
+
+    Each run's height is measured from the edges inside that run alone,
+    so a sweep that steps down partway along a building is built, and
+    cuts, at the height it actually runs at on each stretch.
+    """
+    per_frame, material_name = _sweep_edge_spans(sweep, transform, frames)
+
+    runs = []
+    for idx, frame in enumerate(frames):
+        spans = per_frame[idx]
+        if not spans:
+            continue
+
+        intervals = [(lo, hi) for lo, hi, _z0, _z1 in spans]
+        for along_min, along_max in wall_bands.merge_intervals(
+                intervals, SWEEP_GAP_TOL):
+            if along_max - along_min < MIN_RUN_LENGTH:
+                continue
+
+            # Height from the edges inside THIS stretch only.
+            z_lo = z_hi = None
+            for lo, hi, e_z0, e_z1 in spans:
+                if hi < along_min or lo > along_max:
+                    continue
+                if z_lo is None or e_z0 < z_lo:
+                    z_lo = e_z0
+                if z_hi is None or e_z1 > z_hi:
+                    z_hi = e_z1
+            if z_lo is None or (z_hi - z_lo) < MIN_RUN_LENGTH:
+                continue
+
+            run = SweepRun()
+            run.frame     = frame
+            run.offset    = wall_chain.wall_exterior_offset(frame, transform)
+            run.along_min = max(along_min, 0.0)
+            run.along_max = min(along_max, frame.length)
+            run.base_z    = z_lo
+            run.top_z     = z_hi
+            run.wall_key  = wall_keys[idx]
+            if run.along_max - run.along_min < MIN_RUN_LENGTH:
+                continue
+            runs.append(run)
+
+    return runs, material_name
 
 
 def sweep_type_mark(sweep):
@@ -440,14 +547,8 @@ def plan_sweep(link_inst, sweep):
     if not walls:
         return None, [[label, "sweep is not hosted on any wall"]]
 
-    base_z, top_z, material_name = sweep_extent(sweep, transform)
-    if base_z is None or (top_z - base_z) < MIN_RUN_LENGTH:
-        return None, [[label,
-                       "no usable sweep geometry (check the link's view "
-                       "detail level)"]]
-
-    frames  = []
-    offsets = []
+    frames    = []
+    wall_keys = []
     for host in walls:
         host_label = "{} (id {})".format(get_element_name(host.WallType),
                                          host.Id.IntegerValue)
@@ -464,27 +565,28 @@ def plan_sweep(link_inst, sweep):
             continue
 
         frames.append(frame)
-        offsets.append(wall_chain.wall_exterior_offset(frame, transform))
+        # Keyed on (link instance id, linked element id), not the bare
+        # element id: pick_sources() explicitly anticipates a selection
+        # spanning two links (or two instances of the same link), and a
+        # bare element id can collide across them.  Do not "simplify"
+        # this back to just the element id -- plan_wall's job.wall_id is
+        # keyed the same way, and band_walls's membership test compares
+        # the two.
+        wall_keys.append((link_inst.Id.IntegerValue, host.Id.IntegerValue))
 
     if not frames:
         return None, notes
 
+    runs, material_name = sweep_runs(sweep, transform, frames, wall_keys)
+    if not runs:
+        return None, notes + [[label,
+                               "no usable sweep geometry (check the "
+                               "link's view detail level)"]]
+
     job = SweepJob()
     job.label     = label
     job.sweep     = sweep
-    job.frames    = frames
-    job.offsets   = offsets
-    # Keyed on (link instance id, linked element id), not the bare
-    # element id: pick_sources() explicitly anticipates a selection
-    # spanning two links (or two instances of the same link), and a
-    # bare element id can collide across them.  Do not "simplify" this
-    # back to just the element id -- see plan_wall's job.wall_id, which
-    # must be keyed the same way for band_walls's membership test to
-    # mean anything.
-    job.host_ids  = set((link_inst.Id.IntegerValue, w.Id.IntegerValue)
-                        for w in walls)
-    job.base_z    = base_z
-    job.top_z     = top_z
+    job.runs      = runs
     job.material  = material_name
     job.type_mark = sweep_type_mark(sweep)
     job.type_name = sweep_type_name(sweep)
@@ -501,7 +603,61 @@ class WallJob(object):
 
     __slots__ = ("label", "wall_id", "cs", "source_doc", "loc_curve",
                  "orientation", "total_width", "loc_line", "loc_to_ext",
-                 "base_z", "top_z", "structural", "bands")
+                 "base_z", "top_z", "structural", "bands", "openings",
+                 "length")
+
+
+def wall_openings(wall, link_tf, origin, direction):
+    """Return the openings in *wall* as (along_lo, along_hi, z_lo, z_hi).
+
+    Measured in the wall's own frame: *along* from *origin* along
+    *direction*, both already in host coordinates.  A skin wall stops at
+    these the way the sweeps do, so a band does not run solid across a
+    window.
+
+    Each insert is measured from its bounding box.  That is a little
+    generous -- it takes in the frame and any trim, not just the rough
+    opening -- but the finish genuinely stops at the trim, and the box
+    is the one measurement every insert family can be relied on to give.
+    An arched head means the box reaches the crown, so a band crossing
+    only the springing line is still cut the full width.
+    """
+    try:
+        ids = list(wall.FindInserts(True, False, True, True))
+    except Exception as ex:
+        logger.debug("Could not read inserts: {}".format(ex))
+        return []
+
+    link_doc = wall.Document
+    found    = []
+    for iid in ids:
+        insert = link_doc.GetElement(iid)
+        if insert is None:
+            continue
+        try:
+            bbox = insert.get_BoundingBox(None)
+        except Exception:
+            continue
+        if bbox is None:
+            continue
+
+        alongs = []
+        zs     = []
+        for x in (bbox.Min.X, bbox.Max.X):
+            for y in (bbox.Min.Y, bbox.Max.Y):
+                for z in (bbox.Min.Z, bbox.Max.Z):
+                    pt = link_tf.OfPoint(XYZ(x, y, z))
+                    delta = XYZ(pt.X - origin.X,
+                                pt.Y - origin.Y,
+                                pt.Z - origin.Z)
+                    alongs.append(delta.DotProduct(direction))
+                    zs.append(pt.Z)
+
+        if not alongs:
+            continue
+        found.append((min(alongs), max(alongs), min(zs), max(zs)))
+
+    return found
 
 
 def _level_elevation(link_doc, level_id, link_tf):
@@ -604,8 +760,8 @@ def plan_wall(link_inst, wall):
     job = WallJob()
     job.label       = label
     # (link instance id, linked element id) -- see the matching comment
-    # on SweepJob.host_ids in plan_sweep for why the link id is part of
-    # the key.
+    # on SweepRun.wall_key in plan_sweep for why the link id is part of
+    # the key.  band_walls compares the two directly.
     job.wall_id     = (link_inst.Id.IntegerValue, wall.Id.IntegerValue)
     job.cs          = cs
     job.source_doc  = link_doc
@@ -619,6 +775,9 @@ def plan_wall(link_inst, wall):
     job.base_z      = base_z
     job.top_z       = top_z
     job.structural  = structural
+    job.length      = pt0.DistanceTo(pt1)
+    job.openings    = wall_openings(
+        wall, link_tf, pt0, (pt1 - pt0).Normalize())
     job.bands       = []          # filled in by band_walls
     return job, notes_none()
 
@@ -675,8 +834,8 @@ def resolve_sweep_types(sweep_jobs, notes):
                 doc,
                 "Pick the wall type for sweep type '{}'".format(key),
                 job.material or "<unknown>",
-                "{} high".format(
-                    wall_naming.feet_to_imperial(job.top_z - job.base_z)))
+                "{} high".format(wall_naming.feet_to_imperial(
+                    max(r.top_z - r.base_z for r in job.runs))))
 
         if asked[key] is None:
             note(notes, job.label,
@@ -757,8 +916,13 @@ def band_walls(wall_jobs, sweep_jobs, levels, notes):
     Fills job.bands in place.
     """
     for job in wall_jobs:
-        cutters = [(s.base_z, s.top_z) for s in sweep_jobs
-                   if job.wall_id in s.host_ids]
+        # One cutter per RUN, not per sweep: a run knows which wall it
+        # lies on and how high it sits there, so a sweep that steps down
+        # cuts each of its walls at the height it actually runs at.
+        cutters = [(run.base_z, run.top_z)
+                   for sweep_job in sweep_jobs
+                   for run in sweep_job.runs
+                   if run.wall_key == job.wall_id]
 
         gaps, dropped = wall_bands.subtract_spans(
             (job.base_z, job.top_z), cutters)
@@ -885,40 +1049,113 @@ def create_sweep_wall(curve, frame, wall_type, band):
     return wall
 
 
+def unmitred_curve(segment):
+    """The segment's own offset line, for when mitring could not run.
+
+    wall_chain.Segment holds its offset ends and their elevations but
+    hands back a curve only through mitre_segments, so this rebuilds the
+    plain line from them.  Returns None if even that fails.
+    """
+    try:
+        (x0, y0), (x1, y1) = segment.offset_ends
+        z0, z1 = segment.z
+        return Line.CreateBound(XYZ(x0, y0, z0), XYZ(x1, y1, z1))
+    except Exception:
+        return None
+
+
+def apply_bg_level(wall, band):
+    """Write the name of *wall*'s Base Constraint level into BG_LEVEL.
+
+    The level comes from the band the wall was built to rather than from
+    the wall itself, so it says the same thing the constraint does even
+    if Revit later re-hosts the wall.  A missing, read-only or non-text
+    parameter is not worth failing a wall over -- it is reported by the
+    caller and the wall stands.
+    """
+    level = doc.GetElement(band["base_level_id"])
+    if level is None:
+        return False
+
+    p = find_parameter(wall, BG_LEVEL_PARAM)
+    if p is None or p.IsReadOnly:
+        return False
+    try:
+        return bool(p.Set(get_element_name(level)))
+    except Exception:
+        return False
+
+
 def build_sweep_walls(sweep_jobs, levels, notes):
     """Create the walls for every measured sweep.  Inside a transaction.
 
-    Mitring is per sweep: each sweep is its own run of walls, and its
-    corners are closed against its own neighbours only.
+    Mitring is across sweeps, not within one.  Two sweeps meeting at a
+    building corner are two separate picks, and mitring each on its own
+    left them running past each other and crossing -- so every run from
+    every sweep is gathered first and grouped by the height it sits at
+    AND the wall type it resolved to.  A stone band then trims into a
+    stone band, an EIFS cornice into an EIFS cornice, and neither into
+    the other or into a course at a different height.
     """
+    items = []
     for job in sweep_jobs:
-        try:
-            band = wall_constraints.constraints_for(
-                job.base_z, job.top_z, levels)
-        except ValueError as ex:
-            note(notes, job.label, "could not constrain sweep: {}".format(ex))
-            continue
+        half = job.wall_type.Width / 2.0
+        for run in job.runs:
+            try:
+                # Interior face of the new wall on the exterior face of
+                # the host, so its centreline sits half a thickness
+                # further out again.  The run's own ends are what get
+                # offset, so a stretch that stops at an opening is never
+                # stretched to a corner it does not reach.
+                segment = wall_chain.Segment(
+                    run.frame, run.offset + half,
+                    run.along_min, run.along_max)
+            except Exception as ex:
+                note(notes, job.label,
+                     "could not lay out a run of this sweep: {}".format(ex))
+                continue
+            items.append({"job": job, "run": run, "segment": segment})
 
-        try:
-            half = job.wall_type.Width / 2.0
+    if not items:
+        return
 
-            # Interior face of the new wall on the exterior face of the
-            # host, so its centreline sits half a thickness further out
-            # again.
-            segments = [wall_chain.Segment(frame, offset + half)
-                        for frame, offset in zip(job.frames, job.offsets)]
-            curves   = wall_chain.mitre_segments(segments)
+    groups = {}
+    span_ids = wall_bands.group_indices(
+        [(item["run"].base_z, item["run"].top_z) for item in items])
+    for item, span_id in zip(items, span_ids):
+        groups.setdefault(
+            (span_id, item["job"].wall_type.Id.IntegerValue), []).append(item)
+
+    unwritten = {}
+    for group in groups.values():
+        try:
+            curves = wall_chain.mitre_segments(
+                [item["segment"] for item in group])
         except Exception as ex:
-            note(notes, job.label,
-                 "could not lay out this sweep's walls: {}".format(ex))
-            continue
+            # An unmitred corner is a far better outcome than no wall.
+            note(notes, group[0]["job"].label,
+                 "could not mitre this run of sweep walls, leaving the "
+                 "corners open: {}".format(ex))
+            curves = [unmitred_curve(item["segment"]) for item in group]
 
-        unwritten = 0
-        for segment, curve in zip(segments, curves):
-            label = get_element_name(segment.frame.wall.WallType)
+        for item, curve in zip(group, curves):
+            job     = item["job"]
+            segment = item["segment"]
+            run     = item["run"]
+            label   = get_element_name(segment.frame.wall.WallType)
+
             if curve is None:
                 note(notes, label, "could not build a curve for this wall")
                 continue
+
+            try:
+                band = wall_constraints.constraints_for(
+                    run.base_z, run.top_z, levels)
+            except ValueError as ex:
+                note(notes, job.label,
+                     "could not constrain a run of this sweep: {}".format(ex))
+                continue
+
             try:
                 wall = create_sweep_wall(
                     curve, segment.frame, job.wall_type, band)
@@ -926,14 +1163,22 @@ def build_sweep_walls(sweep_jobs, levels, notes):
                 note(notes, label, "wall creation failed: {}".format(ex))
                 continue
 
+            apply_bg_level(wall, band)
             if job.type_mark and not set_bg_profile(wall, job.type_mark):
-                unwritten += 1
+                unwritten[job.label] = unwritten.get(job.label, 0) + 1
 
-        if unwritten:
-            note(notes, job.label,
-                 "{} could not be written on {} wall(s) - parameter "
-                 "missing, read-only, or not a text parameter".format(
-                     BG_PROFILE_PARAM, unwritten))
+    for job_label, count in unwritten.items():
+        note(notes, job_label,
+             "{} could not be written on {} wall(s) - parameter missing, "
+             "read-only, or not a text parameter".format(
+                 BG_PROFILE_PARAM, count))
+
+
+def _along(start, heading, distance):
+    """The point *distance* feet from *start* along *heading*."""
+    return XYZ(start.X + heading.X * distance,
+               start.Y + heading.Y * distance,
+               start.Z + heading.Z * distance)
 
 
 def prepare_bands(wall_jobs, skin_plans, notes):
@@ -942,7 +1187,15 @@ def prepare_bands(wall_jobs, skin_plans, notes):
     Creation is deferred so that bands sharing an elevation can have
     their corners mitred against each other first.
 
-    Returns [{"job", "band", "curve", "type"}].
+    A band is also cut in PLAN, at every opening whose own height range
+    overlaps it: a band running past a window at window height becomes
+    two walls, one either side, while a band well below the sill stays
+    whole.  What it does not do is turn into the reveal -- the wall
+    stops at the jamb and the reveal is left empty.
+
+    Returns [{"job", "band", "curve", "original", "type"}], where
+    "original" is the source wall's own centreline over just this
+    stretch, which is what mitre_prepared judges adjacency on.
     """
     prepared = []
     executed = {}
@@ -986,9 +1239,34 @@ def prepare_bands(wall_jobs, skin_plans, notes):
             curve = wall_skin.skin_centreline(
                 job.loc_curve, job.orientation, d, skin_w)
 
+            # The skin centreline runs parallel to the source wall's, so
+            # one direction and one pair of start points parameterise
+            # both, and a stretch can be cut from each at the same two
+            # distances along.
+            o_start = job.loc_curve.GetEndPoint(0)
+            s_start = curve.GetEndPoint(0)
+            heading = (job.loc_curve.GetEndPoint(1) - o_start).Normalize()
+
             for band in job.bands:
-                prepared.append({"job": job, "band": band,
-                                 "curve": curve, "type": skin_type})
+                cutters = [(lo, hi) for lo, hi, z_lo, z_hi in job.openings
+                           if z_hi > band["base_z"] + wall_bands.TOL
+                           and z_lo < band["top_z"] - wall_bands.TOL]
+
+                runs, _dropped = wall_bands.subtract_spans(
+                    (0.0, job.length), cutters)
+
+                for along_min, along_max in runs:
+                    o0 = _along(o_start, heading, along_min)
+                    o1 = _along(o_start, heading, along_max)
+                    s0 = _along(s_start, heading, along_min)
+                    s1 = _along(s_start, heading, along_max)
+                    prepared.append({
+                        "job": job,
+                        "band": band,
+                        "curve": Line.CreateBound(s0, s1),
+                        "original": ((o0.X, o0.Y), (o1.X, o1.Y)),
+                        "type": skin_type,
+                    })
         except Exception as ex:
             note(notes, job.label, "could not prepare bands: {}".format(ex))
             continue
@@ -999,10 +1277,13 @@ def prepare_bands(wall_jobs, skin_plans, notes):
 def mitre_prepared(prepared, notes):
     """Close the corners between bands that sit at the same elevation.
 
-    Adjacency is judged on the ORIGINAL wall curves, which still share
-    their endpoints; the corner point is where the two OFFSET lines
-    cross.  Bands at different elevations are mitred separately -- two
-    walls that never touch must not have a corner dragged between them.
+    Adjacency is judged on the source wall's centreline over the same
+    stretch, which still shares its endpoints with its neighbour; the
+    corner point is where the two OFFSET lines cross.  It is the
+    stretch's ends rather than the whole wall's, so a band that stops at
+    an opening is never dragged out to a corner it does not reach.
+    Bands at different elevations are mitred separately -- two walls
+    that never touch must not have a corner dragged between them.
 
     Curves are replaced in place inside *prepared*.  A group whose
     mitre fails (a very shallow corner can push the intersection past
@@ -1026,11 +1307,9 @@ def mitre_prepared(prepared, notes):
             offsets   = []
             zs        = []
             for item in items:
-                oc = item["job"].loc_curve
                 sc = item["curve"]
-                o0, o1 = oc.GetEndPoint(0), oc.GetEndPoint(1)
                 s0, s1 = sc.GetEndPoint(0), sc.GetEndPoint(1)
-                originals.append(((o0.X, o0.Y), (o1.X, o1.Y)))
+                originals.append(item["original"])
                 offsets.append(((s0.X, s0.Y), (s1.X, s1.Y)))
                 zs.append((s0.Z, s1.Z))
 
@@ -1059,6 +1338,7 @@ def build_bands(prepared, notes):
                 band["base_level_id"], band["height"],
                 band["base_offset"], job.structural, job.orientation)
             apply_constraints(wall, band)
+            apply_bg_level(wall, band)
         except Exception as ex:
             note(notes, job.label,
                  "band {} to {} failed: {}".format(
