@@ -146,16 +146,17 @@ Per picked wall:
                top level elevation + WALL_TOP_OFFSET when the wall is
                level-bound, else base + WALL_USER_HEIGHT_PARAM;
                all mapped through the link's total transform.
-    cutters  = picked sweeps whose GetHostIds() contains this wall,
-               each clipped to `span`
+    cutters  = runs of picked CAST STONE sweeps whose GetHostIds()
+               contains this wall, each at its own run height and
+               clipped to `span`; EIFS runs are not cutters
     gaps     = wall_bands.subtract_spans(span, cutters)
     bands    = for each gap:
                    wall_constraints.plan_wall(lo, hi, levels,
                                               allow_round=False)["bands"]
 
 A wall with no cutters yields one gap equal to its whole span, still cut at
-levels — rule 5 falls out of the same code path rather than being a special
-case.
+levels — rule 6 falls out of the same code path rather than being a special
+case, and so does a wall whose only sweeps are EIFS.
 
 Level elevations come from host levels converted out of level space with
 `project_base_elevation`, so every elevation in the run — sweep envelopes,
