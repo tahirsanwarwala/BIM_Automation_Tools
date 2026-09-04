@@ -460,7 +460,15 @@ def plan_sweep(link_inst, sweep):
     job.sweep     = sweep
     job.frames    = frames
     job.offsets   = offsets
-    job.host_ids  = set(w.Id.IntegerValue for w in walls)
+    # Keyed on (link instance id, linked element id), not the bare
+    # element id: pick_sources() explicitly anticipates a selection
+    # spanning two links (or two instances of the same link), and a
+    # bare element id can collide across them.  Do not "simplify" this
+    # back to just the element id -- see plan_wall's job.wall_id, which
+    # must be keyed the same way for band_walls's membership test to
+    # mean anything.
+    job.host_ids  = set((link_inst.Id.IntegerValue, w.Id.IntegerValue)
+                        for w in walls)
     job.base_z    = base_z
     job.top_z     = top_z
     job.material  = material_name
@@ -581,7 +589,10 @@ def plan_wall(link_inst, wall):
 
     job = WallJob()
     job.label       = label
-    job.wall_id     = wall.Id.IntegerValue
+    # (link instance id, linked element id) -- see the matching comment
+    # on SweepJob.host_ids in plan_sweep for why the link id is part of
+    # the key.
+    job.wall_id     = (link_inst.Id.IntegerValue, wall.Id.IntegerValue)
     job.cs          = cs
     job.source_doc  = link_doc
     job.loc_curve   = loc_curve
@@ -650,7 +661,8 @@ def resolve_sweep_types(sweep_jobs, notes):
                 doc,
                 "Pick the wall type for sweep type '{}'".format(key),
                 job.material or "<unknown>",
-                wall_naming.feet_to_imperial(job.top_z - job.base_z))
+                "{} high".format(
+                    wall_naming.feet_to_imperial(job.top_z - job.base_z)))
 
         if asked[key] is None:
             note(notes, job.label,
@@ -873,13 +885,19 @@ def build_sweep_walls(sweep_jobs, levels, notes):
             note(notes, job.label, "could not constrain sweep: {}".format(ex))
             continue
 
-        half = job.wall_type.Width / 2.0
+        try:
+            half = job.wall_type.Width / 2.0
 
-        # Interior face of the new wall on the exterior face of the host,
-        # so its centreline sits half a thickness further out again.
-        segments = [wall_chain.Segment(frame, offset + half)
-                    for frame, offset in zip(job.frames, job.offsets)]
-        curves   = wall_chain.mitre_segments(segments)
+            # Interior face of the new wall on the exterior face of the
+            # host, so its centreline sits half a thickness further out
+            # again.
+            segments = [wall_chain.Segment(frame, offset + half)
+                        for frame, offset in zip(job.frames, job.offsets)]
+            curves   = wall_chain.mitre_segments(segments)
+        except Exception as ex:
+            note(notes, job.label,
+                 "could not lay out this sweep's walls: {}".format(ex))
+            continue
 
         unwritten = 0
         for segment, curve in zip(segments, curves):
@@ -977,10 +995,12 @@ def mitre_prepared(prepared, notes):
     Revit's maximum curve length) is left with its unmitred curves --
     an open corner is a far better outcome than losing the whole run.
     """
+    spans = [(item["band"]["base_z"], item["band"]["top_z"])
+             for item in prepared]
+    ids   = wall_bands.group_indices(spans)
+
     groups = {}
-    for item in prepared:
-        key = wall_bands.elevation_group_key(
-            item["band"]["base_z"], item["band"]["top_z"])
+    for item, key in zip(prepared, ids):
         groups.setdefault(key, []).append(item)
 
     for key, items in groups.items():
@@ -1058,13 +1078,23 @@ def main():
     wall_jobs  = []
 
     for link_inst, sweep in sweep_picks:
-        job, job_notes = plan_sweep(link_inst, sweep)
+        try:
+            job, job_notes = plan_sweep(link_inst, sweep)
+        except Exception as ex:
+            note(notes, "sweep id {}".format(sweep.Id.IntegerValue),
+                 "could not measure this sweep: {}".format(ex))
+            continue
         notes.extend(job_notes)
         if job is not None:
             sweep_jobs.append(job)
 
     for link_inst, wall in wall_picks:
-        job, job_notes = plan_wall(link_inst, wall)
+        try:
+            job, job_notes = plan_wall(link_inst, wall)
+        except Exception as ex:
+            note(notes, "wall id {}".format(wall.Id.IntegerValue),
+                 "could not measure this wall: {}".format(ex))
+            continue
         notes.extend(job_notes)
         if job is not None:
             wall_jobs.append(job)

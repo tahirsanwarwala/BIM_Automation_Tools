@@ -150,13 +150,35 @@ def sweep_wall_type_name(*names):
     return None
 
 
-def elevation_group_key(base_z, top_z, tol=TOL):
-    """Return a key shared by bands at the same vertical extent.
+def group_indices(spans, tol=TOL):
+    """Return a group id per span, so spans within *tol* share an id.
 
     Only walls that actually sit at the same height may have their
     corners mitred together: mitring a band at 11-20 ft against its
     neighbour at 0-10 ft would drag a corner between two walls that
-    never touch.  Elevations are quantised to *tol* so two bands cut by
-    the same sweep group together despite floating-point drift.
+    never touch.  Bucketing elevations by rounding to the nearest *tol*
+    multiple looks tempting, but a bucket has edges of its own -- two
+    spans a fraction of *tol* apart can still land either side of one
+    and come out unmatched, which is exactly the gap this function
+    exists to close.  So each span is compared directly against the
+    first span already placed in each group -- its representative --
+    rather than against a rounded coordinate, and it joins the first
+    group whose representative is within *tol* at both ends.  A linear
+    scan against each group's representative is all this needs at the
+    handful of bands one selection ever produces.
+
+    Group ids are assigned in order of first appearance, starting at 0.
     """
-    return (int(round(base_z / tol)), int(round(top_z / tol)))
+    groups = []          # list of representative (base_z, top_z) spans
+    result = []
+    for base_z, top_z in spans:
+        found = None
+        for idx, (g_base, g_top) in enumerate(groups):
+            if abs(base_z - g_base) <= tol and abs(top_z - g_top) <= tol:
+                found = idx
+                break
+        if found is None:
+            found = len(groups)
+            groups.append((base_z, top_z))
+        result.append(found)
+    return result

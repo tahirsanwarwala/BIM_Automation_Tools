@@ -169,23 +169,45 @@ class TestSweepWallTypeName(unittest.TestCase):
         self.assertIsNone(wb.sweep_wall_type_name(None, None))
 
 
-class TestElevationGroupKey(unittest.TestCase):
+class TestGroupIndices(unittest.TestCase):
 
-    def test_identical_extents_share_a_key(self):
-        self.assertEqual(wb.elevation_group_key(0.0, 10.0),
-                         wb.elevation_group_key(0.0, 10.0))
+    def test_empty_list_gives_empty_result(self):
+        self.assertEqual(wb.group_indices([]), [])
 
-    def test_extents_within_tolerance_share_a_key(self):
-        self.assertEqual(wb.elevation_group_key(0.0, 10.0),
-                         wb.elevation_group_key(0.0, 10.0 + 1e-9))
+    def test_one_span_gets_group_zero(self):
+        self.assertEqual(wb.group_indices([(0.0, 10.0)]), [0])
 
-    def test_different_extents_do_not_share_a_key(self):
-        self.assertNotEqual(wb.elevation_group_key(0.0, 10.0),
-                            wb.elevation_group_key(11.0, 20.0))
+    def test_identical_spans_share_a_group(self):
+        self.assertEqual(
+            wb.group_indices([(0.0, 10.0), (0.0, 10.0)]), [0, 0])
 
-    def test_same_base_different_top_does_not_share_a_key(self):
-        self.assertNotEqual(wb.elevation_group_key(0.0, 10.0),
-                            wb.elevation_group_key(0.0, 20.0))
+    def test_clearly_different_spans_are_separate_groups(self):
+        self.assertEqual(
+            wb.group_indices([(0.0, 10.0), (11.0, 20.0)]), [0, 1])
+
+    def test_same_base_different_top_are_separate_groups(self):
+        self.assertEqual(
+            wb.group_indices([(0.0, 10.0), (0.0, 20.0)]), [0, 1])
+
+    def test_spans_well_under_tolerance_apart_share_a_group(self):
+        self.assertEqual(
+            wb.group_indices([(0.0, 10.0), (0.0, 10.0 + 1e-9)]), [0, 0])
+
+    def test_spans_straddling_a_naive_bucket_edge_share_a_group(self):
+        # A rounding bucket of width tol has an edge at (k + 0.5) * tol;
+        # these two tops sit a hair either side of it, well within tol
+        # of each other, and must still land in the same group -- the
+        # old round(z / tol) keying put them in different buckets and
+        # would fail this.
+        edge = 2.5 * wb.TOL
+        top_a = edge - 0.1 * wb.TOL
+        top_b = edge + 0.1 * wb.TOL
+        self.assertEqual(
+            wb.group_indices([(0.0, top_a), (0.0, top_b)]), [0, 0])
+
+    def test_middle_span_in_its_own_group_ends_and_first_match_last(self):
+        spans = [(0.0, 10.0), (20.0, 30.0), (0.0, 10.0)]
+        self.assertEqual(wb.group_indices(spans), [0, 1, 0])
 
 
 if __name__ == "__main__":
