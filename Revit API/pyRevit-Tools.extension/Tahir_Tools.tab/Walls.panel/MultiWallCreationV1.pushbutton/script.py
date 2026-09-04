@@ -1,8 +1,11 @@
 # -*- coding: utf-8 -*-
 """Create host-model skin walls and sweep walls from one linked selection.
 
-Pick any mix of walls and wall sweeps in a LINKED model.  Each sweep
-becomes a wall in the host model, exactly as Sweep To Wall makes one.
+Select any mix of walls and wall sweeps in a LINKED model -- by box or
+by click, adding and removing until the selection is right, then Finish.
+
+Each sweep becomes a wall in the host model, exactly as Sweep To Wall
+makes one.
 Each wall becomes one or more skin walls, exactly as Split Walls makes
 them -- except that nobody picks a base and a top.
 
@@ -39,8 +42,8 @@ The linked model is never modified.
 __title__  = "Multi Wall\nCreation V1"
 __author__ = "Tahir Sanwarwala"
 __doc__    = (
-    "Pick any mix of walls and wall sweeps in a LINKED model, then "
-    "press Esc.\n"
+    "Select any mix of walls and wall sweeps in a LINKED model -- drag "
+    "a box or click, then click Finish.\n"
     "Each sweep becomes a wall in the host model; each wall becomes "
     "skin walls that stop at the sweeps running on it.\n"
     "Walls are cut again at every level they cross.  A wall with no "
@@ -258,39 +261,50 @@ class LinkedWallOrSweepFilter(ISelectionFilter):
 
 
 def pick_sources():
-    """Pick walls and sweeps in links until Esc.
+    """Select walls and sweeps in links, then Finish.
 
-    Returns (wall_picks, sweep_picks), each a de-duplicated list of
-    (RevitLinkInstance, element).
+    PickObjects rather than a loop of PickObject: it is what gives the
+    selection Revit's own behaviour -- a rubber-band box as well as
+    clicks, the picked elements highlighted for as long as the selection
+    is open, Ctrl-click to add and Shift-click to remove, and a Finish
+    button to run with what is selected.  Cancel or Esc abandons the run
+    instead of proceeding, so nothing is created by accident.
+
+    Whether a drag catches LINKED elements is Revit's own call, not
+    ours: the "Select links" toggle at the bottom right of the Revit
+    window must be on, or a box ignores link geometry.  Clicking works
+    either way.
+
+    The filter runs during the drag, so a box can only ever pick up
+    things this tool can use -- reveals, vertical sweeps and non-Basic
+    walls are never added in the first place.
+
+    Returns (wall_picks, sweep_picks), each a list of
+    (RevitLinkInstance, element).  PickObjects de-duplicates its own
+    result, so neither list can hold the same element twice.
     """
+    try:
+        refs = uidoc.Selection.PickObjects(
+            ObjectType.LinkedElement, LinkedWallOrSweepFilter(),
+            "Select walls and wall sweeps in a linked model, then click "
+            "Finish")
+    except OperationCanceledException:
+        return [], []
+    except Exception as ex:
+        logger.debug("Selection ended: {}".format(ex))
+        return [], []
+
+    if not refs:
+        return [], []
+
     walls  = []
     sweeps = []
-    seen   = set()
-    filt   = LinkedWallOrSweepFilter()
-
-    while True:
-        try:
-            ref = uidoc.Selection.PickObject(
-                ObjectType.LinkedElement, filt,
-                "Pick walls and wall sweeps in a linked model "
-                "(Esc when done)")
-        except OperationCanceledException:
-            break
-        except Exception as ex:
-            logger.debug("Pick ended: {}".format(ex))
-            break
-
-        if ref is None:
-            break
-
-        key = (ref.ElementId.IntegerValue, ref.LinkedElementId.IntegerValue)
-        if key in seen:
-            continue
-        seen.add(key)
-
+    for ref in refs:
         link_inst = doc.GetElement(ref.ElementId)
         link_doc  = link_inst.GetLinkDocument()
-        elem      = link_doc.GetElement(ref.LinkedElementId)
+        if link_doc is None:
+            continue
+        elem = link_doc.GetElement(ref.LinkedElementId)
 
         if isinstance(elem, WallSweep):
             sweeps.append((link_inst, elem))
