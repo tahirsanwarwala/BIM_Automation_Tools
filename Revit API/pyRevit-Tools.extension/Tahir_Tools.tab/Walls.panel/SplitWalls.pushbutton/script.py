@@ -41,21 +41,15 @@ from Autodesk.Revit.DB import (
     Color,
     CompoundStructureLayer,
     ElementId,
-    ElementTransformUtils,
     FillPatternElement,
     FilteredElementCollector,
-    GeometryInstance,
     Level,
     Line,
     Material,
     MaterialFunctionAssignment,
-    Options,
     RevitLinkInstance,
     ShellLayerType,
-    Solid,
     Transaction,
-    Transform,
-    ViewDetailLevel,
     Wall,
     WallKind,
     WallType,
@@ -64,12 +58,14 @@ from Autodesk.Revit.DB import (
 from Autodesk.Revit.UI.Selection import ISelectionFilter, ObjectType
 from pyrevit import revit, forms, script
 from System.Collections.Generic import List as NetList
-from Tahir import wall_limits, wall_miter, wall_materials, wall_naming
+from Tahir import wall_limits, wall_miter, wall_materials, wall_naming, wall_skin
 
 doc    = revit.doc
 uidoc  = revit.uidoc
 logger = script.get_logger()
 output = script.get_output()
+
+measure_face_offsets = wall_skin.measure_face_offsets
 
 
 # ===============================================================================
@@ -203,83 +199,6 @@ class PickedLimit(object):
 # ===============================================================================
 # HELPER UTILITIES
 # ===============================================================================
-
-def _iter_solid_points(elem, transform=None):
-    """Yield every tessellated vertex of *elem*'s solid geometry.
-
-    If *transform* is given (linked models), points are converted into
-    host world coordinates.
-    """
-    opts = Options()
-    opts.ComputeReferences = False
-    opts.IncludeNonVisibleObjects = False
-    opts.DetailLevel = ViewDetailLevel.Medium
-
-    geo_elem = elem.get_Geometry(opts)
-    if geo_elem is None:
-        return
-
-    for gobj in geo_elem:
-        solids = []
-        if isinstance(gobj, Solid):
-            solids.append(gobj)
-        elif isinstance(gobj, GeometryInstance):
-            try:
-                for g2 in gobj.GetInstanceGeometry():
-                    if isinstance(g2, Solid):
-                        solids.append(g2)
-            except Exception:
-                continue
-
-        for sol in solids:
-            try:
-                if sol.Volume <= 0:
-                    continue
-            except Exception:
-                continue
-            for edge in sol.Edges:
-                try:
-                    for pt in edge.Tessellate():
-                        yield transform.OfPoint(pt) if transform else pt
-                except Exception:
-                    continue
-
-
-def measure_face_offsets(elem, ref_pt, orient, transform=None):
-    """Measure a wall's real face positions instead of inferring them.
-
-    Projects every vertex of the wall's solid onto *orient* (the exterior
-    normal), relative to *ref_pt* (a point on the wall's location curve).
-
-    Returns (d_ext, d_int) where:
-        d_ext = signed distance from the location curve to the EXTERIOR face
-        d_int = signed distance from the location curve to the INTERIOR face
-                (negative when the interior face is behind the location curve)
-
-    Returns None if the geometry could not be measured.
-
-    This is immune to the Location Line parameter, to asymmetric layer
-    build-ups, and to which side Revit considers 'exterior' -- it reads the
-    answer off the actual solid.
-    """
-    try:
-        n = orient.Normalize()
-    except Exception:
-        return None
-
-    hi = None
-    lo = None
-    for pt in _iter_solid_points(elem, transform):
-        d = (pt - ref_pt).DotProduct(n)
-        if hi is None or d > hi:
-            hi = d
-        if lo is None or d < lo:
-            lo = d
-
-    if hi is None or lo is None:
-        return None
-    return hi, lo
-
 
 def get_element_name(element):
     """Safely get the Name of any Revit element."""
@@ -884,35 +803,6 @@ def get_or_create_skin_type(cs, source_doc, orig_type_name, plans=None):
 # GEOMETRY – OFFSET COMPUTATION
 # ===============================================================================
 
-def _layer_group_widths(cs, first_core, last_core):
-    """Return (skin_w, gap_w, core_w, interior_w, ext_total_w) in feet."""
-    skin_w = cs.GetLayerWidth(0)
-    gap_w  = sum(cs.GetLayerWidth(i) for i in range(1, first_core))
-    core_w = sum(cs.GetLayerWidth(i) for i in range(first_core, last_core + 1))
-    int_w  = sum(cs.GetLayerWidth(i) for i in range(last_core + 1, cs.LayerCount))
-    return skin_w, gap_w, core_w, int_w, core_w + int_w
-
-
-def _dist_loc_to_exterior(loc_line, total_w, skin_w, gap_w, core_w):
-    """Distance from the wall's location curve to its exterior face (feet).
-
-    Covers all six WallLocationLine settings:
-        0 = Wall Centerline          3 = Finish Face: Interior
-        1 = Core Centerline          4 = Core Face: Exterior
-        2 = Finish Face: Exterior    5 = Core Face: Interior
-    """
-    ext_shell = skin_w + gap_w
-    mapping = {
-        0: total_w / 2.0,
-        1: ext_shell + core_w / 2.0,
-        2: 0.0,
-        3: total_w,
-        4: ext_shell,
-        5: ext_shell + core_w,
-    }
-    return mapping.get(loc_line, total_w / 2.0)
-
-
 def compute_skin_curve(wd, first_core, last_core):
     """Compute the host-coordinate centerline for the new SKIN wall.
 
@@ -923,102 +813,21 @@ def compute_skin_curve(wd, first_core, last_core):
     Returns (skin_curve, gap_width).
     """
     skin_w, gap_w, core_w, _int_w, _ext_total_w = \
-        _layer_group_widths(wd.cs, first_core, last_core)
+        wall_skin.layer_group_widths(wd.cs, first_core, last_core)
 
-    # Prefer the offset measured off the wall's real solid geometry.  Fall
-    # back to deriving it from the Location Line parameter only when the
-    # geometry could not be read.
+    # Prefer the offset measured off the wall's real solid.  Fall back to
+    # deriving it from the Location Line parameter only when the geometry
+    # could not be read.
     if wd.loc_to_ext is not None:
         d = wd.loc_to_ext
     else:
-        d = _dist_loc_to_exterior(
+        d = wall_skin.dist_loc_to_exterior(
             wd.loc_line, wd.total_width, skin_w, gap_w, core_w)
 
-    skin_off = d - skin_w / 2.0
-
-    orient = wd.orientation.Normalize()
-    vec    = XYZ(orient.X * skin_off, orient.Y * skin_off, orient.Z * skin_off)
-
-    skin_curve = wd.loc_curve.CreateTransformed(
-        Transform.CreateTranslation(vec))
+    skin_curve = wall_skin.skin_centreline(
+        wd.loc_curve, wd.orientation, d, skin_w)
 
     return skin_curve, gap_w
-
-
-# ===============================================================================
-# ORIENTED WALL CREATION
-# ===============================================================================
-
-def _center_wall_on_curve(wall, target_curve, orient):
-    """Translate *wall* so that the mid-plane of its actual solid lands
-    exactly on *target_curve*.
-
-    *target_curve* is the intended CENTERLINE of the new wall.  Rather than
-    trusting whichever Location Line default Wall.Create() applied, this
-    measures the wall's real faces and cancels out any residual
-    perpendicular error.
-    """
-    try:
-        n      = orient.Normalize()
-        ref_pt = target_curve.GetEndPoint(0)
-
-        meas = measure_face_offsets(wall, ref_pt, n)
-        if not meas:
-            return
-
-        hi, lo = meas
-        center_err = (hi + lo) / 2.0   # 0.0 when perfectly centred
-
-        if abs(center_err) > 1e-7:
-            move_vec = XYZ(n.X * -center_err,
-                           n.Y * -center_err,
-                           n.Z * -center_err)
-            ElementTransformUtils.MoveElement(doc, wall.Id, move_vec)
-            doc.Regenerate()
-    except Exception as ex:
-        logger.debug("Could not re-centre new wall: {}".format(ex))
-
-
-def create_oriented_wall(curve, type_id, level_id, height, base_off,
-                          structural, orig_orient):
-    """Create a wall along *curve*, ensuring its centerline is aligned 100%
-    with *curve* and its Orientation matches *orig_orient*.
-    """
-    wall = Wall.Create(doc, curve, type_id, level_id, height, base_off,
-                        False, structural)
-    doc.Regenerate()
-
-    # Force Location Line = Wall Centerline (whatever ambient default was
-    # in effect at creation time becomes irrelevant once this is set).
-    try:
-        p = wall.get_Parameter(BuiltInParameter.WALL_KEY_REF_PARAM)
-        if p and p.HasValue:
-            p.Set(0)  # 0 = Wall Centerline
-        doc.Regenerate()
-    except Exception:
-        pass
-
-    # Check orientation; if reversed, re-create on reversed curve
-    try:
-        if orig_orient.DotProduct(wall.Orientation) < 0:
-            doc.Delete(wall.Id)
-            doc.Regenerate()
-            curve = curve.CreateReversed()
-            wall = Wall.Create(doc, curve, type_id,
-                                level_id, height, base_off, False, structural)
-            doc.Regenerate()
-            p = wall.get_Parameter(BuiltInParameter.WALL_KEY_REF_PARAM)
-            if p and p.HasValue:
-                p.Set(0)
-            doc.Regenerate()
-    except Exception:
-        pass
-
-    # Measure the wall's real faces and cancel out any residual
-    # perpendicular offset so its mid-plane sits on the target curve.
-    _center_wall_on_curve(wall, curve, orig_orient)
-
-    return wall
 
 
 # ===============================================================================
@@ -1170,8 +979,8 @@ def create_skin(item, limits):
     """
     wd = item["wd"]
 
-    skin_wall = create_oriented_wall(
-        item["curve"], item["type"].Id, limits["base_level_id"],
+    skin_wall = wall_skin.create_oriented_wall(
+        doc, item["curve"], item["type"].Id, limits["base_level_id"],
         limits["height"], limits["base_offset"],
         wd.structural, wd.orientation,
     )
