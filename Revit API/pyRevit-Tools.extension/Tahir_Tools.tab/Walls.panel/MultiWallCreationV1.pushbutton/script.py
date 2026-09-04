@@ -78,6 +78,7 @@ from Autodesk.Revit.DB import (
     BuiltInParameter,
     ElementId,
     FilteredElementCollector,
+    JoinGeometryUtils,
     Level,
     Line,
     RevitLinkInstance,
@@ -350,14 +351,15 @@ class SweepRun(object):
     different height on each -- so the unit that becomes a wall is a
     RUN: one uninterrupted stretch, on one host wall, at one height.
 
-    *along_min* and *along_max* are measured from the host wall frame's
-    origin along its direction.  *wall_key* is the (link instance id,
-    wall id) pair of the host wall, so band_walls can tell which wall
-    this run cuts.
+    *along_min* and *along_max* are measured from the host run frame's
+    origin along its direction.  *wall_keys* is the set of (link
+    instance id, wall id) pairs the run lies on -- a set, because a run
+    can span several walls the link drew separately -- so band_walls can
+    tell which walls this run cuts.
     """
 
     __slots__ = ("frame", "offset", "along_min", "along_max",
-                 "base_z", "top_z", "wall_key")
+                 "base_z", "top_z", "wall_keys")
 
 
 class SweepJob(object):
@@ -365,6 +367,113 @@ class SweepJob(object):
 
     __slots__ = ("label", "sweep", "runs", "material", "type_mark",
                  "type_name", "wall_type")
+
+
+def merge_key(wall, frame):
+    """What two walls must agree on before being treated as one.
+
+    The wall type settles the finish material, the thickness and the
+    whole layer build-up in a single test.  The facing direction is in
+    here too: two colinear walls of one type can still be drawn in
+    opposite directions, and merging those would put the new wall's
+    finish face on the wrong side of one of them.
+    """
+    try:
+        type_id = wall.WallType.Id.IntegerValue
+    except Exception:
+        type_id = None
+    return (type_id,
+            round(frame.normal.X, 4),
+            round(frame.normal.Y, 4))
+
+
+def merged_frame(frames, merged_ends):
+    """A WallFrame spanning *merged_ends*, borrowing from *frames*[0].
+
+    Members are colinear, one type and one facing, so the normal and the
+    width are the same for all of them; only the extent is new.  The
+    elevation comes from the first member's curve, which is where every
+    member's does -- they are one wall.
+    """
+    z = frames[0].curve.GetEndPoint(0).Z
+    (x0, y0), (x1, y1) = merged_ends
+    curve = Line.CreateBound(XYZ(x0, y0, z), XYZ(x1, y1, z))
+    return wall_chain.WallFrame(
+        frames[0].wall, curve, frames[0].normal, frames[0].width)
+
+
+class HostRun(object):
+    """One straight run of host wall, however many walls drew it."""
+
+    __slots__ = ("frame", "wall_keys", "walls", "openings")
+
+
+def host_runs(link_inst, walls, transform, notes):
+    """Turn a sweep's host walls into the straight runs they really are.
+
+    A link routinely holds one physical wall as two or three end to end.
+    Left separate they break the sweep measured against them: its solid
+    is shared out between host walls by proximity, and a piece short
+    enough that every nearby edge is closer to its neighbours gets no
+    share at all -- so the sweep vanishes over that stretch.  Chaining
+    the colinear ones back together is what stops that.
+    """
+    frames = []
+    keys   = []
+    hosts  = []
+    for host in walls:
+        host_label = "{} (id {})".format(get_element_name(host.WallType),
+                                         host.Id.IntegerValue)
+
+        frame = wall_chain.wall_frame(host, transform)
+        if frame is None:
+            note(notes, host_label, "wall has no location curve")
+            continue
+        if not frame.is_line:
+            note(notes, host_label, "curved wall - not supported")
+            continue
+        if frame.length < MIN_RUN_LENGTH:
+            note(notes, host_label, "wall too short")
+            continue
+
+        frames.append(frame)
+        keys.append(merge_key(host, frame))
+        hosts.append(host)
+
+    if not frames:
+        return []
+
+    segments = []
+    for frame in frames:
+        p0 = frame.curve.GetEndPoint(0)
+        p1 = frame.curve.GetEndPoint(1)
+        segments.append(((p0.X, p0.Y), (p1.X, p1.Y)))
+
+    runs = []
+    for members, ends in wall_bands.colinear_chains(segments, keys):
+        frame = merged_frame([frames[i] for i in members], ends)
+
+        run = HostRun()
+        run.frame = frame
+        run.walls = [hosts[i] for i in members]
+        # Keyed on (link instance id, linked element id), not the bare
+        # element id: pick_sources() explicitly anticipates a selection
+        # spanning two links (or two instances of the same link), and a
+        # bare element id can collide across them.  A SET because one
+        # run can be several walls; band_walls intersects it against a
+        # wall job's own set.
+        run.wall_keys = set(
+            (link_inst.Id.IntegerValue, w.Id.IntegerValue)
+            for w in run.walls)
+        # Measured against the MERGED frame: openings are recorded as
+        # distances along it, so one measured against a member's own
+        # frame would be in the wrong place along this one.
+        run.openings = openings_along(
+            run.walls, transform, frame.origin, frame.direction,
+            run.wall_keys)
+        runs.append(run)
+
+    return runs
 
 
 def sweep_host_walls(sweep):
@@ -465,7 +574,7 @@ def _sweep_edge_spans(sweep, transform, frames):
     return per_frame, reach, material_name
 
 
-def sweep_runs(sweep, transform, frames, wall_keys, openings):
+def sweep_runs(sweep, transform, host):
     """Return (runs, material_name) for one sweep.
 
     The sweep's solid is split between its host walls, each wall's share
@@ -488,6 +597,7 @@ def sweep_runs(sweep, transform, frames, wall_keys, openings):
     intervals is what makes the sweep wall stop on the same line as the
     skin wall under it.
     """
+    frames = [h.frame for h in host]
     per_frame, reach, material_name = _sweep_edge_spans(
         sweep, transform, frames)
 
@@ -557,7 +667,7 @@ def sweep_runs(sweep, transform, frames, wall_keys, openings):
             # by height, so an opening well above or below the sweep
             # leaves it alone.
             cutters = [(o_lo, o_hi)
-                       for o_lo, o_hi, o_z_lo, o_z_hi in openings[idx]
+                       for o_lo, o_hi, o_z_lo, o_z_hi in host[idx].openings
                        if o_z_hi > z_lo + wall_bands.TOL
                        and o_z_lo < z_hi - wall_bands.TOL]
 
@@ -572,7 +682,7 @@ def sweep_runs(sweep, transform, frames, wall_keys, openings):
                 run.along_max = piece_max
                 run.base_z    = z_lo
                 run.top_z     = z_hi
-                run.wall_key  = wall_keys[idx]
+                run.wall_keys = host[idx].wall_keys
                 runs.append(run)
 
     return runs, material_name
@@ -631,42 +741,11 @@ def plan_sweep(link_inst, sweep):
     if not walls:
         return None, [[label, "sweep is not hosted on any wall"]]
 
-    frames    = []
-    wall_keys = []
-    openings  = []
-    for host in walls:
-        host_label = "{} (id {})".format(get_element_name(host.WallType),
-                                         host.Id.IntegerValue)
-
-        frame = wall_chain.wall_frame(host, transform)
-        if frame is None:
-            note(notes, host_label, "wall has no location curve")
-            continue
-        if not frame.is_line:
-            note(notes, host_label, "curved wall - not supported")
-            continue
-        if frame.length < MIN_RUN_LENGTH:
-            note(notes, host_label, "wall too short")
-            continue
-
-        frames.append(frame)
-        # Keyed on (link instance id, linked element id), not the bare
-        # element id: pick_sources() explicitly anticipates a selection
-        # spanning two links (or two instances of the same link), and a
-        # bare element id can collide across them.  Do not "simplify"
-        # this back to just the element id -- plan_wall's job.wall_id is
-        # keyed the same way, and band_walls's membership test compares
-        # the two.
-        wall_key = (link_inst.Id.IntegerValue, host.Id.IntegerValue)
-        wall_keys.append(wall_key)
-        openings.append(cached_wall_openings(
-            wall_key, host, transform, frame.origin, frame.direction))
-
-    if not frames:
+    host = host_runs(link_inst, walls, transform, notes)
+    if not host:
         return None, notes
 
-    runs, material_name = sweep_runs(
-        sweep, transform, frames, wall_keys, openings)
+    runs, material_name = sweep_runs(sweep, transform, host)
     if not runs:
         return None, notes + [[label,
                                "no usable sweep geometry (check the "
@@ -690,9 +769,9 @@ def plan_sweep(link_inst, sweep):
 class WallJob(object):
     """One linked wall, measured and ready to band."""
 
-    __slots__ = ("label", "wall_id", "cs", "source_doc", "loc_curve",
-                 "orientation", "total_width", "loc_line", "loc_to_ext",
-                 "base_z", "top_z", "structural", "bands")
+    __slots__ = ("label", "wall_keys", "type_id", "cs", "source_doc",
+                 "loc_curve", "orientation", "total_width", "loc_line",
+                 "loc_to_ext", "base_z", "top_z", "structural", "bands")
 
 
 def _length_param(elements, names, builtin_names):
@@ -850,20 +929,23 @@ def _insert_extent(insert, link_tf, origin, direction):
 _OPENING_CACHE = {}
 
 
-def cached_wall_openings(wall_key, wall, link_tf, origin, direction):
-    """wall_openings, remembered per wall for the life of the run.
+def openings_along(walls, link_tf, origin, direction, wall_keys):
+    """Every opening in *walls*, as distances along one shared frame.
 
-    Both callers -- plan_sweep for a sweep's host wall, and plan_wall
-    for a picked wall -- measure from the same frame origin and
-    direction, derived the same way from the same transformed location
-    curve, so one cached list means the same thing to each.  Change how
-    either derives its frame and this cache starts handing back
-    intervals measured against the other one.
+    Cached on the set of walls rather than on any one of them, because
+    the answer depends on the frame they are being measured against and
+    that frame belongs to the run, not to a member.  Several sweeps
+    commonly share a run of host walls, and reading the inserts means
+    tessellating each one's solid, so the second sweep should not pay
+    for it again.
     """
-    if wall_key not in _OPENING_CACHE:
-        _OPENING_CACHE[wall_key] = wall_openings(
-            wall, link_tf, origin, direction)
-    return _OPENING_CACHE[wall_key]
+    cache_key = tuple(sorted(wall_keys))
+    if cache_key not in _OPENING_CACHE:
+        found = []
+        for wall in walls:
+            found.extend(wall_openings(wall, link_tf, origin, direction))
+        _OPENING_CACHE[cache_key] = found
+    return _OPENING_CACHE[cache_key]
 
 
 def is_category(elem, bic):
@@ -1045,9 +1127,15 @@ def plan_wall(link_inst, wall):
     job = WallJob()
     job.label       = label
     # (link instance id, linked element id) -- see the matching comment
-    # on SweepRun.wall_key in plan_sweep for why the link id is part of
-    # the key.  band_walls compares the two directly.
-    job.wall_id     = (link_inst.Id.IntegerValue, wall.Id.IntegerValue)
+    # on HostRun.wall_keys for why the link id is part of the key.  A
+    # SET because merge_wall_jobs can fold several walls into this one;
+    # band_walls intersects it against a sweep run's own set.
+    job.wall_keys   = set([(link_inst.Id.IntegerValue,
+                            wall.Id.IntegerValue)])
+    try:
+        job.type_id = wall.WallType.Id.IntegerValue
+    except Exception:
+        job.type_id = None
     job.cs          = cs
     job.source_doc  = link_doc
     job.loc_curve   = loc_curve
@@ -1062,6 +1150,69 @@ def plan_wall(link_inst, wall):
     job.structural  = structural
     job.bands       = []          # filled in by band_walls
     return job, notes_none()
+
+
+def merge_wall_jobs(wall_jobs):
+    """Fold colinear picked walls into one job apiece.
+
+    The link holds one physical wall as two or three end to end more
+    often than not, and building a skin wall for each leaves a seam
+    down the elevation where there is no joint in the building.  Walls
+    that are one straight run of one type, facing one way and spanning
+    one height, are built as one wall instead.
+
+    The span has to match as well as the type: a merged job carries a
+    single set of constraints, so two pieces at different heights are
+    two walls whatever else they share.  Everything else is taken from
+    the first member, which the shared key has already guaranteed is
+    the same for all of them.
+    """
+    if len(wall_jobs) < 2:
+        return wall_jobs
+
+    segments = []
+    keys     = []
+    for job in wall_jobs:
+        p0 = job.loc_curve.GetEndPoint(0)
+        p1 = job.loc_curve.GetEndPoint(1)
+        segments.append(((p0.X, p0.Y), (p1.X, p1.Y)))
+        keys.append((job.type_id,
+                     round(job.orientation.X, 4),
+                     round(job.orientation.Y, 4),
+                     round(job.base_z, 4),
+                     round(job.top_z, 4)))
+
+    merged = []
+    for members, ends in wall_bands.colinear_chains(segments, keys):
+        first = wall_jobs[members[0]]
+        if len(members) == 1:
+            merged.append(first)
+            continue
+
+        z = first.loc_curve.GetEndPoint(0).Z
+        (x0, y0), (x1, y1) = ends
+
+        job = WallJob()
+        job.label       = "{} (+{} colinear)".format(
+            first.label, len(members) - 1)
+        job.wall_keys   = set()
+        for i in members:
+            job.wall_keys |= wall_jobs[i].wall_keys
+        job.type_id     = first.type_id
+        job.cs          = first.cs
+        job.source_doc  = first.source_doc
+        job.loc_curve   = Line.CreateBound(XYZ(x0, y0, z), XYZ(x1, y1, z))
+        job.orientation = first.orientation
+        job.total_width = first.total_width
+        job.loc_line    = first.loc_line
+        job.loc_to_ext  = first.loc_to_ext
+        job.base_z      = first.base_z
+        job.top_z       = first.top_z
+        job.structural  = first.structural
+        job.bands       = []
+        merged.append(job)
+
+    return merged
 
 
 def notes_none():
@@ -1224,7 +1375,7 @@ def band_walls(wall_jobs, sweep_jobs, levels, notes):
         cutters = [(run.base_z, run.top_z)
                    for sweep_job in cutting
                    for run in sweep_job.runs
-                   if run.wall_key == job.wall_id]
+                   if run.wall_keys & job.wall_keys]
 
         gaps, dropped = wall_bands.subtract_spans(
             (job.base_z, job.top_z), cutters)
@@ -1351,6 +1502,34 @@ def create_sweep_wall(curve, frame, wall_type, band):
     return wall
 
 
+def join_at_junctions(built, notes):
+    """Join new walls that meet, so Revit cleans the junction itself.
+
+    *built* is [(original_segment, wall)] for one mitre group, where
+    the segment is the source centreline the mitring judged adjacency
+    on.  wall_miter.junction_pairs finds the same corners and tees it
+    found there, and each pair is handed to Revit to resolve.
+
+    Mitring puts the two walls in the right place; joining is what stops
+    a line being drawn between them and lets Revit sort out the overlap
+    inside the corner, which no amount of moving centrelines can.  A
+    join that Revit refuses -- the walls do not actually intersect, or
+    they are already joined -- is not worth a word to the user.
+    """
+    pairs = wall_miter.junction_pairs([seg for seg, _w in built])
+    for i, j in pairs:
+        first = built[i][1]
+        second = built[j][1]
+        if first is None or second is None:
+            continue
+        try:
+            if JoinGeometryUtils.AreElementsJoined(doc, first, second):
+                continue
+            JoinGeometryUtils.JoinGeometry(doc, first, second)
+        except Exception as ex:
+            logger.debug("Could not join two new walls: {}".format(ex))
+
+
 def report_unwritten(notes, tally, param_name):
     """Report a parameter that could not be written, once per element."""
     for label, count in tally.items():
@@ -1439,6 +1618,7 @@ def build_sweep_walls(sweep_jobs, levels, notes):
     unwritten = {}
     no_level  = {}
     for group in groups.values():
+        built = []
         try:
             curves = wall_chain.mitre_segments(
                 [item["segment"] for item in group])
@@ -1478,6 +1658,10 @@ def build_sweep_walls(sweep_jobs, levels, notes):
                 no_level[job.label] = no_level.get(job.label, 0) + 1
             if job.type_mark and not set_bg_profile(wall, job.type_mark):
                 unwritten[job.label] = unwritten.get(job.label, 0) + 1
+
+            built.append((segment.centre_ends, wall))
+
+        join_at_junctions(built, notes)
 
     report_unwritten(notes, unwritten, BG_PROFILE_PARAM)
     report_unwritten(notes, no_level, BG_LEVEL_PARAM)
@@ -1589,6 +1773,8 @@ def mitre_prepared(prepared, notes):
         groups.setdefault(key, []).append(item)
 
     for key, items in groups.items():
+        for item in items:
+            item["group"] = key
         if len(items) < 2:
             continue
 
@@ -1618,9 +1804,14 @@ def mitre_prepared(prepared, notes):
 
 
 def build_bands(prepared, notes):
-    """Create one skin wall per prepared band.  Inside a transaction."""
+    """Create one skin wall per prepared band.  Inside a transaction.
+
+    Walls are joined afterwards, group by group, so Revit cleans each
+    corner and tee it can -- see join_at_junctions.
+    """
     no_level = {}
     for item in prepared:
+        item["wall"] = None
         job  = item["job"]
         band = item["band"]
         try:
@@ -1635,6 +1826,7 @@ def build_bands(prepared, notes):
             # which is not part of this change.
             set_location_line(wall, LOC_LINE_FINISH_FACE_EXTERIOR)
             apply_constraints(wall, band)
+            item["wall"] = wall
             if not apply_bg_level(wall, band):
                 no_level[job.label] = no_level.get(job.label, 0) + 1
         except Exception as ex:
@@ -1642,6 +1834,13 @@ def build_bands(prepared, notes):
                  "band {} to {} failed: {}".format(
                      feet_text(band["base_z"]), feet_text(band["top_z"]),
                      ex))
+
+    by_group = {}
+    for item in prepared:
+        by_group.setdefault(item.get("group"), []).append(item)
+    for group in by_group.values():
+        join_at_junctions(
+            [(item["original"], item["wall"]) for item in group], notes)
 
     report_unwritten(notes, no_level, BG_LEVEL_PARAM)
 
@@ -1692,6 +1891,8 @@ def main():
         notes.extend(job_notes)
         if job is not None:
             wall_jobs.append(job)
+
+    wall_jobs = merge_wall_jobs(wall_jobs)
 
     if not sweep_jobs and not wall_jobs:
         report(notes)
