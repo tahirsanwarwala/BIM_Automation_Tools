@@ -1053,13 +1053,23 @@ def wall_openings(wall, link_tf, origin, direction):
 
 
 def wall_inserts(wall, link_tf, origin, direction):
-    """Return (windows, rectangular openings) in *wall*, in its frame.
+    """Return (windows, rectangular openings) in *wall*.
 
-    Measured the same way wall_openings measures a door: along the wall
-    from *origin*, and vertically from the insert's own extent.  Each
-    entry keeps the linked element itself as its last item, because the
-    window still has to be measured properly by window_cw later and the
-    opening has to be found again to cut.
+    Windows are measured the same way wall_openings measures a door:
+    along the wall from *origin*, as (lo, hi, z_lo, z_hi, insert).  That
+    frame is fine for them because Task 6 re-derives a window's position
+    from the window element itself and only uses these numbers for
+    reporting.
+
+    Rectangular openings are cut from later, once the skin wall exists,
+    and that wall may be reversed from the source, a merge of several
+    source walls, or mitred at its ends -- none of which share the
+    source wall's frame.  So an opening is instead stored as its WORLD
+    centre point and width: (centre_xyz, width, z_lo, z_hi, insert).
+    cut_openings re-projects that onto whichever built wall it ends up
+    cutting, which is correct regardless of how that wall's own curve
+    relates to this one.  z_lo / z_hi are absolute elevations already
+    and need no reframing either way.
 
     Doors are not here.  They break the sweeps, as in V1, and the skin
     is left solid across them.
@@ -1087,7 +1097,11 @@ def wall_inserts(wall, link_tf, origin, direction):
         if window_cw.is_category(insert, BuiltInCategory.OST_Windows):
             windows.append((lo, hi, z_lo, z_hi, insert))
         elif isinstance(insert, Opening):
-            openings.append((lo, hi, z_lo, z_hi, insert))
+            centre_along = (lo + hi) / 2.0
+            centre = XYZ(origin.X + direction.X * centre_along,
+                        origin.Y + direction.Y * centre_along,
+                        origin.Z + direction.Z * centre_along)
+            openings.append((centre, hi - lo, z_lo, z_hi, insert))
 
     return windows, openings
 
@@ -1287,11 +1301,15 @@ def merge_wall_jobs(wall_jobs):
         job.structural  = first.structural
         job.bands       = []
         job.built_bands = []
-        # Every member's inserts, or the windows on the second and third
-        # piece are silently lost.  Measured along each MEMBER's frame,
-        # not this merged one -- Task 6 needs them in host coordinates
-        # anyway and re-derives position from the window element itself,
-        # so the along values here are used only for reporting.
+        # Every member's inserts, or the windows/openings on the second
+        # and third piece are silently lost.  Windows are measured along
+        # each MEMBER's own frame -- Task 6 re-derives their position
+        # from the window element itself, so that frame is only ever
+        # used for reporting.  Rectangular openings carry a WORLD centre
+        # point and width instead of an along value, so they need no
+        # reprojection here at all: cut_openings re-projects each onto
+        # the BUILT wall's own curve at cut time, whatever frame that
+        # wall ends up in.
         job.windows       = []
         job.rect_openings = []
         for i in members:
@@ -2138,16 +2156,22 @@ def build_bands(prepared, notes):
 # OPENINGS
 # ===========================================================================
 
-def opening_profile(wall, hole, base, top):
-    """Curves for *wall*'s elevation with *hole* cut out of it.
+def opening_profile(wall, holes, base, top):
+    """Curves for *wall*'s elevation with every hole in *holes* cut out.
 
-    Returns the wall's own rectangle followed by the hole's, both as
-    closed loops in the wall's elevation plane.  Revit takes the first
-    loop as the outline and the rest as holes in it.
+    Returns the wall's own rectangle followed by one loop per hole, all
+    as closed loops in the wall's elevation plane.  Revit takes the
+    first loop as the outline and the rest as holes in it.  Every hole
+    for a given wall MUST reach this in one call: wall_sketch.apply_profile
+    deletes every existing sketch curve before drawing, so a second call
+    on the same wall would silently erase the first hole.
 
-    *hole* is (along_lo, along_hi, z_lo, z_hi) measured along the SOURCE
-    wall; it is re-projected onto this wall here, because the skin wall
-    is offset from the source and may be a merged run of several.
+    *holes* is a list of (lo, hi, z_lo, z_hi), each already measured
+    along THIS wall's own curve -- not the source wall's -- and already
+    clamped to fall strictly inside it.  cut_openings does both the
+    projection and the clamping before calling this, because a hole
+    that clamps to nothing there is reported and dropped before it gets
+    here.
 
     *base* and *top* are the elevations this wall was actually BUILT to
     -- the matching entry from job.built_bands -- not read back off the
@@ -2161,7 +2185,6 @@ def opening_profile(wall, hole, base, top):
     p0 = curve.GetEndPoint(0)
     p1 = curve.GetEndPoint(1)
     direction = (p1 - p0).Normalize()
-    normal = XYZ(-direction.Y, direction.X, 0.0)
 
     length = p0.DistanceTo(p1)
 
@@ -2170,24 +2193,17 @@ def opening_profile(wall, hole, base, top):
                    p0.Y + direction.Y * along,
                    z)
 
-    outline = [(0.0, base), (length, base), (length, top), (0.0, top)]
-    lo, hi, z_lo, z_hi = hole
-    lo = max(lo, wall_bands.TOL)
-    hi = min(hi, length - wall_bands.TOL)
-    z_lo = max(z_lo, base + wall_bands.TOL)
-    z_hi = min(z_hi, top - wall_bands.TOL)
-    if hi - lo < MIN_RUN_LENGTH or z_hi - z_lo < MIN_RUN_LENGTH:
-        return None, normal
-
-    inner = [(lo, z_lo), (hi, z_lo), (hi, z_hi), (lo, z_hi)]
+    loops = [[(0.0, base), (length, base), (length, top), (0.0, top)]]
+    for lo, hi, z_lo, z_hi in holes:
+        loops.append([(lo, z_lo), (hi, z_lo), (hi, z_hi), (lo, z_hi)])
 
     curves = []
-    for loop in (outline, inner):
+    for loop in loops:
         for idx in range(len(loop)):
             a = loop[idx]
             b = loop[(idx + 1) % len(loop)]
             curves.append(Line.CreateBound(at(a[0], a[1]), at(b[0], b[1])))
-    return curves, normal
+    return curves
 
 
 def cut_openings(wall_jobs, notes):
@@ -2202,11 +2218,20 @@ def cut_openings(wall_jobs, notes):
     A failure here therefore cannot roll the walls back -- they are
     already committed.  That is the right trade: a wall standing uncut
     is worth more than a run that throws away everything it built.
+
+    Openings are grouped by the host wall they land in BEFORE anything
+    is cut: wall_sketch.apply_profile deletes every existing sketch
+    curve on a wall before drawing its own, so two openings hosted in
+    the same wall must reach it in a single call with the outline
+    followed by both holes, or the second call would silently erase the
+    first hole.
+
+    Each host wall's cut is wrapped in its own try/except, so one bad
+    wall or opening costs a note, not the rest of the run's report.
     """
     for job in wall_jobs:
-        for lo, hi, z_lo, z_hi, opening in job.rect_openings:
-            mid = (z_lo + z_hi) / 2.0
-
+        by_host = {}
+        for centre, width, z_lo, z_hi, opening in job.rect_openings:
             host = None
             host_base = host_top = None
             for base_z, top_z, wall in job.built_bands:
@@ -2224,22 +2249,56 @@ def cut_openings(wall_jobs, notes):
                          opening.Id.IntegerValue))
                 continue
 
-            curves, _normal = opening_profile(
-                host, (lo, hi, z_lo, z_hi), host_base, host_top)
-            if curves is None:
-                note(notes, job.label,
-                     "opening {} is too small or falls outside the wall "
-                     "- left uncut".format(opening.Id.IntegerValue))
-                continue
+            entry = by_host.setdefault(
+                host.Id.IntegerValue,
+                {"wall": host, "base": host_base, "top": host_top,
+                 "holes": []})
+            entry["holes"].append((centre, width, z_lo, z_hi, opening))
 
-            failure = wall_sketch.apply_profile(
-                doc, host, curves,
-                "Create skin profile sketch",
-                "Cut the opening out of the skin wall")
-            if failure:
+        for entry in by_host.values():
+            host = entry["wall"]
+            base = entry["base"]
+            top  = entry["top"]
+            try:
+                curve = host.Location.Curve
+                p0 = curve.GetEndPoint(0)
+                p1 = curve.GetEndPoint(1)
+                direction = (p1 - p0).Normalize()
+                length = p0.DistanceTo(p1)
+
+                valid = []
+                for centre, width, z_lo, z_hi, opening in entry["holes"]:
+                    along = (centre - p0).DotProduct(direction)
+                    lo = max(along - width / 2.0, wall_bands.TOL)
+                    hi = min(along + width / 2.0, length - wall_bands.TOL)
+                    hole_z_lo = max(z_lo, base + wall_bands.TOL)
+                    hole_z_hi = min(z_hi, top - wall_bands.TOL)
+                    if (hi - lo < MIN_RUN_LENGTH
+                            or hole_z_hi - hole_z_lo < MIN_RUN_LENGTH):
+                        note(notes, job.label,
+                             "opening {} is too small or falls outside "
+                             "the wall - left uncut".format(
+                                 opening.Id.IntegerValue))
+                        continue
+                    valid.append((lo, hi, hole_z_lo, hole_z_hi))
+
+                if not valid:
+                    continue
+
+                curves = opening_profile(host, valid, base, top)
+
+                failure = wall_sketch.apply_profile(
+                    doc, host, curves,
+                    "Create skin profile sketch",
+                    "Cut the opening out of the skin wall")
+                if failure:
+                    note(notes, job.label,
+                         "wall id {}: {}".format(
+                             host.Id.IntegerValue, failure))
+            except Exception as ex:
                 note(notes, job.label,
-                     "opening {}: {}".format(
-                         opening.Id.IntegerValue, failure))
+                     "wall id {}: could not cut its opening(s) - "
+                     "{}".format(host.Id.IntegerValue, ex))
 
 
 # ===========================================================================
@@ -2331,8 +2390,12 @@ def main():
 
     # After the transaction, and it cannot be otherwise: SketchEditScope
     # will not start inside one, and a sketched profile is drawn against
-    # constraints that have to be final first.
-    cut_openings(wall_jobs, notes)
+    # constraints that have to be final first.  Guarded the same way as
+    # the rest of the run: a failure here must not cost the report.
+    try:
+        cut_openings(wall_jobs, notes)
+    except Exception as ex:
+        note(notes, "-", "cutting openings failed: {}".format(ex))
 
     # Silence on success: only problems open the output window.
     report(notes)
