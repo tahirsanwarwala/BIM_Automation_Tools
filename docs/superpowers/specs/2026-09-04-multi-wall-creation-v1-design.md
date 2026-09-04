@@ -18,18 +18,28 @@ sweeps that run on it.
 ## The height rule
 
   1. Sweep-derived walls keep the vertical extent of their source sweep,
-     exactly as measured from the linked model.
-  2. A wall stops where a sweep starts. Its top is the bottom of the sweep
-     above it; its base is the top of the sweep below it.
-  3. No wall crosses a sweep. A wall with sweeps part-way up is cut into one
-     wall per gap between sweeps.
-  4. No wall crosses a level. Each gap is cut again at every level it
+     exactly as measured from the linked model. Every picked sweep gets
+     one, cast stone and EIFS alike.
+  2. A wall stops where a CAST STONE sweep starts. Its top is the bottom of
+     the stone course above it; its base is the top of the stone course
+     below it.
+  3. No wall crosses a cast stone course. A wall with stone courses
+     part-way up is cut into one wall per gap between them.
+  4. An EIFS sweep does not cut anything. It is measured, built and mitred
+     like any other sweep, but the walls it runs across pass it unbroken.
+  5. No wall crosses a level. Each gap is cut again at every level it
      crosses. Sweep-derived walls are NOT split at levels.
-  5. With no sweep above or below, that end falls back to the source wall's
-     own constraint parameters.
+  6. With no stone course above or below, that end falls back to the source
+     wall's own constraint parameters.
 
-Levels are the strict constraint; sweeps are the second. Both cuts are
-exact — nothing is rounded (see Decisions).
+Levels are the strict constraint; cast stone courses are the second. Both
+cuts are exact — nothing is rounded (see Decisions).
+
+Which sweeps cut is decided on the wall type a sweep RESOLVED to, not on
+its name or its material: those are what the STONE/EIFS rule reads to
+reach a type in the first place, and a sweep the rule could not read has
+had its type chosen by hand. What a sweep is being built as is the honest
+answer to what it is.
 
 ## Scope
 

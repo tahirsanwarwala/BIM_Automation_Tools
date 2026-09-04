@@ -9,14 +9,18 @@ makes one.
 Each wall becomes one or more skin walls, exactly as Split Walls makes
 them -- except that nobody picks a base and a top.
 
-A wall's height comes from the sweeps running on it:
+A wall's height comes from the CAST STONE sweeps running on it:
 
-  * its top is the bottom of the sweep above it,
-  * its base is the top of the sweep below it,
-  * a sweep part-way up cuts it in two, and every level it crosses cuts
-    it again, so no new wall crosses either,
-  * with no sweep above or below, that end falls back to the source
-    wall's own Base and Top Constraint.
+  * its top is the bottom of the stone course above it,
+  * its base is the top of the stone course below it,
+  * one part-way up cuts it in two, and every level it crosses cuts it
+    again, so no new wall crosses either,
+  * with no stone course above or below, that end falls back to the
+    source wall's own Base and Top Constraint.
+
+An EIFS sweep is built like any other -- measured, mitred, given its own
+wall -- but it does not break the walls it runs across.  Only cast stone
+does that.
 
 Only sweeps you actually pick cut a wall, and only sweeps hosted on that
 wall -- the link's own GetHostIds() decides, so a sweep running along a
@@ -54,9 +58,10 @@ __doc__    = (
     "Select any mix of walls and wall sweeps in a LINKED model -- drag "
     "a box or click, then click Finish.\n"
     "Each sweep becomes a wall in the host model; each wall becomes "
-    "skin walls that stop at the sweeps running on it.\n"
+    "skin walls that stop at the CAST STONE sweeps running on it -- an "
+    "EIFS sweep is built but does not break a wall.\n"
     "Walls are cut again at every level they cross.  A wall with no "
-    "sweep above or below falls back to its own constraints.\n"
+    "stone course above or below falls back to its own constraints.\n"
     "Sweep wall types come from STONE / EIFS in the sweep's type or "
     "material name; you are only asked about what that cannot read.\n"
     "The linked model is left untouched."
@@ -1176,14 +1181,32 @@ def collect_skin_plans(wall_jobs):
 # BANDING
 # ===========================================================================
 
+def sweep_cuts_walls(job):
+    """True when this sweep interrupts the walls it runs across.
+
+    Only a CAST STONE course does.  An EIFS cornice is still measured,
+    still becomes a wall of its own, and still mitres into its
+    neighbours -- it simply does not decide where the skin walls around
+    it start and stop, so a wall runs on past one unbroken.
+
+    The test is the wall type the sweep RESOLVED to, not its name or its
+    material: those are what resolve_sweep_types reads to reach the type
+    in the first place, and a sweep the name rule could not read has had
+    its type chosen by hand.  What the sweep is being built as is the
+    honest answer to what it is.
+    """
+    return get_element_name(job.wall_type) == wall_bands.CAST_STONE_TYPE_NAME
+
+
 def band_walls(wall_jobs, sweep_jobs, levels, notes):
     """Work out the bands each wall is cut into.
 
-    Two things cut a wall.  The sweeps hosted on it, which come from the
-    link's own GetHostIds() so a sweep on a neighbouring wall is never
-    mistaken for one on this one; and every level a leftover stretch
-    crosses, because a wall crossing a level is the one thing the house
-    rule never allows.
+    Two things cut a wall.  The CAST STONE sweeps hosted on it -- hosted
+    decided by the link's own GetHostIds(), so a sweep on a neighbouring
+    wall is never mistaken for one on this one, and cast stone by
+    sweep_cuts_walls, so an EIFS cornice passes a wall by without
+    breaking it.  And every level a leftover stretch crosses, because a
+    wall crossing a level is the one thing the house rule never allows.
 
     Nothing is rounded: wall_constraints.plan_wall is called with
     allow_round=False so a band end stays exactly on the sweep face or
@@ -1192,12 +1215,14 @@ def band_walls(wall_jobs, sweep_jobs, levels, notes):
 
     Fills job.bands in place.
     """
+    cutting = [j for j in sweep_jobs if sweep_cuts_walls(j)]
+
     for job in wall_jobs:
         # One cutter per RUN, not per sweep: a run knows which wall it
         # lies on and how high it sits there, so a sweep that steps down
         # cuts each of its walls at the height it actually runs at.
         cutters = [(run.base_z, run.top_z)
-                   for sweep_job in sweep_jobs
+                   for sweep_job in cutting
                    for run in sweep_job.runs
                    if run.wall_key == job.wall_id]
 
