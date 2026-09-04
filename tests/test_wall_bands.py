@@ -317,5 +317,117 @@ class TestNearestSegmentIndex(unittest.TestCase):
         self.assertEqual(wb.nearest_segment_index((5.0, 19.0), segs), 1)
 
 
+class TestColinearChains(unittest.TestCase):
+
+    def chains(self, segments, keys=None):
+        """Just the index groups, for readability in the assertions."""
+        return [idx for idx, _seg in wb.colinear_chains(segments, keys)]
+
+    def test_empty_input(self):
+        self.assertEqual(wb.colinear_chains([], []), [])
+
+    def test_one_segment_is_its_own_chain(self):
+        segs = [((0.0, 0.0), (10.0, 0.0))]
+        got = wb.colinear_chains(segs, ["A"])
+        self.assertEqual(got, [([0], ((0.0, 0.0), (10.0, 0.0)))])
+
+    def test_two_colinear_touching_same_key_merge(self):
+        segs = [((0.0, 0.0), (10.0, 0.0)), ((10.0, 0.0), (16.0, 0.0))]
+        got = wb.colinear_chains(segs, ["A", "A"])
+        self.assertEqual(len(got), 1)
+        idx, merged = got[0]
+        self.assertEqual(sorted(idx), [0, 1])
+        self.assertEqual(merged, ((0.0, 0.0), (16.0, 0.0)))
+
+    def test_a_short_piece_between_two_long_ones_merges(self):
+        # The shape that broke the sweeps: a stub the link left behind.
+        segs = [((0.0, 0.0), (10.0, 0.0)),
+                ((10.0, 0.0), (10.5, 0.0)),
+                ((10.5, 0.0), (30.0, 0.0))]
+        got = wb.colinear_chains(segs, ["A", "A", "A"])
+        self.assertEqual(len(got), 1)
+        idx, merged = got[0]
+        self.assertEqual(sorted(idx), [0, 1, 2])
+        self.assertEqual(merged, ((0.0, 0.0), (30.0, 0.0)))
+
+    def test_different_keys_never_merge(self):
+        segs = [((0.0, 0.0), (10.0, 0.0)), ((10.0, 0.0), (16.0, 0.0))]
+        self.assertEqual(len(wb.colinear_chains(segs, ["A", "B"])), 2)
+
+    def test_colinear_but_far_apart_do_not_merge(self):
+        segs = [((0.0, 0.0), (10.0, 0.0)), ((14.0, 0.0), (20.0, 0.0))]
+        self.assertEqual(len(wb.colinear_chains(segs, ["A", "A"])), 2)
+
+    def test_a_gap_within_tolerance_still_merges(self):
+        segs = [((0.0, 0.0), (10.0, 0.0)),
+                ((10.0 + 0.5 * wb.TOL, 0.0), (16.0, 0.0))]
+        self.assertEqual(len(wb.colinear_chains(segs, ["A", "A"])), 1)
+
+    def test_parallel_but_offset_do_not_merge(self):
+        # Two leaves of a cavity: same direction, side by side.
+        segs = [((0.0, 0.0), (10.0, 0.0)), ((10.0, 1.0), (16.0, 1.0))]
+        self.assertEqual(len(wb.colinear_chains(segs, ["A", "A"])), 2)
+
+    def test_perpendicular_at_a_corner_do_not_merge(self):
+        segs = [((0.0, 0.0), (10.0, 0.0)), ((10.0, 0.0), (10.0, 8.0))]
+        self.assertEqual(len(wb.colinear_chains(segs, ["A", "A"])), 2)
+
+    def test_overlapping_colinear_merge_to_the_outer_extent(self):
+        segs = [((0.0, 0.0), (10.0, 0.0)), ((4.0, 0.0), (16.0, 0.0))]
+        got = wb.colinear_chains(segs, ["A", "A"])
+        self.assertEqual(len(got), 1)
+        self.assertEqual(got[0][1], ((0.0, 0.0), (16.0, 0.0)))
+
+    def test_a_contained_segment_merges(self):
+        segs = [((0.0, 0.0), (20.0, 0.0)), ((5.0, 0.0), (6.0, 0.0))]
+        got = wb.colinear_chains(segs, ["A", "A"])
+        self.assertEqual(len(got), 1)
+        self.assertEqual(got[0][1], ((0.0, 0.0), (20.0, 0.0)))
+
+    def test_merging_is_transitive_through_the_middle(self):
+        # 0 and 2 do not touch each other; both touch 1.
+        segs = [((0.0, 0.0), (10.0, 0.0)),
+                ((10.0, 0.0), (20.0, 0.0)),
+                ((20.0, 0.0), (30.0, 0.0))]
+        got = wb.colinear_chains(segs, ["A", "A", "A"])
+        self.assertEqual(len(got), 1)
+        self.assertEqual(got[0][1], ((0.0, 0.0), (30.0, 0.0)))
+
+    def test_reversed_neighbour_still_merges(self):
+        # The link is under no obligation to draw them the same way round.
+        segs = [((0.0, 0.0), (10.0, 0.0)), ((16.0, 0.0), (10.0, 0.0))]
+        got = wb.colinear_chains(segs, ["A", "A"])
+        self.assertEqual(len(got), 1)
+        merged = got[0][1]
+        self.assertEqual(sorted([merged[0][0], merged[1][0]]), [0.0, 16.0])
+
+    def test_a_diagonal_chain_merges(self):
+        segs = [((0.0, 0.0), (3.0, 4.0)), ((3.0, 4.0), (6.0, 8.0))]
+        got = wb.colinear_chains(segs, ["A", "A"])
+        self.assertEqual(len(got), 1)
+        self.assertEqual(got[0][1], ((0.0, 0.0), (6.0, 8.0)))
+
+    def test_a_slight_kink_beyond_tolerance_does_not_merge(self):
+        # Second leg rises a foot over its length -- not one wall.
+        segs = [((0.0, 0.0), (10.0, 0.0)), ((10.0, 0.0), (20.0, 1.0))]
+        self.assertEqual(len(wb.colinear_chains(segs, ["A", "A"])), 2)
+
+    def test_degenerate_segment_is_kept_as_its_own_chain(self):
+        segs = [((0.0, 0.0), (0.0, 0.0)), ((0.0, 0.0), (10.0, 0.0))]
+        got = wb.colinear_chains(segs, ["A", "A"])
+        self.assertEqual(len(got), 2)
+
+    def test_keys_default_to_all_alike(self):
+        segs = [((0.0, 0.0), (10.0, 0.0)), ((10.0, 0.0), (16.0, 0.0))]
+        self.assertEqual(len(wb.colinear_chains(segs)), 1)
+
+    def test_chains_come_back_in_first_appearance_order(self):
+        segs = [((0.0, 0.0), (10.0, 0.0)),
+                ((50.0, 0.0), (60.0, 0.0)),
+                ((10.0, 0.0), (20.0, 0.0))]
+        got = self.chains(segs, ["A", "A", "A"])
+        self.assertEqual(got, [[0, 2], [1]])
+
+
 if __name__ == "__main__":
     unittest.main()

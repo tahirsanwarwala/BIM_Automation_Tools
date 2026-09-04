@@ -271,3 +271,143 @@ def nearest_segment_index(point, segments):
             best_sq = d_sq
             best_idx = idx
     return best_idx
+
+
+def _seg_length(seg):
+    """Length of a ((x0,y0),(x1,y1)) segment."""
+    dx = seg[1][0] - seg[0][0]
+    dy = seg[1][1] - seg[0][1]
+    return (dx * dx + dy * dy) ** 0.5
+
+
+def _perp_distance(point, seg, length):
+    """Distance from *point* to the INFINITE line through *seg*."""
+    (ax, ay), (bx, by) = seg
+    px, py = point
+    # Twice the triangle's area over its base is its height.
+    cross = (bx - ax) * (py - ay) - (by - ay) * (px - ax)
+    return abs(cross) / length
+
+
+def _lies_on_line(seg, other, other_length, tol):
+    """True when both ends of *seg* sit on the line through *other*."""
+    return (_perp_distance(seg[0], other, other_length) <= tol
+            and _perp_distance(seg[1], other, other_length) <= tol)
+
+
+def _project_span(seg, origin, ux, uy):
+    """Where *seg* starts and ends along a unit direction, from *origin*."""
+    a = (seg[0][0] - origin[0]) * ux + (seg[0][1] - origin[1]) * uy
+    b = (seg[1][0] - origin[0]) * ux + (seg[1][1] - origin[1]) * uy
+    return (a, b) if a <= b else (b, a)
+
+
+def colinear_chains(segments, keys=None, tol=TOL):
+    """Group segments that are one straight run drawn in several pieces.
+
+    A linked model routinely holds one physical wall as two or three
+    walls end to end -- split at a grid, at a phase boundary, or by an
+    edit long forgotten.  Treated separately they cause real damage: a
+    sweep's geometry is shared out between them by proximity, and a
+    piece short enough that every nearby edge is closer to its
+    neighbours gets no share at all, so the sweep drops out over that
+    stretch entirely.  Chaining them back together is what stops that.
+
+    *segments* are ((x0,y0),(x1,y1)) pairs.  *keys* is a parallel list;
+    only segments whose keys are equal may join, so callers can insist
+    that two pieces be the same wall type before calling them one wall.
+    Omit it and every segment is eligible.
+
+    Two segments join when each lies on the other's line within *tol*
+    and their extents along that line touch or overlap.  Joining is
+    transitive, so a run of three merges through its middle even where
+    the ends are nowhere near each other.
+
+    Returns [(indices, merged_segment)], one entry per chain, in order
+    of the first segment in each.  A degenerate segment is returned on
+    its own -- it has no direction to be colinear with anything.
+    """
+    count = len(segments)
+    if keys is None:
+        keys = [None] * count
+
+    lengths = [_seg_length(seg) for seg in segments]
+
+    # Union-find over the segments; parent[i] is i's group leader.
+    parent = list(range(count))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i, j):
+        ri, rj = find(i), find(j)
+        if ri != rj:
+            parent[max(ri, rj)] = min(ri, rj)
+
+    for i in range(count):
+        if lengths[i] <= tol:
+            continue
+        ux = (segments[i][1][0] - segments[i][0][0]) / lengths[i]
+        uy = (segments[i][1][1] - segments[i][0][1]) / lengths[i]
+        span_i = _project_span(segments[i], segments[i][0], ux, uy)
+
+        for j in range(i + 1, count):
+            if lengths[j] <= tol or keys[i] != keys[j]:
+                continue
+
+            # Colinear both ways round.  Testing only one direction lets
+            # a short segment sitting near a long line count as on it
+            # however far off its own line the long one runs.
+            if not _lies_on_line(segments[j], segments[i], lengths[i], tol):
+                continue
+            if not _lies_on_line(segments[i], segments[j], lengths[j], tol):
+                continue
+
+            span_j = _project_span(segments[j], segments[i][0], ux, uy)
+            if (span_j[0] - span_i[1] > tol
+                    or span_i[0] - span_j[1] > tol):
+                continue      # colinear but nowhere near each other
+
+            union(i, j)
+
+    groups = {}
+    order = []
+    for i in range(count):
+        root = find(i)
+        if root not in groups:
+            groups[root] = []
+            order.append(root)
+        groups[root].append(i)
+
+    chains = []
+    for root in order:
+        members = groups[root]
+        # Measure along the longest member: the most reliable direction
+        # the chain has, and the least moved by a short piece's rounding.
+        longest = max(members, key=lambda k: lengths[k])
+        if lengths[longest] <= tol:
+            for i in members:
+                chains.append(([i], segments[i]))
+            continue
+
+        seg = segments[longest]
+        ux = (seg[1][0] - seg[0][0]) / lengths[longest]
+        uy = (seg[1][1] - seg[0][1]) / lengths[longest]
+        origin = seg[0]
+
+        lo = hi = None
+        for i in members:
+            a, b = _project_span(segments[i], origin, ux, uy)
+            if lo is None or a < lo:
+                lo = a
+            if hi is None or b > hi:
+                hi = b
+
+        chains.append((members,
+                       ((origin[0] + ux * lo, origin[1] + uy * lo),
+                        (origin[0] + ux * hi, origin[1] + uy * hi))))
+
+    return chains
