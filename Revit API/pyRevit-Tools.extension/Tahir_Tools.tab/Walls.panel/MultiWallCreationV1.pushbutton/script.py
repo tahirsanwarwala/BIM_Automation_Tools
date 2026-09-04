@@ -103,9 +103,12 @@ output = script.get_output()
 # Shorter than this, in feet, and there is no wall worth making (~16 mm).
 MIN_RUN_LENGTH = 0.05
 
-# WallLocationLine values.
+# WallLocationLine values.  Every wall this tool makes is left
+# referenced to its exterior finish face, whichever way it was built:
+# setting Location Line re-references a wall without moving it, so this
+# is a change of what the wall measures from, not of where it sits.
 LOC_LINE_CENTRELINE           = 0
-LOC_LINE_FINISH_FACE_INTERIOR = 3
+LOC_LINE_FINISH_FACE_EXTERIOR = 2
 
 # The sweep type's Type Mark is carried onto each sweep wall here, and
 # the name of each new wall's Base Constraint level goes here.
@@ -1104,7 +1107,7 @@ def create_sweep_wall(curve, frame, wall_type, band):
     except Exception:
         pass
 
-    set_location_line(wall, LOC_LINE_FINISH_FACE_INTERIOR)
+    set_location_line(wall, LOC_LINE_FINISH_FACE_EXTERIOR)
     apply_constraints(wall, band)
     return wall
 
@@ -1414,6 +1417,12 @@ def build_bands(prepared, notes):
                 doc, item["curve"], item["type"].Id,
                 band["base_level_id"], band["height"],
                 band["base_offset"], job.structural, job.orientation)
+            # create_oriented_wall leaves the wall on Centreline, which
+            # is what lets it measure and re-centre the wall on the
+            # curve it was given.  Re-reference it only once that is
+            # done, and only here: the helper is shared with SplitWalls,
+            # which is not part of this change.
+            set_location_line(wall, LOC_LINE_FINISH_FACE_EXTERIOR)
             apply_constraints(wall, band)
             if not apply_bg_level(wall, band):
                 no_level[job.label] = no_level.get(job.label, 0) + 1
