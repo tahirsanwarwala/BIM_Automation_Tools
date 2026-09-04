@@ -121,5 +121,51 @@ class TestSkinTypeName(unittest.TestCase):
         self.assertNotEqual(a, b)
 
 
+# One sixteenth of an inch, in feet.  wall_materials.NAME_THICKNESS_TOL
+# is the same number, and the tests below are why it is that number: a
+# generated name states its thickness to the nearest sixteenth, so a
+# type already carrying the name a plan wants is that plan's type as
+# long as it is within a sixteenth of the wanted thickness.  Reusing it
+# is what stops the tools leaving "... (2)", "... (3)" behind.
+NAME_TOL = 1.0 / 12.0 / 16.0
+
+
+class TestThicknessNamingResolution(unittest.TestCase):
+
+    def test_thicknesses_a_hair_apart_share_a_name(self):
+        # 0.025 in apart -- more than wall_materials.TYPE_THICKNESS_TOL,
+        # so these are two separate PLANS, yet one name.  That collision
+        # is what produced the duplicate wall types.
+        a = wn.feet_to_imperial(3.625 / 12.0)
+        b = wn.feet_to_imperial(3.650 / 12.0)
+        self.assertEqual(a, b)
+        self.assertEqual(a, "0' 3 5/8\"")
+
+    def test_sharing_a_name_bounds_the_thickness_difference(self):
+        # The invariant NAME_THICKNESS_TOL relies on: anything sharing a
+        # name is within a sixteenth of an inch.  Swept across a range
+        # at a step far finer than the naming resolution.
+        by_name = {}
+        step = 1.0 / 12.0 / 256.0
+        value = 3.0 / 12.0
+        while value <= 5.0 / 12.0:
+            by_name.setdefault(wn.feet_to_imperial(value), []).append(value)
+            value += step
+
+        self.assertGreater(len(by_name), 20)     # the sweep really varied
+        for name, values in by_name.items():
+            spread = max(values) - min(values)
+            self.assertLessEqual(
+                spread, NAME_TOL + 1e-9,
+                "{!r} covers a spread of {:.5f} ft, more than a "
+                "sixteenth".format(name, spread))
+
+    def test_a_sixteenth_apart_gives_different_names(self):
+        # The other side of it: a real thickness change is never hidden.
+        a = wn.feet_to_imperial(3.625 / 12.0)
+        b = wn.feet_to_imperial((3.625 + 1.0 / 16.0) / 12.0)
+        self.assertNotEqual(a, b)
+
+
 if __name__ == "__main__":
     unittest.main()

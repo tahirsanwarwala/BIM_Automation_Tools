@@ -61,6 +61,12 @@ SKIN_PREFIX = wall_naming.SKIN_PREFIX
 # to absorb rounding, not real differences in thickness.
 TYPE_THICKNESS_TOL = 0.002
 
+# A generated type name states its thickness to the nearest sixteenth of
+# an inch, so two thicknesses that produce the SAME name can differ by up
+# to that much.  It is the tolerance for deciding that a type already
+# named what a plan wants is the type that plan wanted.
+NAME_THICKNESS_TOL = 1.0 / 12.0 / 16.0
+
 # Fixed grey used for surface patterns when the source material has none.
 DEFAULT_SURFACE_RGB = (120, 120, 120)
 
@@ -709,16 +715,62 @@ def plan_skin_wall_type(doc, source_material, source_doc, thickness,
             "mark": mark, "descriptor": descriptor}
 
 
+def find_type_already_named(doc, name, thickness):
+    """A Basic wall type called *name* and about *thickness* thick.
+
+    Returns None when there is none, or when the one there is is not the
+    thickness the caller wanted -- in which case it is some unrelated
+    type that happens to share the name, and must not be reused.
+    """
+    if not name:
+        return None
+    for wt in iter_basic_wall_types(doc):
+        if element_name(wt) != name:
+            continue
+        width = wall_type_width(wt)
+        if width is None:
+            return None
+        if abs(width - thickness) <= NAME_THICKNESS_TOL:
+            return wt
+        return None
+    return None
+
+
 def execute_skin_wall_type_plan(doc, plan, source_material=None,
                                 source_doc=None):
     """Carry out a plan from plan_skin_wall_type and return the WallType.
 
     Returns None for a "skip" plan.  Must run inside a transaction.
+
+    A plan that would BUILD a type first looks for one already named
+    what it wants, and reuses that instead.  Without this the tools left
+    a trail of "SKIN_... (2)", "... (3)", "... (4)" behind them, for two
+    reasons at once.
+
+    Within a run, plans are keyed on their finish's Mark and thickness,
+    the thickness to within TYPE_THICKNESS_TOL -- 0.024 inch.  The name a
+    plan resolves to states its thickness only to the nearest sixteenth.
+    Two finishes a few thousandths apart are therefore two plans wanting
+    one name, and Revit will not have two types of one name, so the
+    second was renamed rather than shared.
+
+    Across runs, the same plan ran again and found its own type from
+    last time under a name it no longer recognised as its own.
+
+    Both are answered by asking, at the moment of building, whether the
+    wanted name is taken by a type of the wanted thickness.
     """
     action = plan.get("action")
 
     if action == "use":
         return plan["type"]
+
+    if action in ("duplicate", "create"):
+        existing = find_type_already_named(
+            doc, plan.get("name"), plan.get("thickness"))
+        if existing is not None:
+            return existing
+
     if action == "duplicate":
         return duplicate_type_at_thickness(
             doc, plan["template"], plan["thickness"], plan["name"])
