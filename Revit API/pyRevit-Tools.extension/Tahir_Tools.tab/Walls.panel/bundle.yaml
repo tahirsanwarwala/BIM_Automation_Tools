@@ -3,5 +3,6 @@ layout:
   - SplitWalls
   - SweepToWall
   - MultiWallCreationV1
+  - MultiWallCreationV2
   - WindowToCurtainWall
   - CurtainWallTrim
