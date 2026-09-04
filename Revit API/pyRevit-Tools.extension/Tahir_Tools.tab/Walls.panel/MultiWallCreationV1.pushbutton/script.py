@@ -710,6 +710,58 @@ def collect_skin_plans(wall_jobs):
 
 
 # ===========================================================================
+# BANDING
+# ===========================================================================
+
+def band_walls(wall_jobs, sweep_jobs, levels, notes):
+    """Work out the bands each wall is cut into.
+
+    Two things cut a wall.  The sweeps hosted on it, which come from the
+    link's own GetHostIds() so a sweep on a neighbouring wall is never
+    mistaken for one on this one; and every level a leftover stretch
+    crosses, because a wall crossing a level is the one thing the house
+    rule never allows.
+
+    Nothing is rounded: wall_constraints.plan_wall is called with
+    allow_round=False so a band end stays exactly on the sweep face or
+    the level that produced it.  Rounding it to the nearest inch would
+    open a gap between the band and the sweep wall above it.
+
+    Fills job.bands in place.
+    """
+    for job in wall_jobs:
+        cutters = [(s.base_z, s.top_z) for s in sweep_jobs
+                   if job.wall_id in s.host_ids]
+
+        gaps, dropped = wall_bands.subtract_spans(
+            (job.base_z, job.top_z), cutters)
+
+        for lo, hi in dropped:
+            note(notes, job.label,
+                 "sliver between sweeps at {} to {} is too thin to "
+                 "build".format(feet_text(lo), feet_text(hi)))
+
+        if not gaps:
+            note(notes, job.label,
+                 "sweeps cover the whole wall - nothing left to build")
+            continue
+
+        for lo, hi in gaps:
+            try:
+                plan = wall_constraints.plan_wall(
+                    lo, hi, levels, allow_round=False)
+            except ValueError as ex:
+                note(notes, job.label,
+                     "band {} to {}: {}".format(
+                         feet_text(lo), feet_text(hi), ex))
+                continue
+            job.bands.extend(plan["bands"])
+
+        if not job.bands:
+            note(notes, job.label, "no band could be constrained")
+
+
+# ===========================================================================
 # REPORTING
 # ===========================================================================
 
@@ -749,6 +801,13 @@ def main():
     sweep_jobs = resolve_sweep_types(sweep_jobs, notes)
     skin_plans = collect_skin_plans(wall_jobs)
 
+    levels = host_levels()
+    if not levels:
+        report(notes + [["-", "this model has no levels"]])
+        return
+
+    band_walls(wall_jobs, sweep_jobs, levels, notes)
+
     # TEMPORARY diagnostic, replaced in Task 7 by the build.
     rows = []
     for job in sweep_jobs:
@@ -758,9 +817,11 @@ def main():
                          len(job.frames), job.type_name,
                          get_element_name(job.wall_type))])
     for job in wall_jobs:
-        rows.append([job.label,
-                     "wall {} to {}".format(
-                         feet_text(job.base_z), feet_text(job.top_z))])
+        for band in job.bands:
+            rows.append([job.label,
+                         "band {} to {}".format(
+                             feet_text(band["base_z"]),
+                             feet_text(band["top_z"]))])
     rows.append(["-", "{} skin type plan(s) resolved".format(
         len(skin_plans))])
     output.print_md("### {} - measured".format(TOOL_TITLE))
