@@ -813,6 +813,29 @@ def _insert_extent(insert, link_tf, origin, direction):
     return centre - half, centre + half, solid[2], solid[3]
 
 
+# Reading a wall's inserts means tessellating each one's solid, and a
+# single wall is commonly host to several picked sweeps as well as being
+# picked itself.  The script runs once, so caching for its lifetime is
+# enough; the key is the (link id, wall id) pair used everywhere else.
+_OPENING_CACHE = {}
+
+
+def cached_wall_openings(wall_key, wall, link_tf, origin, direction):
+    """wall_openings, remembered per wall for the life of the run.
+
+    Both callers -- plan_sweep for a sweep's host wall, and plan_wall
+    for a picked wall -- measure from the same frame origin and
+    direction, derived the same way from the same transformed location
+    curve, so one cached list means the same thing to each.  Change how
+    either derives its frame and this cache starts handing back
+    intervals measured against the other one.
+    """
+    if wall_key not in _OPENING_CACHE:
+        _OPENING_CACHE[wall_key] = wall_openings(
+            wall, link_tf, origin, direction)
+    return _OPENING_CACHE[wall_key]
+
+
 def wall_openings(wall, link_tf, origin, direction):
     """Return the openings in *wall* as (along_lo, along_hi, z_lo, z_hi).
 
