@@ -351,5 +351,95 @@ class TestTeeReach(unittest.TestCase):
             [(0, 1)])
 
 
+class TestSegmentsMeet(unittest.TestCase):
+    """Do two finished wall centrelines actually touch?
+
+    Joining is what produced "elements joined but do not intersect":
+    junction_pairs reports a junction on the SOURCE centrelines, which
+    is right for deciding what to mitre, but says nothing about whether
+    the finished walls ended up touching.  This is the test for that.
+    """
+
+    def test_shared_endpoint_meets(self):
+        a = ((0.0, 0.0), (10.0, 0.0))
+        b = ((10.0, 0.0), (10.0, 8.0))
+        self.assertTrue(wm.segments_meet(a, b))
+
+    def test_endpoints_a_hair_apart_meet(self):
+        a = ((0.0, 0.0), (10.0, 0.0))
+        b = ((10.0 + 0.5 * wm.TOL_JOIN, 0.0), (10.0, 8.0))
+        self.assertTrue(wm.segments_meet(a, b))
+
+    def test_a_visible_gap_does_not_meet(self):
+        # The coping corner: both walls stopped short of the corner.
+        a = ((0.0, 0.0), (9.0, 0.0))
+        b = ((10.0, 1.0), (10.0, 8.0))
+        self.assertFalse(wm.segments_meet(a, b))
+
+    def test_crossing_segments_meet(self):
+        a = ((0.0, 0.0), (10.0, 0.0))
+        b = ((5.0, -5.0), (5.0, 5.0))
+        self.assertTrue(wm.segments_meet(a, b))
+
+    def test_a_tee_landing_on_the_middle_meets(self):
+        a = ((0.0, 0.0), (20.0, 0.0))
+        b = ((10.0, 0.0), (10.0, 8.0))
+        self.assertTrue(wm.segments_meet(a, b))
+
+    def test_parallel_apart_do_not_meet(self):
+        a = ((0.0, 0.0), (10.0, 0.0))
+        b = ((0.0, 3.0), (10.0, 3.0))
+        self.assertFalse(wm.segments_meet(a, b))
+
+    def test_colinear_abutting_meet(self):
+        a = ((0.0, 0.0), (10.0, 0.0))
+        b = ((10.0, 0.0), (20.0, 0.0))
+        self.assertTrue(wm.segments_meet(a, b))
+
+    def test_lines_that_would_cross_beyond_their_ends_do_not_meet(self):
+        # The infinite lines cross at (10, 0); neither segment reaches.
+        a = ((0.0, 0.0), (5.0, 0.0))
+        b = ((10.0, 3.0), (10.0, 8.0))
+        self.assertFalse(wm.segments_meet(a, b))
+
+    def test_a_degenerate_segment_does_not_meet(self):
+        a = ((5.0, 5.0), (5.0, 5.0))
+        b = ((0.0, 0.0), (10.0, 0.0))
+        self.assertFalse(wm.segments_meet(a, b))
+
+
+class TestMitreTolerance(unittest.TestCase):
+    """An obtuse corner where both runs stop short of it.
+
+    A sweep is mitred back from a corner by roughly how far it stands
+    off the wall, so the two runs measured off its solid do not reach
+    the corner and their ends are nowhere near each other.  At the
+    default 1/64 inch no corner is seen and both walls are built short
+    -- which is the coping corner that was still failing.
+    """
+
+    # Ends a foot short of the corner at (10, 0).
+    A = ((0.0, 0.0), (9.0, 0.0))
+    B = ((10.0, 1.0), (10.0, 9.0))
+    OFFSETS = [((0.0, -1.0), (9.0, -1.0)), ((11.0, 1.0), (11.0, 9.0))]
+
+    def test_default_tolerance_sees_no_corner(self):
+        out = wm.miter_chain([self.A, self.B], self.OFFSETS)
+        self.assertEqual(out[0], ((0.0, -1.0), (9.0, -1.0)))
+
+    def test_a_tolerance_at_the_scale_of_the_shortfall_mitres_it(self):
+        out = wm.miter_chain([self.A, self.B], self.OFFSETS, tol=2.0)
+        # Both ends land on where the two offset lines cross.
+        self.assertAlmostEqual(out[0][1][0], 11.0)
+        self.assertAlmostEqual(out[0][1][1], -1.0)
+        self.assertAlmostEqual(out[1][0][0], 11.0)
+        self.assertAlmostEqual(out[1][0][1], -1.0)
+
+    def test_the_far_ends_are_left_alone(self):
+        out = wm.miter_chain([self.A, self.B], self.OFFSETS, tol=2.0)
+        self.assertEqual(out[0][0], (0.0, -1.0))
+        self.assertEqual(out[1][1], (11.0, 9.0))
+
+
 if __name__ == "__main__":
     unittest.main()

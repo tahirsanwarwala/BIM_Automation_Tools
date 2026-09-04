@@ -264,3 +264,39 @@ def miter_chain(originals, offsets, tol=TOL_JOIN, tees=False,
                 break
 
     return [(seg[0], seg[1]) for seg in result]
+
+
+def _straddles(seg, other):
+    """True when *seg*'s ends fall on opposite sides of *other*'s line."""
+    first = _side_of(seg[0], other)
+    second = _side_of(seg[1], other)
+    return (first <= 0.0 <= second) or (second <= 0.0 <= first)
+
+
+def segments_meet(a, b, tol=TOL_JOIN):
+    """True when two FINISHED centrelines actually touch.
+
+    junction_pairs answers a different question: which junctions exist
+    in the source walls, and so what ought to be mitred.  Whether the
+    walls that came out of that mitring ended up touching is not the
+    same thing -- a corner the mitring did not reach leaves two walls a
+    foot apart, and asking Revit to join those is what produces
+    "elements joined but do not intersect".
+
+    Touching means either the two share an end, or they genuinely cross
+    within both their lengths.  An intersection of the infinite lines
+    beyond one of the ends is not contact.
+    """
+    for end_a in (0, 1):
+        for end_b in (0, 1):
+            if _is_close(a[end_a], b[end_b], tol):
+                return True
+
+    length_a = _unit(a)
+    length_b = _unit(b)
+    if length_a is None or length_b is None:
+        return False
+
+    # Each must straddle the other's line, or they cross only where one
+    # of them has already ended.
+    return _straddles(a, b) and _straddles(b, a)

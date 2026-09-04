@@ -359,7 +359,7 @@ class SweepRun(object):
     """
 
     __slots__ = ("frame", "offset", "along_min", "along_max",
-                 "base_z", "top_z", "wall_keys")
+                 "base_z", "top_z", "wall_keys", "reach")
 
 
 class SweepJob(object):
@@ -683,6 +683,11 @@ def sweep_runs(sweep, transform, host):
                 run.base_z    = z_lo
                 run.top_z     = z_hi
                 run.wall_keys = host[idx].wall_keys
+                # How far the sweep's solid stands off the wall's
+                # location curve.  Carried because it is also the scale
+                # a corner sets this run back by -- see the mitring in
+                # build_sweep_walls.
+                run.reach     = reach[idx]
                 runs.append(run)
 
     return runs, material_name
@@ -1509,35 +1514,46 @@ def create_sweep_wall(curve, frame, wall_type, band):
     return wall
 
 
-def join_at_junctions(built, reach):
-    """Join new walls that meet, so Revit cleans the junction itself.
+def curve_ends(curve):
+    """A curve's two ends as the plain 2D pairs wall_miter works in."""
+    p0 = curve.GetEndPoint(0)
+    p1 = curve.GetEndPoint(1)
+    return ((p0.X, p0.Y), (p1.X, p1.Y))
 
-    *built* is [(original_segment, wall)] for one mitre group, where
-    the segment is the source centreline the mitring judged adjacency
-    on, and *reach* is the same tee reach the mitring used -- pass a
-    different one and the joining would act on a different set of
-    junctions from the trimming.  wall_miter.junction_pairs finds those
-    same corners and tees, and each pair is handed to Revit to resolve.
 
-    Mitring puts the two walls in the right place; joining is what stops
-    a line being drawn between them and lets Revit sort out the overlap
-    inside the corner, which no amount of moving centrelines can.  A
-    join that Revit refuses -- the walls do not actually intersect, or
-    they are already joined -- is not worth a word to the user.
+def join_at_junctions(built):
+    """Join new walls that touch, so Revit cleans the junction itself.
+
+    *built* is [(final_centreline, wall)] -- the centreline each wall
+    was actually BUILT on, after mitring, not the source centreline the
+    mitring was decided from.  The two are not the same question, and
+    joining on the wrong one is what produced Revit's "elements joined
+    but do not intersect": a corner the mitring failed to close leaves
+    two walls a foot apart, and they were handed to Revit anyway.  Now
+    only walls that genuinely share an end or cross are joined, so a
+    corner that did not close stays visibly open instead of raising a
+    warning about it.
+
+    Mitring puts the walls in the right place; joining is what stops a
+    line being drawn between them and lets Revit resolve the overlap
+    inside a corner, which moving centrelines cannot.
     """
-    pairs = wall_miter.junction_pairs(
-        [seg for seg, _w in built], tee_reach=reach)
-    for i, j in pairs:
-        first = built[i][1]
-        second = built[j][1]
-        if first is None or second is None:
+    for i in range(len(built)):
+        seg_i, first = built[i]
+        if first is None:
             continue
-        try:
-            if JoinGeometryUtils.AreElementsJoined(doc, first, second):
+        for j in range(i + 1, len(built)):
+            seg_j, second = built[j]
+            if second is None:
                 continue
-            JoinGeometryUtils.JoinGeometry(doc, first, second)
-        except Exception as ex:
-            logger.debug("Could not join two new walls: {}".format(ex))
+            if not wall_miter.segments_meet(seg_i, seg_j):
+                continue
+            try:
+                if JoinGeometryUtils.AreElementsJoined(doc, first, second):
+                    continue
+                JoinGeometryUtils.JoinGeometry(doc, first, second)
+            except Exception as ex:
+                logger.debug("Could not join two new walls: {}".format(ex))
 
 
 def report_unwritten(notes, tally, param_name):
@@ -1630,13 +1646,21 @@ def build_sweep_walls(sweep_jobs, levels, notes):
     for group in groups.values():
         built = []
         try:
-            # tee_reach at the thickest host wall in the group: a sweep
-            # can end on the FACE of the wall it turns into rather than
-            # on its centreline, and that is half a thickness short of
-            # where a junction is looked for otherwise.
+            # A sweep's runs do NOT reach the corners of the walls
+            # they lie on.  Revit mitres the sweep's own solid back from
+            # a corner by roughly how far it stands off the wall, so a
+            # run measured off that solid stops short at both ends -- at
+            # the default 1/64 inch the two runs either side of a corner
+            # are nowhere near each other and no corner is seen, which
+            # is why a coping was still being built short at its
+            # returns.  Judging adjacency at the scale of that shortfall
+            # finds the corner; the mitre point itself comes from where
+            # the offset LINES cross, so it is exact however slack the
+            # test that found it.
             reach = max(item["segment"].frame.width for item in group)
+            reach = max([reach] + [item["run"].reach for item in group])
             curves = wall_chain.mitre_segments(
-                [item["segment"] for item in group],
+                [item["segment"] for item in group], tol=reach,
                 tees=True, tee_reach=reach)
         except Exception as ex:
             # An unmitred corner is a far better outcome than no wall.
@@ -1675,9 +1699,9 @@ def build_sweep_walls(sweep_jobs, levels, notes):
             if job.type_mark and not set_bg_profile(wall, job.type_mark):
                 unwritten[job.label] = unwritten.get(job.label, 0) + 1
 
-            built.append((segment.centre_ends, wall))
+            built.append((curve_ends(curve), wall))
 
-        join_at_junctions(built, reach)
+        join_at_junctions(built)
 
     report_unwritten(notes, unwritten, BG_PROFILE_PARAM)
     report_unwritten(notes, no_level, BG_LEVEL_PARAM)
@@ -1860,8 +1884,7 @@ def build_bands(prepared, notes):
         by_group.setdefault(item.get("group"), []).append(item)
     for group in by_group.values():
         join_at_junctions(
-            [(item["original"], item["wall"]) for item in group],
-            max(item["job"].total_width for item in group))
+            [(curve_ends(item["curve"]), item["wall"]) for item in group])
 
     report_unwritten(notes, no_level, BG_LEVEL_PARAM)
 
