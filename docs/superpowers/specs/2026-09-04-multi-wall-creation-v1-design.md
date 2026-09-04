@@ -84,16 +84,27 @@ One pass only: the tool does not loop back for another selection the way
 
 ### Phase 1 — measure sweeps
 
-Per picked sweep, exactly as `SweepToWall.plan_sweep` does today:
+**Revised after first testing — see Decisions.** Per picked sweep:
 
   * host walls from `sweep.GetHostIds()`, resolved in the linked doc;
-  * ONE vertical envelope `(z_min, z_max)` for the whole sweep, from
-    `sweep_extent`, in HOST coordinates;
   * a `WallFrame` and `wall_exterior_offset` per host wall;
+  * the sweep's solid split between those walls, each edge assigned to the
+    host wall its tessellation's CENTROID is nearest to, by distance to the
+    wall's location segment rather than to its infinite line;
+  * per wall, the assigned edges' along-axis intervals unioned by
+    `wall_bands.merge_intervals`, bridging gaps under `SWEEP_GAP_TOL`
+    (one inch — a seam between abutting sweep solids or the notch at a
+    mitred corner is not a break; an opening is);
+  * one `SweepRun` per surviving interval, carrying its frame, offset,
+    `along_min`/`along_max`, its own `(base_z, top_z)` measured from just
+    the edges inside it, and the `(link id, wall id)` of its host wall;
+  * a run end within one host wall thickness of the wall's end snapped
+    onto it, so a sweep that returns into a corner is still seen as
+    adjacent to its neighbour and mitres;
   * the dominant material name;
   * the sweep type's Type Mark, for `BG_PROFILE`.
 
-The same `(z_min, z_max)` both builds the sweep wall and cuts the host wall,
+A run's own `(base_z, top_z)` both builds its wall and cuts its host wall,
 so the two always meet exactly.
 
 ### Phase 2 — resolve wall types (before the transaction)
@@ -190,7 +201,9 @@ continues.
 | Sweep with no host walls, or no readable geometry | Reported and skipped, same messages as `SweepToWall` |
 | Named sweep wall type missing | Falls to the pick dialog for that sweep type |
 | Model has no levels | The run reports it and creates nothing; `constraints_for` raises `ValueError` without levels |
-| Stepped sweep, running at different heights on different host walls | Single envelope used for all its host walls, as `SweepToWall` does today. Known limitation, documented in the script docstring; not detected and not reported |
+| Stepped sweep, running at different heights on different host walls | Each run measures its own height, so every stretch is built and cuts at the height it truly runs at |
+| Sweep or wall finish that wraps into an opening reveal | Stops at the jamb; the perpendicular return is NOT modelled and the reveal is left empty |
+| Insert with no readable solid | Its extent falls back to its bounding box, which over-cuts a wall running diagonally to the model axes |
 
 Reporting follows both source tools: silence on success, and on failure one
 `output.print_table` with columns `["Element", "Note"]`. Printing is what
@@ -216,6 +229,26 @@ opens the pyRevit output window, so a clean run shows nothing.
     dialog only for what the rule cannot resolve. `SweepToWall`'s
     unconditional "pick one type for the whole selection" prompt does not
     appear in this tool.
+  * **REVERSED after first testing: plan extents come from geometry, not
+    from the host wall's length.** The original decision — "only the
+    vertical envelope is taken from the sweep; where each wall goes in plan
+    comes from the host wall itself" — was inherited from `SweepToWall` and
+    proved to be the cause of three defects seen in a real model: a sweep
+    wall ran straight past an opening its sweep stopped at, one that wraps
+    into a reveal ran across it, and at a corner two offset runs overshot
+    and crossed instead of trimming. Both sweeps and skin bands now take
+    their plan extent from geometry. `SweepToWall` still carries all three
+    defects and is untouched.
+  * **Mitring is across sweeps, not within one**, grouped by
+    `(elevation, resolved wall type)`. Two sweeps meeting at a building
+    corner are two separate picks, and mitring each alone left them
+    crossing.
+  * **Skin bands are cut in plan at inserts**, from `wall.FindInserts`,
+    filtered to those whose own height range overlaps the band. The extent
+    is the insert's whole solid — frame and trim, not the rough opening —
+    because that is where a finish genuinely stops.
+  * **Every new wall carries its Base Constraint level's name in
+    `BG_LEVEL`.**
 
 ## Testing
 
@@ -247,7 +280,8 @@ sweeps at, above, below, and part-way up a wall.
 ## Out of scope for V1
 
   * host-model source walls;
-  * per-host-wall sweep extents for stepped sweeps;
+  * reveal returns — the short perpendicular walls where a sweep or finish
+    turns into an opening;
   * re-running over walls the tool has already created;
   * any change to `SweepToWall` or `SplitWalls` beyond the `wall_skin.py`
     extraction.
