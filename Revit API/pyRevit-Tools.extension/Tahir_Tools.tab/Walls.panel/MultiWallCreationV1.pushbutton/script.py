@@ -1458,6 +1458,44 @@ def build_sweep_walls(sweep_jobs, levels, notes):
     report_unwritten(notes, no_level, BG_LEVEL_PARAM)
 
 
+def resolve_skin_type(plan, job, executed, key):
+    """Carry out one skin-type plan, reusing a type of that name.
+
+    Two guards against duplicate wall types, both needed.
+
+    A plan is keyed on its finish's Mark and thickness, the thickness to
+    within 0.024 inch.  The NAME a plan resolves to carries a thickness
+    rounded far more coarsely than that -- to the nearest sixteenth --
+    so two finishes a few thousandths apart get two plans that both
+    want a type called, say, SKIN_CAST STONE BASE_0' 3 5/8".  Executing
+    both left the second as "... (2)", because Revit will not have two
+    types of one name.  So the first guard is by plan key, and the
+    second is by the name the plan resolves to.
+
+    The name guard also looks in the DOCUMENT, not just at what this run
+    has built, so a type left behind by an earlier run is picked up
+    instead of becoming "... (3)" and "... (4)" on every run after.
+    Reusing by name is sound here because the name encodes the Mark and
+    the thickness -- everything the plan was matching on anyway.
+    """
+    if key in executed:
+        return executed[key]
+
+    wanted = plan.get("name")
+    skin_type = None
+
+    if wanted:
+        skin_type = find_wall_type_by_name(wanted)
+
+    if skin_type is None:
+        skin_type = wall_materials.execute_skin_wall_type_plan(
+            doc, plan, _material_of_layer(job.cs, 0, job.source_doc),
+            job.source_doc)
+
+    executed[key] = skin_type
+    return skin_type
+
+
 def prepare_bands(wall_jobs, skin_plans, notes):
     """Work out a centreline and a type for every band, building nothing.
 
@@ -1488,13 +1526,7 @@ def prepare_bands(wall_jobs, skin_plans, notes):
                      if plan else "no wall type resolved")
                 continue
 
-            if key in executed:
-                skin_type = executed[key]
-            else:
-                skin_type = wall_materials.execute_skin_wall_type_plan(
-                    doc, plan, _material_of_layer(job.cs, 0, job.source_doc),
-                    job.source_doc)
-                executed[key] = skin_type
+            skin_type = resolve_skin_type(plan, job, executed, key)
 
             if skin_type is None:
                 note(notes, job.label, "no wall type resolved")
