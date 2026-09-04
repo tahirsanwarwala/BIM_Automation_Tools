@@ -1260,11 +1260,20 @@ def merge_wall_jobs(wall_jobs):
         p0 = job.loc_curve.GetEndPoint(0)
         p1 = job.loc_curve.GetEndPoint(1)
         segments.append(((p0.X, p0.Y), (p1.X, p1.Y)))
+        # The link instance is part of the key, not just the type,
+        # orientation and span: merged_frame below borrows its curve's
+        # transform from the first member and plan_windows measures every
+        # member's windows through that one instance's transform.  Two
+        # instances of the same link placed abutting and colinear -- a
+        # repeated bay or wing -- would otherwise merge, and every
+        # curtain wall on the second instance's walls would be built at
+        # the first instance's coordinates.
         keys.append((job.type_id,
                      round(job.orientation.X, 4),
                      round(job.orientation.Y, 4),
                      round(job.base_z, 4),
-                     round(job.top_z, 4)))
+                     round(job.top_z, 4),
+                     job.link_inst.Id.IntegerValue))
 
     merged = []
     for members, ends in wall_bands.colinear_chains(segments, keys):
@@ -1561,7 +1570,16 @@ def plan_windows(wall_jobs, notes):
     and this tool never opens one inside a transaction.  The type is
     asked once per Type Mark prefix and cached, as Window To Curtain
     Wall does, so a facade of twenty identical windows asks once.
+
+    The curtain-type lookup is deferred until a window has actually
+    been found: checking it first means a model with no curtain wall
+    types reports that on every run, even a selection of plain walls
+    with no windows at all, which breaks the tool's silent-on-success
+    rule for a run that has nothing to place.
     """
+    if not any(job.windows for job in wall_jobs):
+        return []
+
     types = window_cw.curtain_wall_types(doc)
     if not types:
         note(notes, "-", "no curtain wall types in this model")
@@ -1677,6 +1695,15 @@ def build_curtain_walls(planned, levels, notes):
             elif reason:
                 note(notes, job.label,
                      "window {}: {}".format(plan.window_id, reason))
+
+            # apply_bg_parameters appends one note per BG_ parameter it
+            # could not fill onto piece.notes, and piece goes out of
+            # scope right after this -- an unfilled BG_ parameter is
+            # exactly what this tool exists to surface, so fold every
+            # note into the run's report before it is lost.
+            for piece_note in piece.notes:
+                note(notes, job.label,
+                     "window {}: {}".format(plan.window_id, piece_note))
 
 
 # ===========================================================================
@@ -2373,6 +2400,21 @@ def main():
 
     t = Transaction(doc, "Multi Wall Creation")
     t.Start()
+    try:
+        # build_curtain_walls -> window_cw.create_curtain_wall strips each
+        # curtain wall's grid lines and mullions, which raises the same
+        # mullion errors the profile edit does.  Answered here the same
+        # way WindowToCurtainWall answers it on its own transaction, so a
+        # mullion layout Revit cannot clear cleanly cannot pop a modal
+        # failure dialog at Commit() and roll back every skin and sweep
+        # wall this run built.
+        opts = t.GetFailureHandlingOptions()
+        opts.SetFailuresPreprocessor(wall_sketch.SketchFailureSwallower())
+        opts.SetClearAfterRollback(True)
+        t.SetFailureHandlingOptions(opts)
+    except Exception as ex:
+        logger.debug("Could not set failure handling: {}".format(ex))
+
     try:
         build_sweep_walls(sweep_jobs, levels, notes)
 
