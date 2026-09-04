@@ -89,6 +89,7 @@ from Autodesk.Revit.DB import (
     JoinGeometryUtils,
     Level,
     Line,
+    Opening,
     RevitLinkInstance,
     Transaction,
     Wall,
@@ -109,6 +110,7 @@ from Tahir import (
     wall_miter,
     wall_naming,
     wall_skin,
+    window_cw,
 )
 
 doc    = revit.doc
@@ -784,7 +786,8 @@ class WallJob(object):
 
     __slots__ = ("label", "wall_keys", "type_id", "cs", "source_doc",
                  "loc_curve", "orientation", "total_width", "loc_line",
-                 "loc_to_ext", "base_z", "top_z", "structural", "bands")
+                 "loc_to_ext", "base_z", "top_z", "structural", "bands",
+                 "windows", "rect_openings")
 
 
 def _length_param(elements, names, builtin_names):
@@ -1047,6 +1050,46 @@ def wall_openings(wall, link_tf, origin, direction):
     return found
 
 
+def wall_inserts(wall, link_tf, origin, direction):
+    """Return (windows, rectangular openings) in *wall*, in its frame.
+
+    Measured the same way wall_openings measures a door: along the wall
+    from *origin*, and vertically from the insert's own extent.  Each
+    entry keeps the linked element itself as its last item, because the
+    window still has to be measured properly by window_cw later and the
+    opening has to be found again to cut.
+
+    Doors are not here.  They break the sweeps, as in V1, and the skin
+    is left solid across them.
+    """
+    try:
+        ids = list(wall.FindInserts(True, False, True, True))
+    except Exception as ex:
+        logger.debug("Could not read inserts: {}".format(ex))
+        return [], []
+
+    link_doc = wall.Document
+    windows  = []
+    openings = []
+
+    for iid in ids:
+        insert = link_doc.GetElement(iid)
+        if insert is None:
+            continue
+
+        extent = _insert_extent(insert, link_tf, origin, direction)
+        if extent is None:
+            continue
+        lo, hi, z_lo, z_hi = extent
+
+        if window_cw.is_category(insert, BuiltInCategory.OST_Windows):
+            windows.append((lo, hi, z_lo, z_hi, insert))
+        elif isinstance(insert, Opening):
+            openings.append((lo, hi, z_lo, z_hi, insert))
+
+    return windows, openings
+
+
 def _level_elevation(link_doc, level_id, link_tf):
     """Elevation of a LINKED level, in host geometry space.
 
@@ -1169,6 +1212,8 @@ def plan_wall(link_inst, wall):
     job.top_z       = top_z
     job.structural  = structural
     job.bands       = []          # filled in by band_walls
+    job.windows, job.rect_openings = wall_inserts(
+        wall, link_tf, pt0, (pt1 - pt0).Normalize())
     return job, notes_none()
 
 
@@ -1230,6 +1275,16 @@ def merge_wall_jobs(wall_jobs):
         job.top_z       = first.top_z
         job.structural  = first.structural
         job.bands       = []
+        # Every member's inserts, or the windows on the second and third
+        # piece are silently lost.  Measured along each MEMBER's frame,
+        # not this merged one -- Task 6 needs them in host coordinates
+        # anyway and re-derives position from the window element itself,
+        # so the along values here are used only for reporting.
+        job.windows       = []
+        job.rect_openings = []
+        for i in members:
+            job.windows.extend(wall_jobs[i].windows)
+            job.rect_openings.extend(wall_jobs[i].rect_openings)
         merged.append(job)
 
     return merged
@@ -1429,6 +1484,13 @@ def band_walls(wall_jobs, sweep_jobs, levels, notes):
                    for sweep_job in cutting
                    for run in sweep_job.runs
                    if run.wall_keys & job.wall_keys]
+
+        # A course running across a window would split the wall behind
+        # it, putting a joint in the elevation the building does not
+        # have.  Where one crosses a window, it stops governing this
+        # wall's heights entirely.
+        cutters = wall_bands.cutters_clear_of_windows(
+            cutters, [(w[2], w[3]) for w in job.windows])
 
         gaps, dropped = wall_bands.subtract_spans(
             (job.base_z, job.top_z), cutters)
