@@ -182,3 +182,92 @@ def group_indices(spans, tol=TOL):
             groups.append((base_z, top_z))
         result.append(found)
     return result
+
+
+def merge_intervals(intervals, gap_tol):
+    """Union *intervals*, bridging any gap of *gap_tol* or less.
+
+    This is how a sweep's real plan extent is recovered from its solid.
+    Every edge of the sweep contributes the stretch of wall it covers;
+    unioning them gives the stretches the sweep actually occupies, and
+    the gaps left between them are the openings it stops at.
+
+    A gap threshold is what separates the two kinds of gap.  Abutting
+    sweep solids leave hairline seams, and a mitred corner leaves a
+    notch, neither of which is a break in the run -- but a door reveal
+    is.  A gap of exactly *gap_tol* is bridged, so the threshold reads
+    as "gaps this small are not real".
+
+    Intervals given the wrong way round are normalised, and the result
+    comes back low to high.  This is deliberately NOT merge_spans: that
+    one merges only on overlap, because a sliver between two sweeps is
+    something to report, whereas a seam along one sweep is noise.
+    """
+    ordered = []
+    for lo, hi in intervals:
+        if hi < lo:
+            lo, hi = hi, lo
+        ordered.append((lo, hi))
+    ordered.sort()
+
+    merged = []
+    for lo, hi in ordered:
+        if merged and lo - merged[-1][1] <= gap_tol:
+            prev_lo, prev_hi = merged[-1]
+            merged[-1] = (prev_lo, max(prev_hi, hi))
+        else:
+            merged.append((lo, hi))
+    return merged
+
+
+def _point_to_segment_sq(point, segment):
+    """Squared 2D distance from *point* to the SEGMENT, not its line."""
+    (ax, ay), (bx, by) = segment
+    px, py = point
+
+    dx = bx - ax
+    dy = by - ay
+    length_sq = dx * dx + dy * dy
+
+    if length_sq <= 0.0:
+        # A degenerate segment is a point; measure to it.
+        ex = px - ax
+        ey = py - ay
+        return ex * ex + ey * ey
+
+    # Position along the segment, clamped to its ends, so a point beyond
+    # one end measures to that end rather than to the infinite line.
+    t = ((px - ax) * dx + (py - ay) * dy) / length_sq
+    if t < 0.0:
+        t = 0.0
+    elif t > 1.0:
+        t = 1.0
+
+    ex = px - (ax + dx * t)
+    ey = py - (ay + dy * t)
+    return ex * ex + ey * ey
+
+
+def nearest_segment_index(point, segments):
+    """Index of the segment in *segments* nearest *point*, or None.
+
+    Used to decide which of a sweep's host walls a piece of its solid
+    belongs to.  Nearest-segment beats any fixed sideways tolerance:
+    there is nothing to tune, a wall of any thickness works, and at a
+    corner the mitred lump of sweep divides between the two walls along
+    the line where they are genuinely equidistant.
+
+    Distance is to the segment, not to its infinite line -- otherwise a
+    wall's line, extended, would claim sweep geometry from a wall it
+    merely points at.  Ties go to the earlier segment, so a point at a
+    shared corner lands somewhere definite instead of wherever floating
+    point happens to send it.
+    """
+    best_idx = None
+    best_sq = None
+    for idx, segment in enumerate(segments):
+        d_sq = _point_to_segment_sq(point, segment)
+        if best_sq is None or d_sq < best_sq:
+            best_sq = d_sq
+            best_idx = idx
+    return best_idx

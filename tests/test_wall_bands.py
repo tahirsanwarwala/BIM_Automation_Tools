@@ -210,5 +210,112 @@ class TestGroupIndices(unittest.TestCase):
         self.assertEqual(wb.group_indices(spans), [0, 1, 0])
 
 
+class TestMergeIntervals(unittest.TestCase):
+
+    GAP = 1.0 / 12.0          # one inch, the sweep-break threshold
+
+    def test_empty_gives_nothing(self):
+        self.assertEqual(wb.merge_intervals([], self.GAP), [])
+
+    def test_single_interval_survives(self):
+        self.assertEqual(
+            wb.merge_intervals([(2.0, 5.0)], self.GAP), [(2.0, 5.0)])
+
+    def test_overlapping_intervals_merge(self):
+        self.assertEqual(
+            wb.merge_intervals([(0.0, 5.0), (3.0, 9.0)], self.GAP),
+            [(0.0, 9.0)])
+
+    def test_touching_intervals_merge(self):
+        self.assertEqual(
+            wb.merge_intervals([(0.0, 5.0), (5.0, 9.0)], self.GAP),
+            [(0.0, 9.0)])
+
+    def test_gap_under_the_threshold_is_bridged(self):
+        # A hairline seam between two abutting sweep solids is not a
+        # break in the run.
+        self.assertEqual(
+            wb.merge_intervals([(0.0, 5.0), (5.0 + 0.5 / 12.0, 9.0)],
+                               self.GAP),
+            [(0.0, 9.0)])
+
+    def test_gap_over_the_threshold_breaks_the_run(self):
+        # A door reveal is a real break.
+        self.assertEqual(
+            wb.merge_intervals([(0.0, 5.0), (8.0, 12.0)], self.GAP),
+            [(0.0, 5.0), (8.0, 12.0)])
+
+    def test_gap_exactly_at_the_threshold_is_bridged(self):
+        self.assertEqual(
+            wb.merge_intervals([(0.0, 5.0), (5.0 + self.GAP, 9.0)],
+                               self.GAP),
+            [(0.0, 9.0)])
+
+    def test_input_order_does_not_matter(self):
+        self.assertEqual(
+            wb.merge_intervals([(8.0, 12.0), (0.0, 5.0)], self.GAP),
+            [(0.0, 5.0), (8.0, 12.0)])
+
+    def test_reversed_interval_is_normalised(self):
+        self.assertEqual(
+            wb.merge_intervals([(5.0, 2.0)], self.GAP), [(2.0, 5.0)])
+
+    def test_nested_interval_is_absorbed(self):
+        self.assertEqual(
+            wb.merge_intervals([(0.0, 20.0), (5.0, 6.0)], self.GAP),
+            [(0.0, 20.0)])
+
+    def test_chain_of_small_gaps_merges_into_one(self):
+        parts = [(0.0, 1.0), (1.02, 2.0), (2.02, 3.0)]
+        self.assertEqual(
+            wb.merge_intervals(parts, self.GAP), [(0.0, 3.0)])
+
+    def test_three_runs_broken_by_two_openings(self):
+        parts = [(0.0, 4.0), (6.0, 10.0), (12.0, 16.0)]
+        self.assertEqual(wb.merge_intervals(parts, self.GAP), parts)
+
+
+class TestNearestSegmentIndex(unittest.TestCase):
+
+    # An L of two walls meeting at the origin corner.
+    L = [((0.0, 0.0), (10.0, 0.0)),
+         ((10.0, 0.0), (10.0, 10.0))]
+
+    def test_no_segments_gives_none(self):
+        self.assertIsNone(wb.nearest_segment_index((1.0, 1.0), []))
+
+    def test_point_on_the_first_segment(self):
+        self.assertEqual(wb.nearest_segment_index((5.0, 0.0), self.L), 0)
+
+    def test_point_on_the_second_segment(self):
+        self.assertEqual(wb.nearest_segment_index((10.0, 5.0), self.L), 1)
+
+    def test_point_just_off_the_first_segment(self):
+        self.assertEqual(wb.nearest_segment_index((3.0, 0.4), self.L), 0)
+
+    def test_point_beyond_a_segment_end_measures_to_the_end(self):
+        # (20, 1) sits 1 off segment 0's INFINITE LINE but 10.05 off the
+        # segment itself, and 10 off segment 1.  Segment 1 must win: an
+        # implementation measuring to the infinite line would pick
+        # segment 0 at distance 1 and let a wall claim sweep geometry
+        # from a wall it merely points at.
+        self.assertEqual(wb.nearest_segment_index((20.0, 1.0), self.L), 1)
+
+    def test_a_point_at_the_shared_corner_picks_the_first(self):
+        # Both are at distance 0; first wins, so the assignment is
+        # deterministic rather than dependent on floating-point noise.
+        self.assertEqual(wb.nearest_segment_index((10.0, 0.0), self.L), 0)
+
+    def test_degenerate_segment_is_handled_as_a_point(self):
+        segs = [((5.0, 5.0), (5.0, 5.0)), ((0.0, 0.0), (1.0, 0.0))]
+        self.assertEqual(wb.nearest_segment_index((5.0, 6.0), segs), 0)
+        self.assertEqual(wb.nearest_segment_index((0.5, 0.1), segs), 1)
+
+    def test_parallel_walls_do_not_steal_each_other_geometry(self):
+        segs = [((0.0, 0.0), (10.0, 0.0)), ((0.0, 20.0), (10.0, 20.0))]
+        self.assertEqual(wb.nearest_segment_index((5.0, 1.0), segs), 0)
+        self.assertEqual(wb.nearest_segment_index((5.0, 19.0), segs), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
