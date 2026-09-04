@@ -429,5 +429,84 @@ class TestColinearChains(unittest.TestCase):
         self.assertEqual(got, [[0, 2], [1]])
 
 
+class TestCuttersClearOfWindows(unittest.TestCase):
+    """A stone course crossing a window stops governing that wall.
+
+    Otherwise the skin is split behind the window, and the elevation
+    gains a joint the building does not have.
+    """
+
+    WINDOW = (10.0, 20.0)          # sill 10, head 20
+
+    def test_no_windows_keeps_every_cutter(self):
+        cutters = [(4.0, 5.0), (25.0, 26.0)]
+        self.assertEqual(
+            wb.cutters_clear_of_windows(cutters, []), cutters)
+
+    def test_no_cutters_gives_nothing(self):
+        self.assertEqual(
+            wb.cutters_clear_of_windows([], [self.WINDOW]), [])
+
+    def test_a_cutter_below_the_sill_survives(self):
+        self.assertEqual(
+            wb.cutters_clear_of_windows([(4.0, 5.0)], [self.WINDOW]),
+            [(4.0, 5.0)])
+
+    def test_a_cutter_above_the_head_survives(self):
+        self.assertEqual(
+            wb.cutters_clear_of_windows([(25.0, 26.0)], [self.WINDOW]),
+            [(25.0, 26.0)])
+
+    def test_a_cutter_inside_the_window_is_dropped(self):
+        self.assertEqual(
+            wb.cutters_clear_of_windows([(14.0, 15.0)], [self.WINDOW]), [])
+
+    def test_a_cutter_straddling_the_head_is_dropped(self):
+        self.assertEqual(
+            wb.cutters_clear_of_windows([(19.0, 21.0)], [self.WINDOW]), [])
+
+    def test_a_cutter_straddling_the_sill_is_dropped(self):
+        self.assertEqual(
+            wb.cutters_clear_of_windows([(9.0, 11.0)], [self.WINDOW]), [])
+
+    def test_a_cutter_swallowing_the_window_is_dropped(self):
+        self.assertEqual(
+            wb.cutters_clear_of_windows([(5.0, 25.0)], [self.WINDOW]), [])
+
+    def test_a_cutter_sitting_exactly_on_the_head_survives(self):
+        # A course whose base is the window head does not cross it: it
+        # sits on it, which is what a lintel band does.
+        self.assertEqual(
+            wb.cutters_clear_of_windows([(20.0, 21.0)], [self.WINDOW]),
+            [(20.0, 21.0)])
+
+    def test_a_cutter_sitting_exactly_on_the_sill_survives(self):
+        self.assertEqual(
+            wb.cutters_clear_of_windows([(9.0, 10.0)], [self.WINDOW]),
+            [(9.0, 10.0)])
+
+    def test_an_overlap_under_tolerance_is_not_an_overlap(self):
+        cutters = [(20.0 - 0.5 * wb.TOL, 21.0)]
+        self.assertEqual(
+            wb.cutters_clear_of_windows(cutters, [self.WINDOW]), cutters)
+
+    def test_only_the_crossing_cutter_is_dropped(self):
+        cutters = [(4.0, 5.0), (14.0, 15.0), (25.0, 26.0)]
+        self.assertEqual(
+            wb.cutters_clear_of_windows(cutters, [self.WINDOW]),
+            [(4.0, 5.0), (25.0, 26.0)])
+
+    def test_a_cutter_crossing_any_of_several_windows_is_dropped(self):
+        windows = [(10.0, 20.0), (30.0, 40.0)]
+        cutters = [(35.0, 36.0), (25.0, 26.0)]
+        self.assertEqual(
+            wb.cutters_clear_of_windows(cutters, windows), [(25.0, 26.0)])
+
+    def test_order_is_preserved(self):
+        cutters = [(25.0, 26.0), (4.0, 5.0)]
+        self.assertEqual(
+            wb.cutters_clear_of_windows(cutters, [self.WINDOW]), cutters)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -411,3 +411,31 @@ def colinear_chains(segments, keys=None, tol=TOL):
                         (origin[0] + ux * hi, origin[1] + uy * hi))))
 
     return chains
+
+def cutters_clear_of_windows(cutters, windows, tol=TOL):
+    """Drop the cutters that cross a window, keep the rest in order.
+
+    A cast stone course running across a window would otherwise cut the
+    wall behind it into two bands, putting a joint in the elevation that
+    the building does not have.  Where a course crosses a window, it
+    stops governing heights on that wall at all.
+
+    Dropping it for the whole wall rather than just over the window is
+    deliberate.  Suppressing it over the window alone would mean a band
+    boundary that stops and restarts along the elevation -- splitting
+    the skin in plan, which was tried and taken back out.
+
+    Touching is not crossing: a course whose base is exactly a window's
+    head SITS on it, which is what a lintel band does, and it survives.
+    *windows* are (sill, head) pairs; *cutters* are (lo, hi) pairs.
+    """
+    kept = []
+    for lo, hi in cutters:
+        crosses = False
+        for sill, head in windows:
+            if hi > sill + tol and lo < head - tol:
+                crosses = True
+                break
+        if not crosses:
+            kept.append((lo, hi))
+    return kept
