@@ -787,7 +787,8 @@ class WallJob(object):
     __slots__ = ("label", "wall_keys", "type_id", "cs", "source_doc",
                  "loc_curve", "orientation", "total_width", "loc_line",
                  "loc_to_ext", "base_z", "top_z", "structural", "bands",
-                 "windows", "rect_openings")
+                 "windows", "rect_openings", "link_inst", "direction",
+                 "built_bands")
 
 
 def _length_param(elements, names, builtin_names):
@@ -1202,6 +1203,8 @@ def plan_wall(link_inst, wall):
     job.cs          = cs
     job.source_doc  = link_doc
     job.loc_curve   = loc_curve
+    job.link_inst   = link_inst
+    job.direction   = (pt1 - pt0).Normalize()
     job.orientation = orientation
     job.total_width = wall.Width
     job.loc_line    = (wall.get_Parameter(
@@ -1212,6 +1215,7 @@ def plan_wall(link_inst, wall):
     job.top_z       = top_z
     job.structural  = structural
     job.bands       = []          # filled in by band_walls
+    job.built_bands = []          # filled in by build_bands
     job.windows, job.rect_openings = wall_inserts(
         wall, link_tf, pt0, (pt1 - pt0).Normalize())
     return job, notes_none()
@@ -1267,6 +1271,12 @@ def merge_wall_jobs(wall_jobs):
         job.cs          = first.cs
         job.source_doc  = first.source_doc
         job.loc_curve   = Line.CreateBound(XYZ(x0, y0, z), XYZ(x1, y1, z))
+        job.link_inst   = first.link_inst
+        # Derived from the MERGED curve, not copied from *first*: a
+        # merged run is one wall and the direction is its own, not
+        # whichever member happened to come first.
+        job.direction   = (job.loc_curve.GetEndPoint(1)
+                           - job.loc_curve.GetEndPoint(0)).Normalize()
         job.orientation = first.orientation
         job.total_width = first.total_width
         job.loc_line    = first.loc_line
@@ -1275,6 +1285,7 @@ def merge_wall_jobs(wall_jobs):
         job.top_z       = first.top_z
         job.structural  = first.structural
         job.bands       = []
+        job.built_bands = []
         # Every member's inserts, or the windows on the second and third
         # piece are silently lost.  Measured along each MEMBER's frame,
         # not this merged one -- Task 6 needs them in host coordinates
@@ -1518,6 +1529,135 @@ def band_walls(wall_jobs, sweep_jobs, levels, notes):
 
         if not job.bands:
             note(notes, job.label, "no band could be constrained")
+
+
+# ===========================================================================
+# WINDOWS -> CURTAIN WALLS
+# ===========================================================================
+
+def plan_windows(wall_jobs, notes):
+    """Measure every window and settle its curtain wall type.
+
+    Runs BEFORE the transaction: prompt_curtain_type raises a dialog,
+    and this tool never opens one inside a transaction.  The type is
+    asked once per Type Mark prefix and cached, as Window To Curtain
+    Wall does, so a facade of twenty identical windows asks once.
+    """
+    types = window_cw.curtain_wall_types(doc)
+    if not types:
+        note(notes, "-", "no curtain wall types in this model")
+        return []
+
+    asked   = {}
+    planned = []
+
+    for job in wall_jobs:
+        for _lo, _hi, _z_lo, _z_hi, window in job.windows:
+            # No host wall: the skin wall this window will sit on is not
+            # built yet, and cannot be -- choosing its type raises a
+            # dialog, so all of this runs before the transaction.  The
+            # merged frame's direction is the only thing measure_window
+            # wanted a wall for, and it is the direction the skin wall
+            # will have.
+            plan, reason = window_cw.measure_window(
+                job.link_inst, window, None, direction=job.direction)
+            if plan is None:
+                note(notes, job.label,
+                     "window {}: {}".format(window.Id.IntegerValue, reason))
+                continue
+
+            wall_type = window_cw.match_curtain_type(plan, types)
+            if wall_type is None:
+                prefix = window_cw.mark_prefix(plan.mark)
+                if prefix not in asked:
+                    asked[prefix] = window_cw.prompt_curtain_type(
+                        types, plan.mark, prefix)
+                wall_type = asked[prefix]
+
+            if wall_type is None:
+                note(notes, job.label,
+                     "window {}: no curtain wall type chosen".format(
+                         window.Id.IntegerValue))
+                continue
+
+            planned.append((job, plan, wall_type))
+
+    return planned
+
+
+def copy_window_plan(plan):
+    """A shallow copy of a WindowPlan, so one window can become several.
+
+    WindowPlan uses __slots__ and has no copy of its own, and a split
+    window needs one plan per storey with its own sill and height while
+    everything else stays shared.
+    """
+    other = window_cw.WindowPlan()
+    for name in window_cw.WindowPlan.__slots__:
+        try:
+            setattr(other, name, getattr(plan, name))
+        except AttributeError:
+            continue
+    other.notes = list(plan.notes)
+    other.grid_removed = []
+    return other
+
+
+def build_curtain_walls(planned, levels, notes):
+    """Create one curtain wall per window, per storey.  In a transaction.
+
+    A window crossing a level becomes one curtain wall per storey,
+    split at exactly the elevations the skin bands split at -- the same
+    wall_constraints.plan_wall, called with allow_round=False, so the
+    two can never disagree about where a storey ends.
+
+    Each piece is hosted on whichever skin band covers its own middle.
+    That is what makes a split window work: the lower piece embeds in
+    the lower band and the upper piece in the upper one.
+    """
+    for job, plan, wall_type in planned:
+        try:
+            cut = wall_constraints.plan_wall(
+                plan.sill, plan.sill + plan.height, levels,
+                allow_round=False)
+        except ValueError as ex:
+            note(notes, job.label,
+                 "window {}: {}".format(plan.window_id, ex))
+            continue
+
+        for band in cut["bands"]:
+            mid  = (band["base_z"] + band["top_z"]) / 2.0
+            host = None
+            for base_z, top_z, wall in job.built_bands:
+                if base_z - wall_bands.TOL <= mid <= top_z + wall_bands.TOL:
+                    host = wall
+                    break
+
+            if host is None:
+                note(notes, job.label,
+                     "window {}: no skin wall at {} to host it".format(
+                         plan.window_id, feet_text(mid)))
+                continue
+
+            piece = copy_window_plan(plan)
+            piece.sill   = band["base_z"]
+            piece.height = band["top_z"] - band["base_z"]
+
+            try:
+                wall, reason = window_cw.create_curtain_wall(
+                    doc, piece, host, wall_type)
+            except Exception as ex:
+                note(notes, job.label,
+                     "window {}: curtain wall failed: {}".format(
+                         plan.window_id, ex))
+                continue
+
+            if wall is None:
+                note(notes, job.label,
+                     "window {}: {}".format(plan.window_id, reason))
+            elif reason:
+                note(notes, job.label,
+                     "window {}: {}".format(plan.window_id, reason))
 
 
 # ===========================================================================
@@ -1974,6 +2114,7 @@ def build_bands(prepared, notes):
             set_location_line(wall, LOC_LINE_FINISH_FACE_EXTERIOR)
             apply_constraints(wall, band)
             item["wall"] = wall
+            job.built_bands.append((band["base_z"], band["top_z"], wall))
             if not apply_bg_level(wall, band):
                 no_level[job.label] = no_level.get(job.label, 0) + 1
         except Exception as ex:
@@ -2053,6 +2194,7 @@ def main():
     # Every dialog happens here, before the transaction opens.
     sweep_jobs = resolve_sweep_types(sweep_jobs, notes)
     skin_plans = collect_skin_plans(wall_jobs)
+    window_plans = plan_windows(wall_jobs, notes)
 
     # Before banding: the bands are cut at the sweeps' own elevations,
     # so the snap has to reach the sweeps first or the walls would be
@@ -2069,6 +2211,8 @@ def main():
         prepared = prepare_bands(wall_jobs, skin_plans, notes)
         mitre_prepared(prepared, notes)
         build_bands(prepared, notes)
+
+        build_curtain_walls(window_plans, levels, notes)
 
         t.Commit()
     except Exception:
