@@ -108,3 +108,55 @@ def _record(gaps, dropped, lo, hi, tol):
         gaps.append((lo, hi))
     elif height > 0.0:
         dropped.append((lo, hi))
+
+
+def wall_span(base_elev, base_offset, top_elev, top_offset,
+              unconnected_height):
+    """Return ``(base_z, top_z)`` for a wall, from its constraints.
+
+    *base_elev* and *top_elev* are the elevations of the wall's Base and
+    Top Constraint levels; *top_elev* is None when the wall has no top
+    constraint, and the top then comes from *unconnected_height* above
+    the base.
+
+    Constraint parameters are used rather than the wall's solid because
+    a wall attached to a sloping roof would otherwise report the highest
+    point of that slope as its top, and every wall under it would be
+    built to the wrong height.
+    """
+    base_z = base_elev + base_offset
+    if top_elev is None:
+        return base_z, base_z + unconnected_height
+    return base_z, top_elev + top_offset
+
+
+def sweep_wall_type_name(*names):
+    """Return the wall type name a sweep's profile calls for, or None.
+
+    *names* are searched in the order given -- the sweep's type name
+    first, then its dominant material name -- so a type name that says
+    what the profile is beats a material that says something else.
+    Within one name STONE is tested before EIFS, so 'Cast Stone over
+    EIFS' is stone.  Matching is a case-insensitive substring.
+
+    None means the rule cannot tell, and the caller must ask.
+    """
+    for name in names:
+        text = (name or "").upper()
+        if "STONE" in text:
+            return CAST_STONE_TYPE_NAME
+        if "EIFS" in text:
+            return EIFS_TYPE_NAME
+    return None
+
+
+def elevation_group_key(base_z, top_z, tol=TOL):
+    """Return a key shared by bands at the same vertical extent.
+
+    Only walls that actually sit at the same height may have their
+    corners mitred together: mitring a band at 11-20 ft against its
+    neighbour at 0-10 ft would drag a corner between two walls that
+    never touch.  Elevations are quantised to *tol* so two bands cut by
+    the same sweep group together despite floating-point drift.
+    """
+    return (int(round(base_z / tol)), int(round(top_z / tol)))

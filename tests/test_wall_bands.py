@@ -112,5 +112,81 @@ class TestMergeSpans(unittest.TestCase):
                          [(1.0, 9.0)])
 
 
+class TestWallSpan(unittest.TestCase):
+
+    def test_level_bound_wall_uses_its_top_level(self):
+        self.assertEqual(
+            wb.wall_span(0.0, 0.0, 10.0, 0.0, 99.0), (0.0, 10.0))
+
+    def test_offsets_are_applied_to_both_ends(self):
+        self.assertEqual(
+            wb.wall_span(10.0, 0.5, 20.0, -1.5, 99.0), (10.5, 18.5))
+
+    def test_unconnected_wall_uses_its_height(self):
+        self.assertEqual(
+            wb.wall_span(10.0, 0.5, None, 0.0, 8.0), (10.5, 18.5))
+
+    def test_negative_base_offset_lowers_the_base(self):
+        self.assertEqual(
+            wb.wall_span(10.0, -2.0, 20.0, 0.0, 99.0), (8.0, 20.0))
+
+
+class TestSweepWallTypeName(unittest.TestCase):
+
+    def test_stone_in_the_type_name_wins(self):
+        self.assertEqual(
+            wb.sweep_wall_type_name("Cast Stone Band", "Concrete"),
+            wb.CAST_STONE_TYPE_NAME)
+
+    def test_eifs_in_the_type_name_wins(self):
+        self.assertEqual(
+            wb.sweep_wall_type_name("EIFS Cornice", "Foam"),
+            wb.EIFS_TYPE_NAME)
+
+    def test_match_is_case_insensitive(self):
+        self.assertEqual(
+            wb.sweep_wall_type_name("eifs cornice"), wb.EIFS_TYPE_NAME)
+
+    def test_material_name_is_used_when_the_type_name_says_nothing(self):
+        self.assertEqual(
+            wb.sweep_wall_type_name("Band 6in", "CAST STONE - Buff"),
+            wb.CAST_STONE_TYPE_NAME)
+
+    def test_type_name_beats_material_name(self):
+        self.assertEqual(
+            wb.sweep_wall_type_name("EIFS Band", "Cast Stone"),
+            wb.EIFS_TYPE_NAME)
+
+    def test_stone_beats_eifs_within_one_name(self):
+        self.assertEqual(
+            wb.sweep_wall_type_name("Cast Stone over EIFS"),
+            wb.CAST_STONE_TYPE_NAME)
+
+    def test_no_match_is_none(self):
+        self.assertIsNone(wb.sweep_wall_type_name("Brick Soldier", "Brick"))
+
+    def test_missing_names_are_tolerated(self):
+        self.assertIsNone(wb.sweep_wall_type_name(None, None))
+
+
+class TestElevationGroupKey(unittest.TestCase):
+
+    def test_identical_extents_share_a_key(self):
+        self.assertEqual(wb.elevation_group_key(0.0, 10.0),
+                         wb.elevation_group_key(0.0, 10.0))
+
+    def test_extents_within_tolerance_share_a_key(self):
+        self.assertEqual(wb.elevation_group_key(0.0, 10.0),
+                         wb.elevation_group_key(0.0, 10.0 + 1e-9))
+
+    def test_different_extents_do_not_share_a_key(self):
+        self.assertNotEqual(wb.elevation_group_key(0.0, 10.0),
+                            wb.elevation_group_key(11.0, 20.0))
+
+    def test_same_base_different_top_does_not_share_a_key(self):
+        self.assertNotEqual(wb.elevation_group_key(0.0, 10.0),
+                            wb.elevation_group_key(0.0, 20.0))
+
+
 if __name__ == "__main__":
     unittest.main()
