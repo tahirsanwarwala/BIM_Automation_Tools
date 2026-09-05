@@ -48,10 +48,12 @@ name the type, so WA12 -> 'WA_Window', WS03 -> 'WS_Window', W04 ->
 resolves to WS.  With no matching type you are asked to pick one, once
 per prefix - a type is never created or duplicated.
 
-A CURTAIN WALL is always 'WA_WINDOW', by name.  Its Type Mark says
-nothing worth matching on: a curtain wall carries the window number on
-its INSTANCE mark, and its type mark is a different thing entirely.
-You are asked to pick only when this model has no WA_WINDOW.
+A CURTAIN WALL is matched the same way, on its own Type Mark, and only
+a curtain wall with NO Type Mark at all falls back to 'WA_WINDOW' by
+name - asked about only when this model has no such type.  Note that
+its type mark and its mark are two different things here: the INSTANCE
+mark is the window number BG_WINDOW NUMBER wants, and it is the TYPE
+mark that names the type.
 
 The new wall's centreline sits on the host wall's centreline.  Whatever
 grid layout the matched type carries is stripped off the new wall right
@@ -73,8 +75,9 @@ __author__ = "Tahir Sanwarwala"
 __doc__    = (
     "Pick a window or a curtain wall in a LINKED model, then the host "
     "wall it sits on, and a curtain wall is created to match it.\n"
-    "A window's type comes from its Type Mark prefix (WA12 -> "
-    "WA_Window); a linked curtain wall is always WA_WINDOW.\n"
+    "The type comes from the Type Mark prefix (WA12 -> WA_Window, "
+    "W04 -> W_Window); a linked curtain wall with no Type Mark falls "
+    "back to WA_WINDOW.\n"
     "A window gives its width, height and sill from its own parameters "
     "and always comes out rectangular, arched ones included; a linked "
     "curtain wall gives its length, constraints and sketched profile, "
@@ -457,11 +460,14 @@ def measure_curtain_wall(link_inst, wall, host_wall):
     plan.source_kind = "curtain wall"
     plan.window_id = eid_value(wall.Id)
     plan.link_name = get_element_name(link_inst)
-    # The instance Mark, and no prefix.  BG_WINDOW NUMBER is filled from
-    # plan.mark, and the type is settled by name rather than by prefix,
-    # so a curtain wall with no Mark simply leaves the number blank.
+    # Two different marks, and they answer two different questions.
+    # BG_WINDOW NUMBER is filled from plan.mark, which for a curtain
+    # wall is its INSTANCE mark -- the window number -- and is left
+    # blank when it has none.  The TYPE mark is what names the wall
+    # type, exactly as it does for a window.
     plan.mark      = instance_mark(wall)
-    plan.prefix    = None
+    plan.type_mark = type_mark(wall, link_doc)
+    plan.prefix    = mark_prefix(plan.type_mark)
     plan.wall_dir  = host_dir
     plan.width     = width
     plan.height    = height
@@ -688,14 +694,14 @@ def main():
     chosen = {}
     ready  = []
     for plan, host_wall in plans:
-        from_curtain = plan.source_kind == "curtain wall"
-        key = CURTAIN_TYPE_NAME if from_curtain else (plan.prefix or "<none>")
+        # The prefix rule answers for both kinds of source.  Only a
+        # curtain wall with no Type Mark at all has nothing for it to
+        # answer with, and that is the one case that falls back.
+        by_name = plan.source_kind == "curtain wall" and not plan.prefix
+        key = CURTAIN_TYPE_NAME if by_name else (plan.prefix or "<none>")
 
         if key not in chosen:
-            if from_curtain:
-                # Settled by name, not by prefix.  Only when the named
-                # type is missing from this model is there anything to
-                # ask about.
+            if by_name:
                 wall_type = window_cw.type_named(CURTAIN_TYPE_NAME, types)
                 if wall_type is None:
                     wall_type = window_cw.prompt_curtain_type(
@@ -704,7 +710,7 @@ def main():
                 wall_type = window_cw.match_curtain_type(plan, types)
                 if wall_type is None:
                     wall_type = window_cw.prompt_curtain_type(
-                        types, plan.mark, plan.prefix)
+                        types, plan.type_mark or plan.mark, plan.prefix)
                     if wall_type is not None:
                         logger.debug("Type picked by hand for prefix {}"
                                      .format(plan.prefix))
@@ -715,7 +721,7 @@ def main():
             rows.append([plan.window_id, plan.link_name, plan.mark or "-",
                          "'{}' is not in this model and none was picked; "
                          "skipped".format(CURTAIN_TYPE_NAME)
-                         if from_curtain else
+                         if by_name else
                          "no curtain wall type for prefix '{}'; skipped"
                          .format(plan.prefix or "?")])
             continue

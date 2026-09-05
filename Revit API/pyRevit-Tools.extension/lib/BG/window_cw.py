@@ -364,8 +364,13 @@ def match_curtain_type(plan, types):
     element's own type name.  Matching on that name would quietly pick up
     a type carried in from the link, which is exactly what must not
     happen: the host's own types are the whole point.
+
+    A window's plan.mark IS its Type Mark, so the two are the same
+    thing there.  A curtain wall's is not: plan.mark carries its
+    INSTANCE mark, which is the window number BG_WINDOW NUMBER wants,
+    and its Type Mark is kept apart in plan.type_mark.
     """
-    for prefix in candidate_prefixes(plan.mark):
+    for prefix in candidate_prefixes(plan.type_mark or plan.mark):
         found = type_named(prefix + CURTAIN_SUFFIX, types)
         if found is not None:
             return found
@@ -412,7 +417,8 @@ class WindowPlan(object):
                  "profile_curves", "src_origin", "src_dir",
                  "wall_dir", "notes", "source_kind", "level_name",
                  "base_offset", "new_wall_id", "grid_removed",
-                 "sill_param", "geom_bottom", "doors", "link_doc")
+                 "sill_param", "geom_bottom", "doors", "link_doc",
+                 "type_mark")
 
     def __init__(self):
         self.profile_curves = None
@@ -427,6 +433,7 @@ class WindowPlan(object):
         self.geom_bottom    = None
         self.doors          = []
         self.link_doc       = None
+        self.type_mark      = None
         self.notes          = []
 
 
