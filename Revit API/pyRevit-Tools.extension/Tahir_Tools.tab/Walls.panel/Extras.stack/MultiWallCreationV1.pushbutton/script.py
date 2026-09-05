@@ -4,8 +4,8 @@
 Select any mix of walls and wall sweeps in a LINKED model -- by box or
 by click, adding and removing until the selection is right, then Finish.
 
-Each CAST STONE sweep becomes a wall in the host model, exactly as
-Sweep To Wall makes one.
+Each sweep becomes a wall in the host model, exactly as Sweep To Wall
+makes one.
 Each wall becomes one or more skin walls, exactly as Split Walls makes
 them -- except that nobody picks a base and a top.
 
@@ -18,10 +18,9 @@ A wall's height comes from the CAST STONE sweeps running on it:
   * with no stone course above or below, that end falls back to the
     source wall's own Base and Top Constraint.
 
-An EIFS sweep is ignored outright.  Picking one costs nothing and does
-nothing: no wall is built for it, and it does not break the walls it
-runs across.  Only cast stone becomes a sweep wall, and only cast stone
-cuts a skin.
+An EIFS sweep is built like any other -- measured, mitred, given its own
+wall -- but it does not break the walls it runs across.  Only cast stone
+does that.
 
 Only sweeps you actually pick cut a wall, and only sweeps hosted on that
 wall -- the link's own GetHostIds() decides, so a sweep running along a
@@ -34,10 +33,10 @@ once, on the measured extents, before anything is banded, so the sweep
 and the walls above and below it all move together and stay met.
 
 Sweep wall types are automatic: a sweep whose type name or material name
-says STONE gets SKIN_CAST STONE PROFILE_0' 2", and one that says EIFS is
-dropped.  Anything the rule cannot read is asked about once, per sweep
-type -- and dropped too if the answer is the EIFS profile.  Wall skins
-resolve their type from the finish material's Mark, as Split Walls does.
+says STONE gets SKIN_CAST STONE PROFILE_0' 2", one that says EIFS gets
+SKIN_EIFS PROFILE_0' 2".  Anything the rule cannot read is asked about
+once, per sweep type.  Wall skins resolve their type from the finish
+material's Mark, as Split Walls does.
 
 Where a sweep goes in plan is read off its own solid, not assumed to be
 its host wall's full length.  A sweep that stops at an opening stops
@@ -61,14 +60,13 @@ __author__ = "Tahir Sanwarwala"
 __doc__    = (
     "Select any mix of walls and wall sweeps in a LINKED model -- drag "
     "a box or click, then click Finish.\n"
-    "Each CAST STONE sweep becomes a wall in the host model; each wall "
-    "becomes skin walls that stop at the stone sweeps running on it.  "
-    "EIFS sweeps are ignored, picked or not.\n"
+    "Each sweep becomes a wall in the host model; each wall becomes "
+    "skin walls that stop at the CAST STONE sweeps running on it -- an "
+    "EIFS sweep is built but does not break a wall.\n"
     "Walls are cut again at every level they cross.  A wall with no "
     "stone course above or below falls back to its own constraints.\n"
     "Sweep wall types come from STONE / EIFS in the sweep's type or "
-    "material name; EIFS is dropped, and you are only asked about what "
-    "that rule cannot read.\n"
+    "material name; you are only asked about what that cannot read.\n"
     "The linked model is left untouched."
 )
 
@@ -1253,31 +1251,20 @@ def find_wall_type_by_name(name):
 def resolve_sweep_types(sweep_jobs, notes):
     """Give every sweep job a wall type, asking only where it must.
 
-    An EIFS profile is dropped here and goes no further, whether the
-    name rule recognised it or the user chose it by hand.  It is the
-    resolved TYPE that decides, so the two routes to being EIFS are
-    answered the same way.  Dropping it is silent -- ignoring an EIFS
-    sweep is what the tool does now, not something that went wrong --
-    so a selection may be swept clean of them without the report saying
-    a word.
-
-    The STONE / EIFS name rule answers most of the rest outright.  What
-    it cannot read -- and any profile whose named type is missing from
-    this model -- falls back to one dialog per sweep TYPE, so a run with
+    The STONE / EIFS name rule answers most of them outright.  What it
+    cannot read -- and any profile whose named type is missing from this
+    model -- falls back to one dialog per sweep TYPE, so a run with
     twenty identical sweeps asks once.
 
     Returns the jobs that ended up with a type.  A sweep left without
-    one is dropped: it neither becomes a wall nor cuts one, and unless
-    it was EIFS it is reported.
+    one is dropped: it neither becomes a wall nor cuts one, and it is
+    reported.
     """
     asked = {}          # sweep type name -> WallType or None
     resolved = []
 
     for job in sweep_jobs:
         wanted = wall_bands.sweep_wall_type_name(job.type_name, job.material)
-
-        if wanted == wall_bands.EIFS_TYPE_NAME:
-            continue
 
         if wanted is not None:
             wall_type = find_wall_type_by_name(wanted)
@@ -1302,9 +1289,6 @@ def resolve_sweep_types(sweep_jobs, notes):
             note(notes, job.label,
                  "no wall type chosen for sweep type '{}' - skipped, and "
                  "it does not cut any wall".format(key))
-            continue
-
-        if get_element_name(asked[key]) == wall_bands.EIFS_TYPE_NAME:
             continue
 
         job.wall_type = asked[key]
@@ -1366,11 +1350,10 @@ def collect_skin_plans(wall_jobs):
 def sweep_cuts_walls(job):
     """True when this sweep interrupts the walls it runs across.
 
-    Only a CAST STONE course does.  EIFS never reaches here at all --
-    resolve_sweep_types drops it -- so what this still guards against is
-    a sweep whose type the user picked by hand: it becomes a wall of its
-    own and mitres into its neighbours, but it does not decide where the
-    skin walls around it start and stop.
+    Only a CAST STONE course does.  An EIFS cornice is still measured,
+    still becomes a wall of its own, and still mitres into its
+    neighbours -- it simply does not decide where the skin walls around
+    it start and stop, so a wall runs on past one unbroken.
 
     The test is the wall type the sweep RESOLVED to, not its name or its
     material: those are what resolve_sweep_types reads to reach the type
@@ -1420,7 +1403,7 @@ def band_walls(wall_jobs, sweep_jobs, levels, notes):
     Two things cut a wall.  The CAST STONE sweeps hosted on it -- hosted
     decided by the link's own GetHostIds(), so a sweep on a neighbouring
     wall is never mistaken for one on this one, and cast stone by
-    sweep_cuts_walls, so a hand-typed sweep passes a wall by without
+    sweep_cuts_walls, so an EIFS cornice passes a wall by without
     breaking it.  And every level a leftover stretch crosses, because a
     wall crossing a level is the one thing the house rule never allows.
 
@@ -1662,8 +1645,8 @@ def build_sweep_walls(sweep_jobs, levels, notes):
     left them running past each other and crossing -- so every run from
     every sweep is gathered first and grouped by the height it sits at
     AND the wall type it resolved to.  A stone band then trims into a
-    stone band and not into a course at a different height, or of a
-    different type where one was picked by hand.
+    stone band, an EIFS cornice into an EIFS cornice, and neither into
+    the other or into a course at a different height.
     """
     items = []
     for job in sweep_jobs:
