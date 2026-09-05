@@ -412,7 +412,7 @@ class WindowPlan(object):
                  "profile_curves", "src_origin", "src_dir",
                  "wall_dir", "notes", "source_kind", "level_name",
                  "base_offset", "new_wall_id", "grid_removed",
-                 "sill_param", "geom_bottom")
+                 "sill_param", "geom_bottom", "doors", "link_doc")
 
     def __init__(self):
         self.profile_curves = None
@@ -425,6 +425,8 @@ class WindowPlan(object):
         self.grid_removed   = []
         self.sill_param     = None
         self.geom_bottom    = None
+        self.doors          = []
+        self.link_doc       = None
         self.notes          = []
 
 
@@ -445,6 +447,7 @@ def copy_plan(plan):
     other.notes        = list(plan.notes)
     other.grid_removed = []
     other.new_wall_id  = None
+    other.doors        = list(plan.doors)
     return other
 
 

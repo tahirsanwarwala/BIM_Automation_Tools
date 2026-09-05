@@ -33,6 +33,15 @@ survive being cut, since the outline belongs to the whole opening and
 not to either half, so a split wall gives its profile up and says so.
 Wall sweeps have no say in any of this.
 
+A DOOR standing in one of the linked wall's cells is carried over.
+Only doors: every other panel, mullion and grid line is left behind,
+and the new wall is glass everywhere the door is not.  Grid lines are
+added back just where that door needs them -- one at each jamb, one at
+its head -- and the cell they make is swapped to the door's own type,
+found in this model by family and type name or copied out of the link
+when it is not here.  A door lands with whichever storey contains it
+when the wall is split.
+
 The TYPE of a WINDOW is chosen from its Type Mark: the leading letters
 name the type, so WA12 -> 'WA_Window', WS03 -> 'WS_Window', W04 ->
 'W_Window'.  A mark whose serial is itself letters, like WSXX, still
@@ -69,7 +78,8 @@ __doc__    = (
     "A window gives its width, height and sill from its own parameters "
     "and always comes out rectangular, arched ones included; a linked "
     "curtain wall gives its length, constraints and sketched profile, "
-    "and is split at every level it crosses.\n"
+    "is split at every level it crosses, and carries over any DOOR "
+    "panels it has.\n"
     "Repeats until Esc.  The linked model is left untouched."
 )
 
@@ -96,7 +106,7 @@ from Autodesk.Revit.Exceptions import OperationCanceledException
 from Autodesk.Revit.UI.Selection import ISelectionFilter, ObjectType
 from pyrevit import revit, script
 
-from BG import wall_constraints, wall_sketch, window_cw
+from BG import curtain_doors, wall_constraints, wall_sketch, window_cw
 
 doc    = revit.doc
 uidoc  = revit.uidoc
@@ -403,6 +413,12 @@ def split_at_levels(plan, levels):
         piece = window_cw.copy_plan(plan)
         piece.sill   = band["base_z"]
         piece.height = band["top_z"] - band["base_z"]
+
+        # A door belongs to the storey its middle is in, and to that
+        # one only -- a door cut in half by a level is not a door.
+        mid_of = lambda d: (d.z_lo + d.z_hi) / 2.0
+        piece.doors = [d for d in plan.doors
+                       if band["base_z"] <= mid_of(d) <= band["top_z"]]
         if piece.profile_curves:
             piece.profile_curves = None
             piece.notes.append(
@@ -485,6 +501,14 @@ def measure_curtain_wall(link_inst, wall, host_wall):
                               z_lo)
 
     plan.src_origin = XYZ(plan.centre.X, plan.centre.Y, plan.sill)
+
+    # Doors last: they are measured from the plan's own centre, which
+    # the profile above may just have moved.
+    plan.link_doc = link_doc
+    plan.doors, door_notes = curtain_doors.find_door_panels(
+        wall, link_doc, transform, plan.centre, plan.src_dir)
+    plan.notes.extend(door_notes)
+
     return plan, None
 
 
@@ -761,6 +785,43 @@ def main():
         except Exception:
             if cleanup.HasStarted() and not cleanup.HasEnded():
                 cleanup.RollBack()
+            raise
+
+    # ---- Doors, last of all.  Revit rebuilds a wall's grid from its
+    # ---- type whenever the wall is reshaped, so grid lines added before
+    # ---- the strip above would have been swept away with it.
+    with_doors = [(plan, wall) for plan, wall in made if plan.doors]
+    if with_doors:
+        symbols = {}
+        for plan, _wall in with_doors:
+            # Outside any transaction: a cross-document copy opens one
+            # of its own and Revit refuses it inside another.
+            found, notes = curtain_doors.resolve_symbols(
+                doc, plan.link_doc, plan.doors)
+            for key, symbol in found.items():
+                # A later failure must not undo an earlier success: the
+                # same type can be wanted by two walls, and only one of
+                # them had to find it.
+                if symbols.get(key) is None:
+                    symbols[key] = symbol
+            plan.notes.extend(notes)
+
+        doors_t = Transaction(doc, "Add curtain wall doors")
+        doors_t.Start()
+        try:
+            opts = doors_t.GetFailureHandlingOptions()
+            opts.SetFailuresPreprocessor(wall_sketch.SketchFailureSwallower())
+            doors_t.SetFailureHandlingOptions(opts)
+        except Exception as ex:
+            logger.debug("Could not set failure handling: {}".format(ex))
+        try:
+            for plan, wall in with_doors:
+                plan.notes.extend(
+                    curtain_doors.place_doors(doc, wall, plan.doors, symbols))
+            doors_t.Commit()
+        except Exception:
+            if doors_t.HasStarted() and not doors_t.HasEnded():
+                doors_t.RollBack()
             raise
 
     for plan, wall in made:
