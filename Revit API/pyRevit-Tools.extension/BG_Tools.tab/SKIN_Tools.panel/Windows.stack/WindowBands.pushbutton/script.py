@@ -30,14 +30,20 @@ in the same material, and a cast stone head and a brick soldier course
 are not the same beam either, so being asked more than once is the
 point.
 
-Z justification is what puts the band on the right side of the opening:
-a lintel is justified to its BOTTOM so it sits on the head, a sill to
-its TOP so it hangs under the sill.  Neither eats into the opening.
-Whether it took is checked by reading it back, because a band left on
-its own default justification is in the wrong place and looks right.
-Some framing families justify their two ends independently, and those
-ignore the single uniform setting entirely, so yz Justification is
-forced to Uniform and both ends are set as well as the whole.
+Where the band ENDS UP is measured, not justified.  A lintel has to
+sit on the head and a sill to hang under the sill, and z justification
+is Revit's way of saying so -- but a beam that will not take the
+justification asked of it sits in the wrong place while looking
+perfectly well drawn.  So the band is placed, its own bounding box is
+read back, and its level offsets are shifted by whatever is left over.
+Its underside lands on the head, or its top on the sill, whatever
+justification it ended up with and wherever its family's origin sits.
+
+The justification is still set -- twice, before and after the offsets,
+through all three of its parameters, with yz forced to Uniform -- and
+still read back and reported, because a band correct in space and
+wrong in its properties is a thing worth knowing about.  It just no
+longer decides anything.
 
 The reference level is read back, never assumed.  Revit reassigns a
 new beam's Reference Level for itself, and a Start Level Offset worked
@@ -121,6 +127,10 @@ YZ_JUST_UNIFORM = 0
 
 # Anything shorter than this, in feet, is not an opening worth banding.
 MIN_BAND_LENGTH = 0.05
+
+# Closer than this, in feet, and the band is where it should be.  A
+# thousandth of a foot is a hundredth of an inch.
+ALIGN_TOL = 0.001
 
 # How far, in feet, a linked window's plan position may be from the
 # curtain wall's and still be the window it was built from.  Generous
@@ -497,6 +507,56 @@ def set_z_justification(band, wanted):
     return Z_JUST_NAMES.get(actual, "unknown")
 
 
+def shift_band(band, rise):
+    """Move *band* up by *rise* feet, through its level offsets."""
+    moved = False
+    for builtin in (BuiltInParameter.STRUCTURAL_BEAM_END0_ELEVATION,
+                    BuiltInParameter.STRUCTURAL_BEAM_END1_ELEVATION):
+        try:
+            p = band.get_Parameter(builtin)
+            if p is None or p.IsReadOnly or not p.HasValue:
+                continue
+            if p.Set(p.AsDouble() + rise):
+                moved = True
+        except Exception as ex:
+            logger.debug("Could not shift the band: {}".format(ex))
+    doc.Regenerate()
+    return moved
+
+
+def align_band(band, z, side):
+    """Put the band's own edge on *z*, whatever its justification.
+
+    A lintel's UNDERSIDE belongs on the head and a sill's TOP belongs
+    on the sill line.  Rather than ask Revit to justify the beam and
+    hope, the beam is measured where it landed and shifted by what is
+    left over.  That is right whether the justification took, whether
+    the family's origin is at its centre or its soffit, and whatever
+    depth the type is.
+
+    Returns None, or the reason it could not be done.
+    """
+    for _attempt in (1, 2):
+        try:
+            bbox = band.get_BoundingBox(None)
+        except Exception:
+            bbox = None
+        if bbox is None:
+            return "could not measure the band to align it"
+
+        actual = bbox.Min.Z if side == "lintel" else bbox.Max.Z
+        rise   = z - actual
+        if abs(rise) <= ALIGN_TOL:
+            return None
+        if not shift_band(band, rise):
+            return "could not shift the band into place"
+
+    # A second pass that still has not landed means the offsets are not
+    # moving the beam the way they are being read -- worth saying, not
+    # worth another loop.
+    return "could not be aligned to the opening"
+
+
 def beam_level_elevation(band, fallback):
     """The geometry-space elevation of the level *band* is actually on.
 
@@ -523,14 +583,15 @@ def beam_level_elevation(band, fallback):
     return fallback.Elevation - delta
 
 
-def place_band(symbol, wall, z, justification):
+def place_band(symbol, wall, z, side):
     """Create one band across *wall* at elevation *z*.  In a transaction.
 
-    *justification* decides which side of *z* the beam lands on: a
-    lintel is justified to its BOTTOM so it sits on the head, a sill to
-    its TOP so it hangs under the sill.  Either way the opening itself
-    stays clear.
+    *side* decides which of the band's own edges lands on *z*: a
+    lintel's underside sits on the head, a sill's top hangs under the
+    sill.  Either way the opening itself stays clear.
     """
+    justification = Z_JUST_BOTTOM if side == "lintel" else Z_JUST_TOP
+
     line = wall_line(wall, z)
     if line is None:
         return None, "no straight location line to band"
@@ -546,6 +607,11 @@ def place_band(symbol, wall, z, justification):
     band = doc.Create.NewFamilyInstance(
         line, symbol, level, StructuralType.Beam)
     doc.Regenerate()
+
+    # Once before the offsets and once after.  A beam already carried
+    # to the head can refuse a justification that would move it again,
+    # and the cheapest answer to that is to have asked first.
+    set_z_justification(band, justification)
 
     # Ask for the level that was chosen, then take whatever answer the
     # beam gives.  Both steps are needed: the request is often honoured
@@ -564,17 +630,21 @@ def place_band(symbol, wall, z, justification):
                   offset)
     doc.Regenerate()
 
-    # Justification last: it is the one setting whose failure changes
-    # where the band sits without looking like a failure.
     set_parameter(band, BuiltInParameter.Z_OFFSET_VALUE, 0.0)
     landed = set_z_justification(band, justification)
     doc.Regenerate()
 
+    # Measured last, and it is what actually decides where the band is.
+    failure = align_band(band, z, side)
+    if failure:
+        return band, failure
+
     if landed:
         return band, (
-            "placed, but its z justification stayed {} instead of {} - "
-            "the framing family will not take it, so set it on the "
-            "type".format(landed, Z_JUST_NAMES[justification]))
+            "placed and aligned, but its z justification reads {} "
+            "rather than {} - the band is in the right place, the "
+            "property is not".format(
+                landed, Z_JUST_NAMES[justification]))
     return band, None
 
 
@@ -642,13 +712,10 @@ def band_wall(wall, extent, asked, symbols, notes):
         if symbol is None:
             continue          # no framing type chosen for this band
 
-        if side == "lintel":
-            z, justification = top_z, Z_JUST_BOTTOM
-        else:
-            z, justification = base_z, Z_JUST_TOP
+        z = top_z if side == "lintel" else base_z
 
         try:
-            band, reason = place_band(symbol, wall, z, justification)
+            band, reason = place_band(symbol, wall, z, side)
         except Exception as ex:
             note(notes, label,
                  "{} band failed: {}".format(side, ex))
