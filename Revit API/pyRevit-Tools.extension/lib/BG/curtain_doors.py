@@ -22,6 +22,15 @@ Three things have to happen, and only the first is obvious:
 Only DOORS are carried.  A linked curtain wall's other panels, mullions
 and grid lines are all left behind: the new wall is glass everywhere
 the door is not.
+
+A panel is measured from its solids where that works and from its
+bounding box where it does not -- a curtain panel is a slab standing
+flat in its own wall, so the box around it is the panel.  Panels
+covering the same patch of wall are then collapsed into one, because a
+door family with nested shared components puts several Doors-category
+instances in a single cell and they are all one door.  Anything still
+unmeasured is reported BY ID and by family and type name, so a panel
+that defeats both routes can be found and looked at.
 """
 
 import clr
@@ -48,6 +57,10 @@ logger = script.get_logger()
 # A grid line this close to an end of the wall, in feet, is the end of
 # the wall: Revit will not take it, and it would divide nothing.
 EDGE_TOL = 0.02
+
+# Narrower or shorter than this, in feet, and whatever was measured is
+# not a door.
+MIN_DOOR = 0.5
 
 
 class DoorPanel(object):
@@ -97,6 +110,76 @@ def _symbol_names(symbol):
     return family, window_cw.get_element_name(symbol)
 
 
+def _extent_from_solids(panel, transform, origin, direction):
+    """(u_lo, u_hi, z_lo, z_hi) from the panel's own solids, or None.
+
+    The exact answer where it works: the solids are tessellated and
+    every vertex projected onto the wall, so a panel is measured where
+    it truly is rather than where a box around it reaches.
+    """
+    us = []
+    zs = []
+    try:
+        for p in window_cw.iter_solid_points(panel, transform):
+            us.append((p.X - origin.X) * direction.X
+                      + (p.Y - origin.Y) * direction.Y)
+            zs.append(p.Z)
+    except Exception as ex:
+        logger.debug("Solid measure failed: {}".format(ex))
+
+    if len(us) < 2 or len(zs) < 2:
+        return None
+    return min(us), max(us), min(zs), max(zs)
+
+
+def _extent_from_bbox(panel, transform, origin, direction):
+    """The same, from the panel's bounding box.  Cruder, and enough.
+
+    A door panel whose geometry cannot be walked still has a box, and
+    for a panel standing flat in its own wall the box IS the panel --
+    a curtain panel is a slab with no overhang to inflate it.  The box
+    comes back axis-aligned in the LINK's coordinates, so all eight
+    corners are transformed rather than just the two.
+    """
+    try:
+        bbox = panel.get_BoundingBox(None)
+    except Exception:
+        return None
+    if bbox is None:
+        return None
+
+    lo, hi = bbox.Min, bbox.Max
+    us = []
+    zs = []
+    for x in (lo.X, hi.X):
+        for y in (lo.Y, hi.Y):
+            for z in (lo.Z, hi.Z):
+                p = XYZ(x, y, z)
+                if bbox.Transform is not None:
+                    p = bbox.Transform.OfPoint(p)
+                p = transform.OfPoint(p)
+                us.append((p.X - origin.X) * direction.X
+                          + (p.Y - origin.Y) * direction.Y)
+                zs.append(p.Z)
+
+    if len(us) < 2:
+        return None
+    return min(us), max(us), min(zs), max(zs)
+
+
+def _overlaps(door, other, tol=0.02):
+    """True when two measured doors are really the same opening.
+
+    A door family with nested shared components can put more than one
+    Doors-category instance in one cell, and each measures to the same
+    patch of wall.  Rather than build three doors on top of each other,
+    the ones that cover the same ground are collapsed into one.
+    """
+    return (door.u_lo < other.u_hi - tol and other.u_lo < door.u_hi - tol
+            and door.z_lo < other.z_hi - tol
+            and other.z_lo < door.z_hi - tol)
+
+
 def find_door_panels(wall, link_doc, transform, origin, direction):
     """Measure every DOOR panel in a linked curtain wall.
 
@@ -105,10 +188,18 @@ def find_door_panels(wall, link_doc, transform, origin, direction):
     sketched profile is carried in -- so a door measured here lands in
     the same place a profile would.
 
+    Panels covering the same patch of wall are collapsed into one: a
+    door family with nested shared components puts several
+    Doors-category instances in a single cell, and they are one door.
+
     Returns (list of DoorPanel, list of notes).
     """
     notes = []
     found = []
+
+    if origin is None or direction is None:
+        return found, ["the source wall's frame could not be read, so "
+                       "its door panels were left out"]
 
     try:
         grid = wall.CurtainGrid
@@ -130,35 +221,50 @@ def find_door_panels(wall, link_doc, transform, origin, direction):
         if not _is_door(panel):
             continue
 
-        us = []
-        zs = []
+        label = "door panel id {}".format(window_cw.eid_value(pid))
         try:
-            for p in window_cw.iter_solid_points(panel, transform):
-                us.append((p.X - origin.X) * direction.X
-                          + (p.Y - origin.Y) * direction.Y)
-                zs.append(p.Z)
-        except Exception as ex:
-            logger.debug("Could not measure a door panel: {}".format(ex))
+            symbol = panel.Symbol
+            family, type_name = _symbol_names(symbol)
+            label = "{} ({}: {})".format(label, family or "?",
+                                         type_name or "?")
+        except Exception:
+            notes.append("{} has no readable type and was left out"
+                         .format(label))
+            continue
 
-        if len(us) < 2 or len(zs) < 2:
-            notes.append("a door panel could not be measured and was "
-                         "left out")
+        extent = _extent_from_solids(panel, transform, origin, direction)
+        if extent is None:
+            extent = _extent_from_bbox(panel, transform, origin, direction)
+            if extent is not None:
+                logger.debug("{} measured from its bounding box"
+                             .format(label))
+
+        if extent is None:
+            notes.append("{} could not be measured, by its solids or by "
+                         "its bounding box, and was left out"
+                         .format(label))
             continue
 
         door = DoorPanel()
-        try:
-            door.symbol_id = panel.Symbol.Id
-            door.family_name, door.type_name = _symbol_names(
-                panel.Symbol)
-        except Exception:
-            notes.append("a door panel has no readable type and was "
-                         "left out")
+        door.symbol_id   = symbol.Id
+        door.family_name = family
+        door.type_name   = type_name
+        door.u_lo, door.u_hi, door.z_lo, door.z_hi = extent
+
+        if door.u_hi - door.u_lo < MIN_DOOR or door.z_hi - door.z_lo < MIN_DOOR:
+            notes.append("{} measured to nothing and was left out"
+                         .format(label))
             continue
 
-        door.u_lo = min(us)
-        door.u_hi = max(us)
-        door.z_lo = min(zs)
-        door.z_hi = max(zs)
+        twin = next((d for d in found if _overlaps(door, d)), None)
+        if twin is not None:
+            # Keep the larger of the two: the outer panel, not a handle
+            # or a vision light nested inside it.
+            if ((door.u_hi - door.u_lo) * (door.z_hi - door.z_lo) >
+                    (twin.u_hi - twin.u_lo) * (twin.z_hi - twin.z_lo)):
+                found[found.index(twin)] = door
+            continue
+
         found.append(door)
 
     return found, notes
