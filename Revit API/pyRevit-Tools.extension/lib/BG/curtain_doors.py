@@ -17,7 +17,10 @@ Three things have to happen, and only the first is obvious:
     that places anything;
   * grid lines are added back to the new wall -- two at the jambs, one
     at the head -- because a door needs a cell of its own to stand in,
-    and the tool has just stripped every line the type came with.
+    and the tool has just stripped every line the type came with.  The
+    jambs run the full height, since that is what makes the bay; the
+    head runs across that bay only, since a full-width line there would
+    divide the glass either side of the door as well.
 
 Only DOORS are carried.  A linked curtain wall's other panels, mullions
 and grid lines are all left behind: the new wall is glass everywhere
@@ -28,9 +31,10 @@ bounding box where it does not -- a curtain panel is a slab standing
 flat in its own wall, so the box around it is the panel.  Panels
 covering the same patch of wall are then collapsed into one, because a
 door family with nested shared components puts several Doors-category
-instances in a single cell and they are all one door.  Anything still
-unmeasured is reported BY ID and by family and type name, so a panel
-that defeats both routes can be found and looked at.
+instances in a single cell and they are all one door.  A panel with no
+geometry by either route is not a door at all but a slot the linked
+wall keeps for a cell something else occupies, and it is skipped
+without a word.
 """
 
 import clr
@@ -240,9 +244,13 @@ def find_door_panels(wall, link_doc, transform, origin, direction):
                              .format(label))
 
         if extent is None:
-            notes.append("{} could not be measured, by its solids or by "
-                         "its bounding box, and was left out"
-                         .format(label))
+            # No solids AND no bounding box means no geometry at all,
+            # and a panel with no geometry is not a door -- it is a
+            # slot the linked wall keeps for a cell something else
+            # occupies.  One real door came with two of these beside
+            # it, so they are skipped rather than reported: a note per
+            # phantom would open the output window on every clean run.
+            logger.debug("{} has no geometry; skipped".format(label))
             continue
 
         door = DoorPanel()
@@ -369,10 +377,18 @@ def _at(origin, direction, u, z):
                z)
 
 
-def _add_line(grid, is_horizontal, point):
-    """Add one grid line, and say whether it took."""
+def _add_line(grid, is_horizontal, point, one_segment=False):
+    """Add one grid line, and say whether it took.
+
+    *one_segment* keeps the line inside the single cell the point falls
+    in, instead of running it the whole way across the wall.  That is
+    what the door's HEAD needs: a full-width line there would divide
+    the glass either side of the door as well, which is a line the
+    building does not have.  The jambs are the opposite case -- they
+    have to run full height to make the bay in the first place.
+    """
     try:
-        grid.AddGridLine(is_horizontal, point, False)
+        grid.AddGridLine(is_horizontal, point, one_segment)
         return True
     except Exception as ex:
         logger.debug("Could not add a grid line: {}".format(ex))
@@ -482,9 +498,11 @@ def place_doors(doc, wall, doors, symbols):
                 continue
             _add_line(grid, False, _at(origin, direction, u, z_mid))
 
-        # The head, for the same reason: only when there is glass above.
+        # The head, only when there is glass above -- and only across
+        # the door's own bay, which is why the jambs went in first.
         if top_z is None or door.z_hi <= top_z - EDGE_TOL:
-            _add_line(grid, True, _at(origin, direction, u_mid, door.z_hi))
+            _add_line(grid, True, _at(origin, direction, u_mid, door.z_hi),
+                      one_segment=True)
 
         doc.Regenerate()
 
