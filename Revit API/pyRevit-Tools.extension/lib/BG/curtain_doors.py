@@ -12,9 +12,10 @@ Three things have to happen, and only the first is obvious:
     jambs and head are known as distances along and up the wall rather
     than as coordinates that mean nothing on the new one;
   * its family type is found in the host model, or copied out of the
-    link when it is not there.  Copying between documents cannot happen
-    inside a transaction, so resolve_symbols has to run before the one
-    that places anything;
+    link when it is not there.  A panel can only be swapped to a type
+    that already exists, so resolve_symbols runs first -- in a
+    transaction of its own, since a cross-document copy writes to this
+    document like any other edit;
   * grid lines are added back to the new wall -- two at the jambs, one
     at the head -- because a door needs a cell of its own to stand in,
     and the tool has just stripped every line the type came with.  The
@@ -300,9 +301,13 @@ def _host_door_symbols(doc):
 def resolve_symbols(doc, link_doc, doors):
     """Find each door's type here, copying it from the link if need be.
 
-    MUST run outside a transaction.  A cross-document copy opens its
-    own, and Revit refuses it inside one -- which is the whole reason
-    this is a step of its own rather than part of placing the doors.
+    MUST run INSIDE a transaction.  Copying a type across documents
+    writes to this one like any other edit, and without a transaction
+    Revit answers "Attempt to modify the model outside of transaction".
+
+    It still has to happen BEFORE the doors are placed, though, and for
+    a reason of its own: the panels can only be swapped to a type that
+    already exists, so the type has to be here first.
 
     Returns ({(family, type): FamilySymbol or None}, notes).
     """

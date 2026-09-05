@@ -192,8 +192,10 @@ def already_there(index, key, point, tol=TOL):
 def copy_elements(link_inst, link_doc, doc, element_ids):
     """Copy *element_ids* out of the link, in place.  Returns (ids, reason).
 
-    MUST run outside a transaction: a cross-document copy opens one of
-    its own and Revit refuses it inside another.
+    MUST run INSIDE a transaction on the destination document.  A copy
+    across documents writes to the destination like any other edit, and
+    without one Revit answers "Attempt to modify the model outside of
+    transaction".
 
     The link's own transform is what puts them in the same place --
     the link may be moved or rotated relative to the host, and copying

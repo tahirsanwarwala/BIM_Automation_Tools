@@ -49,7 +49,7 @@ import clr
 clr.AddReference("RevitAPI")
 clr.AddReference("RevitAPIUI")
 
-from Autodesk.Revit.DB import RevitLinkInstance
+from Autodesk.Revit.DB import RevitLinkInstance, Transaction
 from Autodesk.Revit.Exceptions import OperationCanceledException
 from Autodesk.Revit.UI.Selection import ISelectionFilter, ObjectType
 from pyrevit import revit, forms, script
@@ -223,6 +223,7 @@ def main():
 
     copied  = 0
     skipped = 0
+    to_copy = []
 
     for link_inst, link_doc, elements in picked.values():
         transform = link_inst.GetTotalTransform()
@@ -247,18 +248,30 @@ def main():
             # sitting on top of each other do not both come over.
             index.setdefault(key, []).append(point)
 
-        # Outside any transaction: a cross-document copy opens one of
-        # its own, and Revit refuses it inside another.
-        new_ids, reason = link_copy.copy_elements(
-            link_inst, link_doc, doc, wanted)
+        to_copy.append((link_inst, link_doc, wanted))
 
-        if reason:
-            note(notes, link_name(link_inst),
-                 "could not copy {} element(s): {}".format(
-                     len(wanted), reason))
-            continue
+    # One transaction for the whole run.  A copy across documents
+    # writes to this one like any other edit, and needs a transaction
+    # like any other edit.
+    t = Transaction(doc, "Copy from link")
+    t.Start()
+    try:
+        for link_inst, link_doc, wanted in to_copy:
+            new_ids, reason = link_copy.copy_elements(
+                link_inst, link_doc, doc, wanted)
 
-        copied += len(new_ids)
+            if reason:
+                note(notes, link_name(link_inst),
+                     "could not copy {} element(s): {}".format(
+                         len(wanted), reason))
+                continue
+
+            copied += len(new_ids)
+        t.Commit()
+    except Exception:
+        if t.HasStarted() and not t.HasEnded():
+            t.RollBack()
+        raise
 
     summary = "{} copied, {} already here".format(copied, skipped)
     if not copied:

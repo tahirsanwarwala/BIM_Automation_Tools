@@ -798,19 +798,29 @@ def main():
     # ---- the strip above would have been swept away with it.
     with_doors = [(plan, wall) for plan, wall in made if plan.doors]
     if with_doors:
+        # A transaction of its own, before the one that places
+        # anything: a cross-document copy writes to this document like
+        # any other edit and needs a transaction, and a panel can only
+        # be swapped to a type that already exists.
         symbols = {}
-        for plan, _wall in with_doors:
-            # Outside any transaction: a cross-document copy opens one
-            # of its own and Revit refuses it inside another.
-            found, notes = curtain_doors.resolve_symbols(
-                doc, plan.link_doc, plan.doors)
-            for key, symbol in found.items():
-                # A later failure must not undo an earlier success: the
-                # same type can be wanted by two walls, and only one of
-                # them had to find it.
-                if symbols.get(key) is None:
-                    symbols[key] = symbol
-            plan.notes.extend(notes)
+        types_t = Transaction(doc, "Copy door types from link")
+        types_t.Start()
+        try:
+            for plan, _wall in with_doors:
+                found, notes = curtain_doors.resolve_symbols(
+                    doc, plan.link_doc, plan.doors)
+                for key, symbol in found.items():
+                    # A later failure must not undo an earlier success:
+                    # the same type can be wanted by two walls, and only
+                    # one of them had to find it.
+                    if symbols.get(key) is None:
+                        symbols[key] = symbol
+                plan.notes.extend(notes)
+            types_t.Commit()
+        except Exception:
+            if types_t.HasStarted() and not types_t.HasEnded():
+                types_t.RollBack()
+            raise
 
         doors_t = Transaction(doc, "Add curtain wall doors")
         doors_t.Start()
