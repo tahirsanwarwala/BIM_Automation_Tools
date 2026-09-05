@@ -25,12 +25,21 @@ carry identical trim.
 The band spans the curtain wall exactly -- the curtain wall IS the
 rough opening, since that is what it was built from -- and its depth
 and height come from the framing type, which is asked for once per
-BAND MATERIAL.  A cast stone head and a brick soldier course are not
-the same beam, and being asked twice is the point.
+SIDE and BAND MATERIAL.  A lintel and a sill are not the same beam even
+in the same material, and a cast stone head and a brick soldier course
+are not the same beam either, so being asked more than once is the
+point.
 
 Z justification is what puts the band on the right side of the opening:
 a lintel is justified to its BOTTOM so it sits on the head, a sill to
 its TOP so it hangs under the sill.  Neither eats into the opening.
+A family that refuses the setting is reported, because a band left on
+its own default justification is in the wrong place and looks right.
+
+The reference level is read back, never assumed.  Revit reassigns a
+new beam's Reference Level for itself, and a Start Level Offset worked
+out against the level asked for -- but written onto a beam Revit has
+since moved to the level above -- puts the band one storey high.
 
 The join is checked, not assumed.  Revit decides for itself which of
 two joined elements cuts the other, so the order is switched where it
@@ -62,6 +71,7 @@ from Autodesk.Revit.DB import (
     FamilySymbol,
     FilteredElementCollector,
     JoinGeometryUtils,
+    Level,
     Line,
     Outline,
     RevitLinkInstance,
@@ -355,12 +365,13 @@ def framing_types():
                 .OfCategory(BuiltInCategory.OST_StructuralFraming))
 
 
-def prompt_framing_type(types, material):
-    """Ask which framing type is the band for *material*.
+def prompt_framing_type(types, side, material):
+    """Ask which framing type is the *side* band for *material*.
 
-    Asked once per band material and cached, so an elevation of twenty
-    cast stone heads asks once, and asks again only when a brick
-    soldier course turns up.
+    Asked once per side and band material and cached, so an elevation
+    of twenty cast stone windows asks twice -- once for its lintels and
+    once for its sills -- and asks again only when a brick soldier
+    course turns up.
     """
     by_name = {}
     for sym in types:
@@ -373,8 +384,8 @@ def prompt_framing_type(types, material):
 
     picked = forms.SelectFromList.show(
         sorted(by_name.keys()),
-        title="{}  |  Which framing type is '{}'?".format(
-            TOOL_TITLE, material),
+        title="{}  |  Which framing type is the {} for '{}'?".format(
+            TOOL_TITLE, side.upper(), material),
         button_name="Use this framing type",
         multiselect=False)
 
@@ -426,13 +437,47 @@ def wall_line(wall, z):
 # ===========================================================================
 
 def set_parameter(elem, builtin, value):
-    """Write an integer or double onto a built-in parameter, quietly."""
+    """Write a value onto a built-in parameter.  True when it took.
+
+    The answer matters for z justification, which decides which side of
+    the opening the band lands on.  A band left on its family's own
+    default is in the wrong place while looking perfectly well drawn,
+    so a refusal here is worth a note rather than a debug line.
+    """
     try:
         p = elem.get_Parameter(builtin)
-        if p is not None and not p.IsReadOnly:
-            p.Set(value)
+        if p is None or p.IsReadOnly:
+            return False
+        return bool(p.Set(value))
     except Exception as ex:
         logger.debug("Could not set {}: {}".format(builtin, ex))
+        return False
+
+
+def beam_level_elevation(band, fallback):
+    """The geometry-space elevation of the level *band* is actually on.
+
+    Read back rather than assumed.  NewFamilyInstance is given a level,
+    and Revit is free to put the beam on a different one -- which it
+    does -- so an offset worked out against the level that was ASKED
+    for lands the band a storey away from where it belongs.
+    """
+    delta = window_cw.project_base_elevation(doc)
+
+    for builtin in (BuiltInParameter.INSTANCE_REFERENCE_LEVEL_PARAM,
+                    BuiltInParameter.FAMILY_LEVEL_PARAM,
+                    BuiltInParameter.SCHEDULE_LEVEL_PARAM):
+        try:
+            p = band.get_Parameter(builtin)
+            if p is None or not p.HasValue:
+                continue
+            level = doc.GetElement(p.AsElementId())
+        except Exception:
+            continue
+        if isinstance(level, Level):
+            return level.Elevation - delta
+
+    return fallback.Elevation - delta
 
 
 def place_band(symbol, wall, z, justification):
@@ -447,7 +492,7 @@ def place_band(symbol, wall, z, justification):
     if line is None:
         return None, "no straight location line to band"
 
-    level, level_z = window_cw.find_level_below(doc, z)
+    level, _level_z = window_cw.find_level_below(doc, z)
     if level is None:
         return None, "this model has no levels"
 
@@ -459,18 +504,32 @@ def place_band(symbol, wall, z, justification):
         line, symbol, level, StructuralType.Beam)
     doc.Regenerate()
 
+    # Ask for the level that was chosen, then take whatever answer the
+    # beam gives.  Both steps are needed: the request is often honoured
+    # and the read-back is what makes it safe when it is not.
+    set_parameter(band, BuiltInParameter.INSTANCE_REFERENCE_LEVEL_PARAM,
+                  level.Id)
+    doc.Regenerate()
+
     # NewFamilyInstance puts the beam on its level, not on the curve's
     # elevation, so the offset is what actually carries it to the head
-    # or the sill.
-    offset = z - level_z
+    # or the sill -- measured from the level the beam ENDED UP on.
+    offset = z - beam_level_elevation(band, level)
     set_parameter(band, BuiltInParameter.STRUCTURAL_BEAM_END0_ELEVATION,
                   offset)
     set_parameter(band, BuiltInParameter.STRUCTURAL_BEAM_END1_ELEVATION,
                   offset)
-    set_parameter(band, BuiltInParameter.Z_JUSTIFICATION, justification)
+    doc.Regenerate()
+
+    # Justification last: it is the one setting whose failure changes
+    # where the band sits without looking like a failure.
+    justified = set_parameter(
+        band, BuiltInParameter.Z_JUSTIFICATION, justification)
     set_parameter(band, BuiltInParameter.Z_OFFSET_VALUE, 0.0)
     doc.Regenerate()
 
+    if not justified:
+        return band, "placed, but its z justification could not be set"
     return band, None
 
 
@@ -527,16 +586,16 @@ def band_wall(wall, extent, asked, symbols, notes):
     """Place every band this curtain wall asks for.  Returns how many.
 
     *asked* is [(side, material)] as found by wanted_bands, and
-    *symbols* maps a band material to the framing type chosen for it.
+    *symbols* maps (side, material) to the framing type chosen for it.
     """
     label = "curtain wall id {}".format(wall.Id.IntegerValue)
     base_z, top_z = extent
 
     placed = 0
     for side, material in asked:
-        symbol = symbols.get(material)
+        symbol = symbols.get((side, material))
         if symbol is None:
-            continue          # no framing type chosen for this material
+            continue          # no framing type chosen for this band
 
         if side == "lintel":
             z, justification = top_z, Z_JUST_BOTTOM
@@ -555,6 +614,8 @@ def band_wall(wall, extent, asked, symbols, notes):
             continue
 
         placed += 1
+        if reason:
+            note(notes, label, "{} band: {}".format(side, reason))
 
         hosts = host_walls_of(band)
         if not hosts:
@@ -622,15 +683,16 @@ def main():
     # Every dialog happens here, before the transaction opens.
     symbols = {}
     for _wall, _extent, asked in wanting:
-        for _side, material in asked:
-            if material not in symbols:
-                symbols[material] = prompt_framing_type(types, material)
+        for side, material in asked:
+            if (side, material) not in symbols:
+                symbols[(side, material)] = prompt_framing_type(
+                    types, side, material)
 
-    for material, symbol in symbols.items():
+    for (side, material), symbol in symbols.items():
         if symbol is None:
             note(notes, "-",
-                 "no framing type chosen for '{}' - those bands were "
-                 "skipped".format(material))
+                 "no framing type chosen for the {} in '{}' - those "
+                 "bands were skipped".format(side, material))
 
     if not any(symbols.values()):
         report(notes)
