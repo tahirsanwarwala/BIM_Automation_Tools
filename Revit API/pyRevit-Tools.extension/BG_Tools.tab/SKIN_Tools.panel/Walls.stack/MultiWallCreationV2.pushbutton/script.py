@@ -1737,24 +1737,6 @@ def plan_windows(wall_jobs, notes):
     return planned
 
 
-def copy_window_plan(plan):
-    """A shallow copy of a WindowPlan, so one window can become several.
-
-    WindowPlan uses __slots__ and has no copy of its own, and a split
-    window needs one plan per storey with its own sill and height while
-    everything else stays shared.
-    """
-    other = window_cw.WindowPlan()
-    for name in window_cw.WindowPlan.__slots__:
-        try:
-            setattr(other, name, getattr(plan, name))
-        except AttributeError:
-            continue
-    other.notes = list(plan.notes)
-    other.grid_removed = []
-    return other
-
-
 def build_curtain_walls(planned, levels, notes):
     """Create one curtain wall per window, per storey.  In a transaction.
 
@@ -1791,7 +1773,7 @@ def build_curtain_walls(planned, levels, notes):
                          plan.window_id, feet_text(mid)))
                 continue
 
-            piece = copy_window_plan(plan)
+            piece = window_cw.copy_plan(plan)
             piece.sill   = band["base_z"]
             piece.height = band["top_z"] - band["base_z"]
 

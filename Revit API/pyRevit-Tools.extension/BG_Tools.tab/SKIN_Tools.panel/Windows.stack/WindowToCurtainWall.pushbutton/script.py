@@ -25,11 +25,24 @@ length, its base and top constraints with their offsets, and - when its
 elevation has been sketched - its actual profile, carried across onto
 the picked wall as a rigid move, so arcs stay arcs and nothing mirrors.
 
-The TYPE is chosen from the Type Mark: the leading letters name the
-type, so WA12 -> 'WA_Window', WS03 -> 'WS_Window', W04 -> 'W_Window'.  A
-mark whose serial is itself letters, like WSXX, still resolves to WS.
-With no matching type you are asked to pick one, once per prefix - a
-type is never created or duplicated.
+A curtain wall that CROSSES A LEVEL is cut at it, one new wall per
+storey, through the same wall_constraints.plan_wall the skin walls use
+with allow_round=False - so a curtain wall and the skin around it can
+never disagree about where a storey ends.  A sketched profile does not
+survive being cut, since the outline belongs to the whole opening and
+not to either half, so a split wall gives its profile up and says so.
+Wall sweeps have no say in any of this.
+
+The TYPE of a WINDOW is chosen from its Type Mark: the leading letters
+name the type, so WA12 -> 'WA_Window', WS03 -> 'WS_Window', W04 ->
+'W_Window'.  A mark whose serial is itself letters, like WSXX, still
+resolves to WS.  With no matching type you are asked to pick one, once
+per prefix - a type is never created or duplicated.
+
+A CURTAIN WALL is always 'WA_WINDOW', by name.  Its Type Mark says
+nothing worth matching on: a curtain wall carries the window number on
+its INSTANCE mark, and its type mark is a different thing entirely.
+You are asked to pick only when this model has no WA_WINDOW.
 
 The new wall's centreline sits on the host wall's centreline.  Whatever
 grid layout the matched type carries is stripped off the new wall right
@@ -37,10 +50,11 @@ away, leaving one plain panel: no grid lines and no mullions.  The type
 itself is never touched.
 
 Each new wall gets its BG_ parameters filled: BG_WINDOW NUMBER from the
-source's Type Mark, and BG_BUILDING ID, BG_ELEVATION and BG_LEVEL copied
-straight off the host wall.  BG_PROFILE is left alone.  A parameter that
-is missing at either end is reported and left blank - it never stops the
-wall being made.
+source - the window's Type Mark, or a curtain wall's own instance Mark,
+left blank when there is none - and BG_BUILDING ID, BG_ELEVATION and
+BG_LEVEL copied straight off the host wall.  BG_PROFILE is left alone.
+A parameter that is missing at either end is reported and left blank -
+it never stops the wall being made.
 
 Picking loops until Esc.  The linked model is never modified.
 """
@@ -50,12 +64,12 @@ __author__ = "Tahir Sanwarwala"
 __doc__    = (
     "Pick a window or a curtain wall in a LINKED model, then the host "
     "wall it sits on, and a curtain wall is created to match it.\n"
-    "The type comes from the Type Mark prefix (WA12 -> WA_Window, "
-    "W04 -> W_Window); you are asked to pick a type when no match "
-    "exists.\n"
+    "A window's type comes from its Type Mark prefix (WA12 -> "
+    "WA_Window); a linked curtain wall is always WA_WINDOW.\n"
     "A window gives its width, height and sill from its own parameters "
     "and always comes out rectangular, arched ones included; a linked "
-    "curtain wall gives its length, constraints and sketched profile.\n"
+    "curtain wall gives its length, constraints and sketched profile, "
+    "and is split at every level it crosses.\n"
     "Repeats until Esc.  The linked model is left untouched."
 )
 
@@ -68,6 +82,8 @@ from Autodesk.Revit.DB import (
     BuiltInParameter,
     ElementId,
     FamilyInstance,
+    FilteredElementCollector,
+    Level,
     Line,
     Sketch,
     Transaction,
@@ -80,7 +96,7 @@ from Autodesk.Revit.Exceptions import OperationCanceledException
 from Autodesk.Revit.UI.Selection import ISelectionFilter, ObjectType
 from pyrevit import revit, script
 
-from BG import wall_sketch, window_cw
+from BG import wall_constraints, wall_sketch, window_cw
 
 doc    = revit.doc
 uidoc  = revit.uidoc
@@ -102,6 +118,12 @@ feet_text         = window_cw.feet_text
 project_base_elevation = window_cw.project_base_elevation
 
 MIN_EXTENT      = 0.02    # feet, below this a measured width/height is junk
+
+# A linked CURTAIN WALL is always rebuilt as this type.  Its Type Mark
+# says nothing worth matching on -- a curtain wall's mark is the window
+# number, not a family code -- so the prefix rule that answers for a
+# window has nothing to answer with here.
+CURTAIN_TYPE_NAME = "WA_WINDOW"
 
 # Print the measurements table every run.  Off by default: a run that
 # worked has nothing to say, and printing is what opens the output
@@ -314,6 +336,83 @@ def linked_wall_profile(wall, source_doc, transform):
     return curves or None
 
 
+def instance_mark(elem):
+    """Return *elem*'s own Mark, or None when it is blank.
+
+    The INSTANCE mark, not the type's.  A linked curtain wall carries
+    its window number here, and that is what BG_WINDOW NUMBER wants;
+    the Type Mark on a curtain wall type is a different thing entirely.
+    """
+    for getter in (lambda e: e.get_Parameter(BuiltInParameter.ALL_MODEL_MARK),
+                   lambda e: e.LookupParameter("Mark")):
+        try:
+            p = getter(elem)
+        except Exception:
+            continue
+        if p is None or not p.HasValue:
+            continue
+        try:
+            text = p.AsString()
+        except Exception:
+            continue
+        if text and text.strip():
+            return text.strip()
+    return None
+
+
+def host_levels():
+    """Return [(ElementId, elevation)] for every host Level.
+
+    Elevations come back in geometry space, so they can be compared with
+    a plan's own sill and height directly.
+    """
+    delta = project_base_elevation(doc)
+    return [(lvl.Id, lvl.Elevation - delta)
+            for lvl in FilteredElementCollector(doc).OfClass(Level)]
+
+
+def split_at_levels(plan, levels):
+    """One plan per storey for a curtain wall that crosses a level.
+
+    A linked curtain wall is split exactly as a skin wall is, through
+    the same wall_constraints.plan_wall with allow_round=False, so the
+    two can never disagree about where a storey ends.  A wall that
+    crosses nothing comes back as itself.
+
+    A SKETCHED profile cannot survive being cut in two -- the outline
+    belongs to the whole opening, not to either half -- so a split plan
+    gives up its profile and says so.  A rectangle in the right place
+    beats an arch in two.
+    """
+    if plan.source_kind != "curtain wall" or not levels:
+        return [plan]
+
+    try:
+        cut = wall_constraints.plan_wall(
+            plan.sill, plan.sill + plan.height, levels, allow_round=False)
+    except ValueError as ex:
+        plan.notes.append("could not split at levels: {}".format(ex))
+        return [plan]
+
+    bands = cut.get("bands") or []
+    if len(bands) < 2:
+        return [plan]
+
+    pieces = []
+    for band in bands:
+        piece = window_cw.copy_plan(plan)
+        piece.sill   = band["base_z"]
+        piece.height = band["top_z"] - band["base_z"]
+        if piece.profile_curves:
+            piece.profile_curves = None
+            piece.notes.append(
+                "split at a level, so its sketched profile was dropped")
+        else:
+            piece.notes.append("split at a level")
+        pieces.append(piece)
+    return pieces
+
+
 def measure_curtain_wall(link_inst, wall, host_wall):
     """Return (WindowPlan, skip_reason) for a curtain wall picked in a link."""
     link_doc  = link_inst.GetLinkDocument()
@@ -342,8 +441,11 @@ def measure_curtain_wall(link_inst, wall, host_wall):
     plan.source_kind = "curtain wall"
     plan.window_id = eid_value(wall.Id)
     plan.link_name = get_element_name(link_inst)
-    plan.mark      = type_mark(wall, link_doc)
-    plan.prefix    = mark_prefix(plan.mark)
+    # The instance Mark, and no prefix.  BG_WINDOW NUMBER is filled from
+    # plan.mark, and the type is settled by name rather than by prefix,
+    # so a curtain wall with no Mark simply leaves the number blank.
+    plan.mark      = instance_mark(wall)
+    plan.prefix    = None
     plan.wall_dir  = host_dir
     plan.width     = width
     plan.height    = height
@@ -529,7 +631,8 @@ def main():
     if not picks:
         return          # nothing picked is a cancellation; stay silent
 
-    rows = []
+    rows   = []
+    levels = host_levels()
 
     # ---- Measure everything first, so geometry reads and type prompts all
     # ---- stay outside the transaction.
@@ -543,7 +646,8 @@ def main():
             rows.append([eid_value(window.Id), get_element_name(link_inst),
                          "-", reason])
             continue
-        plans.append((plan, host_wall))
+        for piece in split_at_levels(plan, levels):
+            plans.append((piece, host_wall))
 
     if not plans:
         report(rows)
@@ -560,20 +664,34 @@ def main():
     chosen = {}
     ready  = []
     for plan, host_wall in plans:
-        key = plan.prefix or "<none>"
+        from_curtain = plan.source_kind == "curtain wall"
+        key = CURTAIN_TYPE_NAME if from_curtain else (plan.prefix or "<none>")
+
         if key not in chosen:
-            wall_type = window_cw.match_curtain_type(plan, types)
-            if wall_type is None:
-                wall_type = window_cw.prompt_curtain_type(
-                    types, plan.mark, plan.prefix)
-                if wall_type is not None:
-                    logger.debug("Type picked by hand for prefix {}"
-                                 .format(plan.prefix))
+            if from_curtain:
+                # Settled by name, not by prefix.  Only when the named
+                # type is missing from this model is there anything to
+                # ask about.
+                wall_type = window_cw.type_named(CURTAIN_TYPE_NAME, types)
+                if wall_type is None:
+                    wall_type = window_cw.prompt_curtain_type(
+                        types, CURTAIN_TYPE_NAME, CURTAIN_TYPE_NAME)
+            else:
+                wall_type = window_cw.match_curtain_type(plan, types)
+                if wall_type is None:
+                    wall_type = window_cw.prompt_curtain_type(
+                        types, plan.mark, plan.prefix)
+                    if wall_type is not None:
+                        logger.debug("Type picked by hand for prefix {}"
+                                     .format(plan.prefix))
             chosen[key] = wall_type
 
         wall_type = chosen[key]
         if wall_type is None:
             rows.append([plan.window_id, plan.link_name, plan.mark or "-",
+                         "'{}' is not in this model and none was picked; "
+                         "skipped".format(CURTAIN_TYPE_NAME)
+                         if from_curtain else
                          "no curtain wall type for prefix '{}'; skipped"
                          .format(plan.prefix or "?")])
             continue

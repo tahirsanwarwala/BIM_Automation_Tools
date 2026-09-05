@@ -428,6 +428,26 @@ class WindowPlan(object):
         self.notes          = []
 
 
+def copy_plan(plan):
+    """A shallow copy of a WindowPlan, so one source can become several.
+
+    A window or a curtain wall crossing a level becomes one curtain wall
+    per storey, and each storey needs its own sill and height while
+    everything else stays shared.  WindowPlan uses __slots__ and has no
+    copy of its own.
+    """
+    other = WindowPlan()
+    for name in WindowPlan.__slots__:
+        try:
+            setattr(other, name, getattr(plan, name))
+        except AttributeError:
+            continue
+    other.notes        = list(plan.notes)
+    other.grid_removed = []
+    other.new_wall_id  = None
+    return other
+
+
 def wall_axis(host_wall):
     """Return (location curve, unit direction at its midpoint).
 
