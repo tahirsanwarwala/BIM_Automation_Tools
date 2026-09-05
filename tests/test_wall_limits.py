@@ -8,7 +8,7 @@ _LIB = os.path.join(_ROOT, "Revit API", "pyRevit-Tools.extension", "lib")
 if _LIB not in sys.path:
     sys.path.insert(0, _LIB)
 
-from Tahir import wall_limits as wl
+from BG import wall_limits as wl
 
 
 class TestTransformBboxZRange(unittest.TestCase):

@@ -42,7 +42,7 @@ logger = script.get_logger()
 def _iter_solid_points(elem, transform=None):
     """Yield every tessellated vertex of *elem*'s solid geometry.
 
-    Deliberately not Tahir.wall_chain.iter_solid_points: this one asks
+    Deliberately not BG.wall_chain.iter_solid_points: this one asks
     for Medium detail, which is what SplitWalls has always measured at,
     and changing the detail level changes the measurements.
     """

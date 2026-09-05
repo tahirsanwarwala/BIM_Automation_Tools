@@ -8,7 +8,7 @@ _LIB = os.path.join(_ROOT, "Revit API", "pyRevit-Tools.extension", "lib")
 if _LIB not in sys.path:
     sys.path.insert(0, _LIB)
 
-from Tahir import wall_naming as wn
+from BG import wall_naming as wn
 
 
 class TestFeetToImperial(unittest.TestCase):

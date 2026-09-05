@@ -8,7 +8,7 @@ _LIB = os.path.join(_ROOT, "Revit API", "pyRevit-Tools.extension", "lib")
 if _LIB not in sys.path:
     sys.path.insert(0, _LIB)
 
-from Tahir import wall_miter as wm
+from BG import wall_miter as wm
 
 
 class TestLineIntersection2D(unittest.TestCase):

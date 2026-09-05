@@ -11,7 +11,7 @@ sideways leaves the offset lines no longer meeting at a corner -- there is a
 gap on the outside and an overshoot on the inside -- and because the
 endpoints no longer coincide Revit will not join the walls either.  The fix
 is to mitre: replace each pair of coincident endpoints with the point where
-the two offset lines actually cross.  That is Tahir.wall_miter; this module
+the two offset lines actually cross.  That is BG.wall_miter; this module
 puts Revit geometry in and out of it.
 """
 
@@ -31,7 +31,7 @@ from Autodesk.Revit.DB import (
     XYZ,
 )
 
-from Tahir import wall_miter
+from BG import wall_miter
 
 # Matching a level to an elevation, in feet.
 LEVEL_TOL = 1e-4

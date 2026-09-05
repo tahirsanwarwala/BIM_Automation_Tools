@@ -52,7 +52,7 @@ from Autodesk.Revit.DB import (
 from System.Collections.Generic import List as NetList
 from pyrevit import forms
 
-from Tahir import wall_naming
+from BG import wall_naming
 
 SKIN_PREFIX = wall_naming.SKIN_PREFIX
 

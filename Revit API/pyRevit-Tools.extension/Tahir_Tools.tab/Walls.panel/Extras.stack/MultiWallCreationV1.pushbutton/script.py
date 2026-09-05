@@ -1,14 +1,8 @@
 # -*- coding: utf-8 -*-
 """Create host-model skin walls and sweep walls from one linked selection.
 
-V2 also puts the openings back: every window in a picked wall becomes a
-curtain wall on the new skin wall, and every rectangular opening is cut
-out of the skin's elevation.  V1 is left alone -- it is a separate
-button, and this one is where the openings work is being proved.
-
-Select any mix of walls, wall sweeps and roof soffits in a LINKED model
--- by box or by click, adding and removing until the selection is right,
-then Finish.
+Select any mix of walls and wall sweeps in a LINKED model -- by box or
+by click, adding and removing until the selection is right, then Finish.
 
 Each CAST STONE sweep becomes a wall in the host model, exactly as
 Sweep To Wall makes one.
@@ -59,22 +53,14 @@ length of the wall it came from, openings and all -- cutting it at them
 was tried and taken back out.  Neither turns into a reveal: a sweep that
 stops at an opening is left ending at the jamb.
 
-A picked ROOF SOFFIT is never built.  It is a limit and nothing else:
-the walls running under it stop at its underside, exactly as they stop
-at a stone course.  Which walls those are is read off where the soffit
-sits in plan -- a soffit records no host, so its own outline is the
-only honest answer -- and a wall counts as under it when any part of
-its thickness is, not merely its centreline.  A pitched soffit stops
-walls at its LOWEST point, so none pokes through, and says so.
-
 The linked model is never modified.
 """
 
-__title__  = "Multi Wall\nCreation V2"
+__title__  = "Multi\nWalls V1"
 __author__ = "Tahir Sanwarwala"
 __doc__    = (
-    "Select any mix of walls, wall sweeps and roof soffits in a LINKED "
-    "model -- drag a box or click, then click Finish.\n"
+    "Select any mix of walls and wall sweeps in a LINKED model -- drag "
+    "a box or click, then click Finish.\n"
     "Each CAST STONE sweep becomes a wall in the host model; each wall "
     "becomes skin walls that stop at the stone sweeps running on it.  "
     "EIFS sweeps are ignored, picked or not.\n"
@@ -83,8 +69,6 @@ __doc__    = (
     "Sweep wall types come from STONE / EIFS in the sweep's type or "
     "material name; EIFS is dropped, and you are only asked about what "
     "that rule cannot read.\n"
-    "A picked roof soffit is never built: the walls under it just stop "
-    "at its underside.\n"
     "The linked model is left untouched."
 )
 
@@ -102,7 +86,6 @@ from Autodesk.Revit.DB import (
     JoinGeometryUtils,
     Level,
     Line,
-    Opening,
     RevitLinkInstance,
     Transaction,
     Wall,
@@ -115,8 +98,7 @@ from Autodesk.Revit.Exceptions import OperationCanceledException
 from Autodesk.Revit.UI.Selection import ISelectionFilter, ObjectType
 from pyrevit import revit, forms, script
 
-from Tahir import (
-    soffit as soffit_lib,
+from BG import (
     wall_bands,
     wall_chain,
     wall_constraints,
@@ -124,8 +106,6 @@ from Tahir import (
     wall_miter,
     wall_naming,
     wall_skin,
-    wall_sketch,
-    window_cw,
 )
 
 doc    = revit.doc
@@ -153,13 +133,7 @@ BG_LEVEL_PARAM   = "BG_LEVEL"
 # Anything longer is an opening the sweep genuinely stops at.  One inch.
 SWEEP_GAP_TOL = 1.0 / 12.0
 
-# An opening whose bottom comes within this of the wall's base is not a
-# hole in the wall -- it is a notch out of its base, and it is cut as
-# one, so the profile runs straight through instead of leaving a
-# hairline of wall under the opening.  One inch.
-OPENING_BASE_MERGE_TOL = 1.0 / 12.0
-
-TOOL_TITLE = "Multi Wall Creation V2"
+TOOL_TITLE = "Multi Wall Creation V1"
 
 
 # ===========================================================================
@@ -286,8 +260,8 @@ def sweep_is_convertible(sweep):
     return True, None
 
 
-class LinkedSourceFilter(ISelectionFilter):
-    """Allow Basic Walls, horizontal wall sweeps and roof soffits.
+class LinkedWallOrSweepFilter(ISelectionFilter):
+    """Allow Basic Walls and horizontal wall sweeps inside a link.
 
     For linked elements Revit calls AllowElement() on the
     RevitLinkInstance and AllowReference() on each candidate reference
@@ -311,13 +285,13 @@ class LinkedSourceFilter(ISelectionFilter):
                 return sweep_is_convertible(elem)[0]
             if isinstance(elem, Wall):
                 return elem.WallType.Kind == WallKind.Basic
-            return soffit_lib.is_soffit(elem)
+            return False
         except Exception:
             return False
 
 
 def pick_sources():
-    """Select walls, sweeps and roof soffits in links, then Finish.
+    """Select walls and sweeps in links, then Finish.
 
     PickObjects rather than a loop of PickObject: it is what gives the
     selection Revit's own behaviour -- a rubber-band box as well as
@@ -335,28 +309,26 @@ def pick_sources():
     things this tool can use -- reveals, vertical sweeps and non-Basic
     walls are never added in the first place.
 
-    Returns (wall_picks, sweep_picks, soffit_picks), each a list of
+    Returns (wall_picks, sweep_picks), each a list of
     (RevitLinkInstance, element).  PickObjects de-duplicates its own
-    result, so no list can hold the same element twice.
+    result, so neither list can hold the same element twice.
     """
-    empty = ([], [], [])
     try:
         refs = uidoc.Selection.PickObjects(
-            ObjectType.LinkedElement, LinkedSourceFilter(),
-            "Select walls, wall sweeps and roof soffits in a linked "
-            "model, then click Finish")
+            ObjectType.LinkedElement, LinkedWallOrSweepFilter(),
+            "Select walls and wall sweeps in a linked model, then click "
+            "Finish")
     except OperationCanceledException:
-        return empty
+        return [], []
     except Exception as ex:
         logger.debug("Selection ended: {}".format(ex))
-        return empty
+        return [], []
 
     if not refs:
-        return empty
+        return [], []
 
-    walls   = []
-    sweeps  = []
-    soffits = []
+    walls  = []
+    sweeps = []
     for ref in refs:
         link_inst = doc.GetElement(ref.ElementId)
         link_doc  = link_inst.GetLinkDocument()
@@ -368,10 +340,8 @@ def pick_sources():
             sweeps.append((link_inst, elem))
         elif isinstance(elem, Wall):
             walls.append((link_inst, elem))
-        elif soffit_lib.is_soffit(elem):
-            soffits.append((link_inst, elem))
 
-    return walls, sweeps, soffits
+    return walls, sweeps
 
 
 # ===========================================================================
@@ -803,57 +773,6 @@ def plan_sweep(link_inst, sweep):
 
 
 # ===========================================================================
-# SOFFITS
-# ===========================================================================
-
-class SoffitJob(object):
-    """One linked roof soffit, measured.  Never built, only obeyed."""
-
-    __slots__ = ("label", "shape")
-
-
-def plan_soffit(link_inst, soffit):
-    """Measure one soffit.  Returns (SoffitJob or None, notes)."""
-    label = "soffit id {}".format(soffit.Id.IntegerValue)
-
-    shape, reasons = soffit_lib.measure(
-        soffit, link_inst.GetTotalTransform())
-    notes = [[label, reason] for reason in reasons]
-
-    if shape is None:
-        return None, notes
-
-    job = SoffitJob()
-    job.label = label
-    job.shape = shape
-    return job, notes
-
-
-def soffit_cutters(job, soffit_jobs, used):
-    """The (base_z, top_z) spans the soffits impose on one wall.
-
-    A wall counts as under a soffit when any part of its THICKNESS is,
-    not merely its centreline: a soffit almost always stops at a wall's
-    face, and testing the bare centreline would miss every one of them.
-    Half the wall's width is that reach.
-
-    *used* is added to for every soffit that limits something, so the
-    caller can report the ones that limited nothing.
-    """
-    p0, p1 = curve_ends(job.loc_curve)
-    reach  = (job.total_width or 0.0) / 2.0
-
-    cutters = []
-    for index, soffit_job in enumerate(soffit_jobs):
-        if not soffit_lib.limits_wall(soffit_job.shape, p0, p1,
-                                      reach=reach):
-            continue
-        used.add(index)
-        cutters.append((soffit_job.shape.base_z, soffit_job.shape.top_z))
-    return cutters
-
-
-# ===========================================================================
 # WALLS
 # ===========================================================================
 
@@ -862,9 +781,7 @@ class WallJob(object):
 
     __slots__ = ("label", "wall_keys", "type_id", "cs", "source_doc",
                  "loc_curve", "orientation", "total_width", "loc_line",
-                 "loc_to_ext", "base_z", "top_z", "structural", "bands",
-                 "windows", "rect_openings", "link_inst", "direction",
-                 "built_bands")
+                 "loc_to_ext", "base_z", "top_z", "structural", "bands")
 
 
 def _length_param(elements, names, builtin_names):
@@ -1127,60 +1044,6 @@ def wall_openings(wall, link_tf, origin, direction):
     return found
 
 
-def wall_inserts(wall, link_tf, origin, direction):
-    """Return (windows, rectangular openings) in *wall*.
-
-    Windows are measured the same way wall_openings measures a door:
-    along the wall from *origin*, as (lo, hi, z_lo, z_hi, insert).  That
-    frame is fine for them because Task 6 re-derives a window's position
-    from the window element itself and only uses these numbers for
-    reporting.
-
-    Rectangular openings are cut from later, once the skin wall exists,
-    and that wall may be reversed from the source, a merge of several
-    source walls, or mitred at its ends -- none of which share the
-    source wall's frame.  So an opening is instead stored as its WORLD
-    centre point and width: (centre_xyz, width, z_lo, z_hi, insert).
-    cut_openings re-projects that onto whichever built wall it ends up
-    cutting, which is correct regardless of how that wall's own curve
-    relates to this one.  z_lo / z_hi are absolute elevations already
-    and need no reframing either way.
-
-    Doors are not here.  They break the sweeps, as in V1, and the skin
-    is left solid across them.
-    """
-    try:
-        ids = list(wall.FindInserts(True, False, True, True))
-    except Exception as ex:
-        logger.debug("Could not read inserts: {}".format(ex))
-        return [], []
-
-    link_doc = wall.Document
-    windows  = []
-    openings = []
-
-    for iid in ids:
-        insert = link_doc.GetElement(iid)
-        if insert is None:
-            continue
-
-        extent = _insert_extent(insert, link_tf, origin, direction)
-        if extent is None:
-            continue
-        lo, hi, z_lo, z_hi = extent
-
-        if window_cw.is_category(insert, BuiltInCategory.OST_Windows):
-            windows.append((lo, hi, z_lo, z_hi, insert))
-        elif isinstance(insert, Opening):
-            centre_along = (lo + hi) / 2.0
-            centre = XYZ(origin.X + direction.X * centre_along,
-                        origin.Y + direction.Y * centre_along,
-                        origin.Z + direction.Z * centre_along)
-            openings.append((centre, hi - lo, z_lo, z_hi, insert))
-
-    return windows, openings
-
-
 def _level_elevation(link_doc, level_id, link_tf):
     """Elevation of a LINKED level, in host geometry space.
 
@@ -1293,8 +1156,6 @@ def plan_wall(link_inst, wall):
     job.cs          = cs
     job.source_doc  = link_doc
     job.loc_curve   = loc_curve
-    job.link_inst   = link_inst
-    job.direction   = (pt1 - pt0).Normalize()
     job.orientation = orientation
     job.total_width = wall.Width
     job.loc_line    = (wall.get_Parameter(
@@ -1305,9 +1166,6 @@ def plan_wall(link_inst, wall):
     job.top_z       = top_z
     job.structural  = structural
     job.bands       = []          # filled in by band_walls
-    job.built_bands = []          # filled in by build_bands
-    job.windows, job.rect_openings = wall_inserts(
-        wall, link_tf, pt0, (pt1 - pt0).Normalize())
     return job, notes_none()
 
 
@@ -1335,20 +1193,11 @@ def merge_wall_jobs(wall_jobs):
         p0 = job.loc_curve.GetEndPoint(0)
         p1 = job.loc_curve.GetEndPoint(1)
         segments.append(((p0.X, p0.Y), (p1.X, p1.Y)))
-        # The link instance is part of the key, not just the type,
-        # orientation and span: merged_frame below borrows its curve's
-        # transform from the first member and plan_windows measures every
-        # member's windows through that one instance's transform.  Two
-        # instances of the same link placed abutting and colinear -- a
-        # repeated bay or wing -- would otherwise merge, and every
-        # curtain wall on the second instance's walls would be built at
-        # the first instance's coordinates.
         keys.append((job.type_id,
                      round(job.orientation.X, 4),
                      round(job.orientation.Y, 4),
                      round(job.base_z, 4),
-                     round(job.top_z, 4),
-                     job.link_inst.Id.IntegerValue))
+                     round(job.top_z, 4)))
 
     merged = []
     for members, ends in wall_bands.colinear_chains(segments, keys):
@@ -1370,12 +1219,6 @@ def merge_wall_jobs(wall_jobs):
         job.cs          = first.cs
         job.source_doc  = first.source_doc
         job.loc_curve   = Line.CreateBound(XYZ(x0, y0, z), XYZ(x1, y1, z))
-        job.link_inst   = first.link_inst
-        # Derived from the MERGED curve, not copied from *first*: a
-        # merged run is one wall and the direction is its own, not
-        # whichever member happened to come first.
-        job.direction   = (job.loc_curve.GetEndPoint(1)
-                           - job.loc_curve.GetEndPoint(0)).Normalize()
         job.orientation = first.orientation
         job.total_width = first.total_width
         job.loc_line    = first.loc_line
@@ -1384,21 +1227,6 @@ def merge_wall_jobs(wall_jobs):
         job.top_z       = first.top_z
         job.structural  = first.structural
         job.bands       = []
-        job.built_bands = []
-        # Every member's inserts, or the windows/openings on the second
-        # and third piece are silently lost.  Windows are measured along
-        # each MEMBER's own frame -- Task 6 re-derives their position
-        # from the window element itself, so that frame is only ever
-        # used for reporting.  Rectangular openings carry a WORLD centre
-        # point and width instead of an along value, so they need no
-        # reprojection here at all: cut_openings re-projects each onto
-        # the BUILT wall's own curve at cut time, whatever frame that
-        # wall ends up in.
-        job.windows       = []
-        job.rect_openings = []
-        for i in members:
-            job.windows.extend(wall_jobs[i].windows)
-            job.rect_openings.extend(wall_jobs[i].rect_openings)
         merged.append(job)
 
     return merged
@@ -1553,7 +1381,7 @@ def sweep_cuts_walls(job):
     return get_element_name(job.wall_type) == wall_bands.CAST_STONE_TYPE_NAME
 
 
-def snap_to_levels(wall_jobs, sweep_jobs, soffit_jobs, levels):
+def snap_to_levels(wall_jobs, sweep_jobs, levels):
     """Pull every end that all but reaches a level onto it.
 
     A sweep an inch shy of a level binds its base to the level BELOW
@@ -1585,31 +1413,16 @@ def snap_to_levels(wall_jobs, sweep_jobs, soffit_jobs, levels):
             wall_constraints.snap_span_to_levels(
                 job.base_z, job.top_z, levels, min_height=MIN_RUN_LENGTH)
 
-    # Soffits snap for the same reason sweeps do.  A soffit an inch shy
-    # of a level would stop the wall under it an inch shy of that level
-    # too, and that wall would then be constrained to the level BELOW.
-    for job in soffit_jobs:
-        job.shape.base_z, job.shape.top_z, _moved = \
-            wall_constraints.snap_span_to_levels(
-                job.shape.base_z, job.shape.top_z, levels,
-                min_height=MIN_RUN_LENGTH)
 
-
-def band_walls(wall_jobs, sweep_jobs, soffit_jobs, levels, notes):
+def band_walls(wall_jobs, sweep_jobs, levels, notes):
     """Work out the bands each wall is cut into.
 
-    Three things cut a wall.  A picked ROOF SOFFIT cuts every wall
-    running under it, at its own full extent -- and unlike a course it
-    is never suppressed by a window, because a soffit is a limit of the
-    same kind a level is: where one comes down, the wall stops.
-
-    The other two are as they were.  The CAST STONE sweeps hosted
-    on it -- hosted decided by the link's own GetHostIds(), so a sweep
-    on a neighbouring wall is never mistaken for one on this one, and
-    cast stone by sweep_cuts_walls, so a hand-typed sweep passes a wall
-    by without breaking it.  And every level a leftover stretch crosses,
-    because a wall crossing a level is the one thing the house rule
-    never allows.
+    Two things cut a wall.  The CAST STONE sweeps hosted on it -- hosted
+    decided by the link's own GetHostIds(), so a sweep on a neighbouring
+    wall is never mistaken for one on this one, and cast stone by
+    sweep_cuts_walls, so a hand-typed sweep passes a wall by without
+    breaking it.  And every level a leftover stretch crosses, because a
+    wall crossing a level is the one thing the house rule never allows.
 
     Nothing is rounded: wall_constraints.plan_wall is called with
     allow_round=False so a band end stays exactly on the sweep face or
@@ -1619,7 +1432,6 @@ def band_walls(wall_jobs, sweep_jobs, soffit_jobs, levels, notes):
     Fills job.bands in place.
     """
     cutting = [j for j in sweep_jobs if sweep_cuts_walls(j)]
-    used    = set()
 
     for job in wall_jobs:
         # One cutter per RUN, not per sweep: a run knows which wall it
@@ -1629,16 +1441,6 @@ def band_walls(wall_jobs, sweep_jobs, soffit_jobs, levels, notes):
                    for sweep_job in cutting
                    for run in sweep_job.runs
                    if run.wall_keys & job.wall_keys]
-
-        # A course running across a window would split the wall behind
-        # it, putting a joint in the elevation the building does not
-        # have.  Where one crosses a window, it stops governing this
-        # wall's heights entirely.
-        cutters = wall_bands.cutters_clear_of_windows(
-            cutters, [(w[2], w[3]) for w in job.windows])
-
-        # Soffits are added AFTER that exemption, never inside it.
-        cutters = cutters + soffit_cutters(job, soffit_jobs, used)
 
         gaps, dropped = wall_bands.subtract_spans(
             (job.base_z, job.top_z), cutters)
@@ -1666,159 +1468,6 @@ def band_walls(wall_jobs, sweep_jobs, soffit_jobs, levels, notes):
 
         if not job.bands:
             note(notes, job.label, "no band could be constrained")
-
-    for index, soffit_job in enumerate(soffit_jobs):
-        if index not in used:
-            note(notes, soffit_job.label,
-                 "no picked wall runs under this soffit - it limited "
-                 "nothing")
-
-
-# ===========================================================================
-# WINDOWS -> CURTAIN WALLS
-# ===========================================================================
-
-def plan_windows(wall_jobs, notes):
-    """Measure every window and settle its curtain wall type.
-
-    Runs BEFORE the transaction: prompt_curtain_type raises a dialog,
-    and this tool never opens one inside a transaction.  The type is
-    asked once per Type Mark prefix and cached, as Window To Curtain
-    Wall does, so a facade of twenty identical windows asks once.
-
-    The curtain-type lookup is deferred until a window has actually
-    been found: checking it first means a model with no curtain wall
-    types reports that on every run, even a selection of plain walls
-    with no windows at all, which breaks the tool's silent-on-success
-    rule for a run that has nothing to place.
-    """
-    if not any(job.windows for job in wall_jobs):
-        return []
-
-    types = window_cw.curtain_wall_types(doc)
-    if not types:
-        note(notes, "-", "no curtain wall types in this model")
-        return []
-
-    asked   = {}
-    planned = []
-
-    for job in wall_jobs:
-        for _lo, _hi, _z_lo, _z_hi, window in job.windows:
-            # No host wall: the skin wall this window will sit on is not
-            # built yet, and cannot be -- choosing its type raises a
-            # dialog, so all of this runs before the transaction.  The
-            # merged frame's direction is the only thing measure_window
-            # wanted a wall for, and it is the direction the skin wall
-            # will have.
-            plan, reason = window_cw.measure_window(
-                job.link_inst, window, None, direction=job.direction)
-            if plan is None:
-                note(notes, job.label,
-                     "window {}: {}".format(window.Id.IntegerValue, reason))
-                continue
-
-            wall_type = window_cw.match_curtain_type(plan, types)
-            if wall_type is None:
-                prefix = window_cw.mark_prefix(plan.mark)
-                if prefix not in asked:
-                    asked[prefix] = window_cw.prompt_curtain_type(
-                        types, plan.mark, prefix)
-                wall_type = asked[prefix]
-
-            if wall_type is None:
-                note(notes, job.label,
-                     "window {}: no curtain wall type chosen".format(
-                         window.Id.IntegerValue))
-                continue
-
-            planned.append((job, plan, wall_type))
-
-    return planned
-
-
-def copy_window_plan(plan):
-    """A shallow copy of a WindowPlan, so one window can become several.
-
-    WindowPlan uses __slots__ and has no copy of its own, and a split
-    window needs one plan per storey with its own sill and height while
-    everything else stays shared.
-    """
-    other = window_cw.WindowPlan()
-    for name in window_cw.WindowPlan.__slots__:
-        try:
-            setattr(other, name, getattr(plan, name))
-        except AttributeError:
-            continue
-    other.notes = list(plan.notes)
-    other.grid_removed = []
-    return other
-
-
-def build_curtain_walls(planned, levels, notes):
-    """Create one curtain wall per window, per storey.  In a transaction.
-
-    A window crossing a level becomes one curtain wall per storey,
-    split at exactly the elevations the skin bands split at -- the same
-    wall_constraints.plan_wall, called with allow_round=False, so the
-    two can never disagree about where a storey ends.
-
-    Each piece is hosted on whichever skin band covers its own middle.
-    That is what makes a split window work: the lower piece embeds in
-    the lower band and the upper piece in the upper one.
-    """
-    for job, plan, wall_type in planned:
-        try:
-            cut = wall_constraints.plan_wall(
-                plan.sill, plan.sill + plan.height, levels,
-                allow_round=False)
-        except ValueError as ex:
-            note(notes, job.label,
-                 "window {}: {}".format(plan.window_id, ex))
-            continue
-
-        for band in cut["bands"]:
-            mid  = (band["base_z"] + band["top_z"]) / 2.0
-            host = None
-            for base_z, top_z, wall in job.built_bands:
-                if base_z - wall_bands.TOL <= mid <= top_z + wall_bands.TOL:
-                    host = wall
-                    break
-
-            if host is None:
-                note(notes, job.label,
-                     "window {}: no skin wall at {} to host it".format(
-                         plan.window_id, feet_text(mid)))
-                continue
-
-            piece = copy_window_plan(plan)
-            piece.sill   = band["base_z"]
-            piece.height = band["top_z"] - band["base_z"]
-
-            try:
-                wall, reason = window_cw.create_curtain_wall(
-                    doc, piece, host, wall_type)
-            except Exception as ex:
-                note(notes, job.label,
-                     "window {}: curtain wall failed: {}".format(
-                         plan.window_id, ex))
-                continue
-
-            if wall is None:
-                note(notes, job.label,
-                     "window {}: {}".format(plan.window_id, reason))
-            elif reason:
-                note(notes, job.label,
-                     "window {}: {}".format(plan.window_id, reason))
-
-            # apply_bg_parameters appends one note per BG_ parameter it
-            # could not fill onto piece.notes, and piece goes out of
-            # scope right after this -- an unfilled BG_ parameter is
-            # exactly what this tool exists to surface, so fold every
-            # note into the run's report before it is lost.
-            for piece_note in piece.notes:
-                note(notes, job.label,
-                     "window {}: {}".format(plan.window_id, piece_note))
 
 
 # ===========================================================================
@@ -2275,7 +1924,6 @@ def build_bands(prepared, notes):
             set_location_line(wall, LOC_LINE_FINISH_FACE_EXTERIOR)
             apply_constraints(wall, band)
             item["wall"] = wall
-            job.built_bands.append((band["base_z"], band["top_z"], wall))
             if not apply_bg_level(wall, band):
                 no_level[job.label] = no_level.get(job.label, 0) + 1
         except Exception as ex:
@@ -2295,207 +1943,6 @@ def build_bands(prepared, notes):
 
 
 # ===========================================================================
-# OPENINGS
-# ===========================================================================
-
-def merge_notches(notches):
-    """Overlapping base notches become one, as deep as the deeper.
-
-    Two openings that both run to the floor and overlap in plan cannot
-    be two notches: their outlines would cross, and the profile would
-    be self-intersecting rather than merely wrong.  One notch spanning
-    both, at the greater height, is the shape they actually describe.
-    """
-    merged = []
-    for lo, hi, z_hi in sorted(notches):
-        if merged and lo <= merged[-1][1]:
-            prev_lo, prev_hi, prev_z = merged[-1]
-            merged[-1] = (prev_lo, max(prev_hi, hi), max(prev_z, z_hi))
-        else:
-            merged.append((lo, hi, z_hi))
-    return merged
-
-
-def opening_profile(wall, holes, notches, base, top):
-    """Curves for *wall*'s elevation, cut by its holes and its notches.
-
-    Returns the wall's own outline followed by one loop per hole, all
-    as closed loops in the wall's elevation plane.  Revit takes the
-    first loop as the outline and the rest as holes in it.  Every hole
-    for a given wall MUST reach this in one call: wall_sketch.apply_profile
-    deletes every existing sketch curve before drawing, so a second call
-    on the same wall would silently erase the first hole.
-
-    *holes* is a list of (lo, hi, z_lo, z_hi), each already measured
-    along THIS wall's own curve -- not the source wall's -- and already
-    clamped to fall strictly inside it.  cut_openings does both the
-    projection and the clamping before calling this, because a hole
-    that clamps to nothing there is reported and dropped before it gets
-    here.
-
-    *notches* is (lo, hi, z_hi) for the openings that reach the wall's
-    BASE.  Those are not holes at all.  Drawn as one, a hole's bottom
-    edge has to be held clear of the outline's bottom edge or the two
-    loops would touch, and that clearance is a hairline of wall left
-    standing under the opening -- which is what this exists to stop.
-    A notch is instead cut INTO the outline: the profile walks up one
-    jamb, across the head and down the other, and the opening runs
-    clean into the base.
-
-    *base* and *top* are the elevations this wall was actually BUILT to
-    -- the matching entry from job.built_bands -- not read back off the
-    wall's own parameters.  Every wall this tool builds is level-bound,
-    so Unconnected Height does not govern its true extent, and
-    level.Elevation is in level space while this function works in
-    geometry space, which differ whenever the Project Base Point is not
-    at zero.
-    """
-    curve = wall.Location.Curve
-    p0 = curve.GetEndPoint(0)
-    p1 = curve.GetEndPoint(1)
-    direction = (p1 - p0).Normalize()
-
-    length = p0.DistanceTo(p1)
-
-    def at(along, z):
-        return XYZ(p0.X + direction.X * along,
-                   p0.Y + direction.Y * along,
-                   z)
-
-    outline = [(0.0, base)]
-    for lo, hi, z_hi in merge_notches(notches):
-        outline.append((lo, base))
-        outline.append((lo, z_hi))
-        outline.append((hi, z_hi))
-        outline.append((hi, base))
-    outline.append((length, base))
-    outline.append((length, top))
-    outline.append((0.0, top))
-
-    loops = [outline]
-    for lo, hi, z_lo, z_hi in holes:
-        loops.append([(lo, z_lo), (hi, z_lo), (hi, z_hi), (lo, z_hi)])
-
-    curves = []
-    for loop in loops:
-        for idx in range(len(loop)):
-            a = loop[idx]
-            b = loop[(idx + 1) % len(loop)]
-            curves.append(Line.CreateBound(at(a[0], a[1]), at(b[0], b[1])))
-    return curves
-
-
-def cut_openings(wall_jobs, notes):
-    """Cut every rectangular opening out of the skin wall covering it.
-
-    Runs AFTER the transaction has committed, and it has no choice:
-    SketchEditScope refuses to start inside an open transaction, and a
-    sketched profile is drawn against the wall's constraints, so those
-    have to be final first.  Window To Curtain Wall sequences it the
-    same way, for the same reasons.
-
-    A failure here therefore cannot roll the walls back -- they are
-    already committed.  That is the right trade: a wall standing uncut
-    is worth more than a run that throws away everything it built.
-
-    Openings are grouped by the host wall they land in BEFORE anything
-    is cut: wall_sketch.apply_profile deletes every existing sketch
-    curve on a wall before drawing its own, so two openings hosted in
-    the same wall must reach it in a single call with the outline
-    followed by both holes, or the second call would silently erase the
-    first hole.
-
-    Each host wall's cut is wrapped in its own try/except, so one bad
-    wall or opening costs a note, not the rest of the run's report.
-    """
-    for job in wall_jobs:
-        by_host = {}
-        for centre, width, z_lo, z_hi, opening in job.rect_openings:
-            host = None
-            host_base = host_top = None
-            for base_z, top_z, wall in job.built_bands:
-                if (base_z - wall_bands.TOL <= z_lo
-                        and z_hi <= top_z + wall_bands.TOL):
-                    host = wall
-                    host_base = base_z
-                    host_top = top_z
-                    break
-
-            if host is None:
-                note(notes, job.label,
-                     "opening {} spans more than one band, or no band "
-                     "covers it - left uncut".format(
-                         opening.Id.IntegerValue))
-                continue
-
-            entry = by_host.setdefault(
-                host.Id.IntegerValue,
-                {"wall": host, "base": host_base, "top": host_top,
-                 "holes": []})
-            entry["holes"].append((centre, width, z_lo, z_hi, opening))
-
-        for entry in by_host.values():
-            host = entry["wall"]
-            base = entry["base"]
-            top  = entry["top"]
-            try:
-                curve = host.Location.Curve
-                p0 = curve.GetEndPoint(0)
-                p1 = curve.GetEndPoint(1)
-                direction = (p1 - p0).Normalize()
-                length = p0.DistanceTo(p1)
-
-                valid   = []
-                notches = []
-                for centre, width, z_lo, z_hi, opening in entry["holes"]:
-                    along = (centre - p0).DotProduct(direction)
-                    lo = max(along - width / 2.0, wall_bands.TOL)
-                    hi = min(along + width / 2.0, length - wall_bands.TOL)
-                    hole_z_hi = min(z_hi, top - wall_bands.TOL)
-
-                    # An opening that all but reaches the wall's base is
-                    # cut INTO the base rather than held a hairline
-                    # clear of it.  The test is the opening's own
-                    # bottom, before any clamping, since the clamp is
-                    # what would have opened the gap.
-                    to_base = z_lo <= base + OPENING_BASE_MERGE_TOL
-
-                    hole_z_lo = base if to_base else max(
-                        z_lo, base + wall_bands.TOL)
-
-                    if (hi - lo < MIN_RUN_LENGTH
-                            or hole_z_hi - hole_z_lo < MIN_RUN_LENGTH):
-                        note(notes, job.label,
-                             "opening {} is too small or falls outside "
-                             "the wall - left uncut".format(
-                                 opening.Id.IntegerValue))
-                        continue
-
-                    if to_base:
-                        notches.append((lo, hi, hole_z_hi))
-                    else:
-                        valid.append((lo, hi, hole_z_lo, hole_z_hi))
-
-                if not valid and not notches:
-                    continue
-
-                curves = opening_profile(host, valid, notches, base, top)
-
-                failure = wall_sketch.apply_profile(
-                    doc, host, curves,
-                    "Create skin profile sketch",
-                    "Cut the opening out of the skin wall")
-                if failure:
-                    note(notes, job.label,
-                         "wall id {}: {}".format(
-                             host.Id.IntegerValue, failure))
-            except Exception as ex:
-                note(notes, job.label,
-                     "wall id {}: could not cut its opening(s) - "
-                     "{}".format(host.Id.IntegerValue, ex))
-
-
-# ===========================================================================
 # REPORTING
 # ===========================================================================
 
@@ -2512,14 +1959,13 @@ def report(notes):
 # ===========================================================================
 
 def main():
-    wall_picks, sweep_picks, soffit_picks = pick_sources()
-    if not wall_picks and not sweep_picks and not soffit_picks:
+    wall_picks, sweep_picks = pick_sources()
+    if not wall_picks and not sweep_picks:
         return          # cancelled: create nothing, report nothing
 
-    notes       = []
-    sweep_jobs  = []
-    wall_jobs   = []
-    soffit_jobs = []
+    notes      = []
+    sweep_jobs = []
+    wall_jobs  = []
 
     for link_inst, sweep in sweep_picks:
         try:
@@ -2543,17 +1989,6 @@ def main():
         if job is not None:
             wall_jobs.append(job)
 
-    for link_inst, soffit in soffit_picks:
-        try:
-            job, job_notes = plan_soffit(link_inst, soffit)
-        except Exception as ex:
-            note(notes, "soffit id {}".format(soffit.Id.IntegerValue),
-                 "could not measure this soffit: {}".format(ex))
-            continue
-        notes.extend(job_notes)
-        if job is not None:
-            soffit_jobs.append(job)
-
     wall_jobs = merge_wall_jobs(wall_jobs)
 
     if not sweep_jobs and not wall_jobs:
@@ -2568,32 +2003,16 @@ def main():
     # Every dialog happens here, before the transaction opens.
     sweep_jobs = resolve_sweep_types(sweep_jobs, notes)
     skin_plans = collect_skin_plans(wall_jobs)
-    window_plans = plan_windows(wall_jobs, notes)
 
     # Before banding: the bands are cut at the sweeps' own elevations,
     # so the snap has to reach the sweeps first or the walls would be
     # cut where the sweeps used to be.
-    snap_to_levels(wall_jobs, sweep_jobs, soffit_jobs, levels)
+    snap_to_levels(wall_jobs, sweep_jobs, levels)
 
-    band_walls(wall_jobs, sweep_jobs, soffit_jobs, levels, notes)
+    band_walls(wall_jobs, sweep_jobs, levels, notes)
 
     t = Transaction(doc, "Multi Wall Creation")
     t.Start()
-    try:
-        # build_curtain_walls -> window_cw.create_curtain_wall strips each
-        # curtain wall's grid lines and mullions, which raises the same
-        # mullion errors the profile edit does.  Answered here the same
-        # way WindowToCurtainWall answers it on its own transaction, so a
-        # mullion layout Revit cannot clear cleanly cannot pop a modal
-        # failure dialog at Commit() and roll back every skin and sweep
-        # wall this run built.
-        opts = t.GetFailureHandlingOptions()
-        opts.SetFailuresPreprocessor(wall_sketch.SketchFailureSwallower())
-        opts.SetClearAfterRollback(True)
-        t.SetFailureHandlingOptions(opts)
-    except Exception as ex:
-        logger.debug("Could not set failure handling: {}".format(ex))
-
     try:
         build_sweep_walls(sweep_jobs, levels, notes)
 
@@ -2601,22 +2020,11 @@ def main():
         mitre_prepared(prepared, notes)
         build_bands(prepared, notes)
 
-        build_curtain_walls(window_plans, levels, notes)
-
         t.Commit()
     except Exception:
         if t.HasStarted() and not t.HasEnded():
             t.RollBack()
         raise
-
-    # After the transaction, and it cannot be otherwise: SketchEditScope
-    # will not start inside one, and a sketched profile is drawn against
-    # constraints that have to be final first.  Guarded the same way as
-    # the rest of the run: a failure here must not cost the report.
-    try:
-        cut_openings(wall_jobs, notes)
-    except Exception as ex:
-        note(notes, "-", "cutting openings failed: {}".format(ex))
 
     # Silence on success: only problems open the output window.
     report(notes)

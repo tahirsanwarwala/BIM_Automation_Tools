@@ -45,7 +45,7 @@ wall being made.
 Picking loops until Esc.  The linked model is never modified.
 """
 
-__title__  = "Window To\nCurtain Wall"
+__title__  = "Curtain\nWall"
 __author__ = "Tahir Sanwarwala"
 __doc__    = (
     "Pick a window or a curtain wall in a LINKED model, then the host "
@@ -80,7 +80,7 @@ from Autodesk.Revit.Exceptions import OperationCanceledException
 from Autodesk.Revit.UI.Selection import ISelectionFilter, ObjectType
 from pyrevit import revit, script
 
-from Tahir import wall_sketch, window_cw
+from BG import wall_sketch, window_cw
 
 doc    = revit.doc
 uidoc  = revit.uidoc
@@ -88,7 +88,7 @@ logger = script.get_logger()
 output = script.get_output()
 
 # Module-level aliases so the rest of this file needs no further edits for
-# names that moved to Tahir.window_cw but are still used bare here.
+# names that moved to BG.window_cw but are still used bare here.
 get_element_name  = window_cw.get_element_name
 as_element_id     = window_cw.as_element_id
 eid_value         = window_cw.eid_value

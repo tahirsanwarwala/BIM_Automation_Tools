@@ -41,7 +41,7 @@ reused exactly as it stands, and the source wall is never touched.
 Picking loops until Esc.
 """
 
-__title__  = "Curtain Wall\nTrim"
+__title__  = "Trim\nCurtain"
 __author__ = "Tahir Sanwarwala"
 __doc__    = (
     "Pick a curtain wall and a 'Window Trim' curtain wall band is built "
@@ -80,7 +80,7 @@ from Autodesk.Revit.Exceptions import OperationCanceledException
 from Autodesk.Revit.UI.Selection import ISelectionFilter, ObjectType
 from pyrevit import revit, forms, script
 
-from Tahir import wall_sketch
+from BG import wall_sketch
 
 doc    = revit.doc
 uidoc  = revit.uidoc

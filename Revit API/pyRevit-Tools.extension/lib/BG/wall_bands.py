@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Pure arithmetic and naming rules for the Multi Wall Creation tool.
 
-Like Tahir.wall_limits and Tahir.wall_constraints this module imports
+Like BG.wall_limits and BG.wall_constraints this module imports
 nothing from Revit, so every rule below can be unit-tested outside it.
 
 What lives here is the part of the tool that decides things:
@@ -15,7 +15,7 @@ A *span* is an ``(low_z, high_z)`` pair of elevations in decimal feet,
 in host-model geometry space.
 """
 
-from Tahir.wall_limits import TOL_LEVEL_MATCH
+from BG.wall_limits import TOL_LEVEL_MATCH
 
 # 1/16 inch in feet.  Shared with wall_limits and wall_constraints so all
 # three tools agree on what "the same elevation" means.

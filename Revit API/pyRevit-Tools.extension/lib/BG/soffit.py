@@ -6,7 +6,7 @@ a wall has to stop, so all that is wanted of it is two numbers and a
 shape: how high its underside sits, how high its top sits, and what
 patch of plan it covers.
 
-Which walls it then limits is a question for Tahir.plan_shapes, which
+Which walls it then limits is a question for BG.plan_shapes, which
 knows nothing of Revit; this module is the part that has to talk to it.
 
 The outline comes off the soffit's DOWNWARD faces, so a soffit with a
@@ -32,7 +32,7 @@ from Autodesk.Revit.DB import (
 )
 from pyrevit import script
 
-from Tahir import plan_shapes
+from BG import plan_shapes
 
 logger = script.get_logger()
 

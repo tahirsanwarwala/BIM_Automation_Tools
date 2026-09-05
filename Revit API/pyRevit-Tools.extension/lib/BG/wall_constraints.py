@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Pure constraint arithmetic for the WallConstraints tool.
 
-Like Tahir.wall_limits this module deliberately imports nothing from
+Like BG.wall_limits this module deliberately imports nothing from
 Revit, so every rule below can be unit-tested outside Revit.  The
 pushbutton script turns Revit objects into the plain tuples these
 functions expect and turns the returned dicts back into parameters.
@@ -23,7 +23,7 @@ The house rule this module encodes:
     where they are, because the level elevation is authoritative.
 """
 
-from Tahir.wall_limits import (
+from BG.wall_limits import (
     TOL_LEVEL_MATCH,
     nearest_level_at_or_above,
     nearest_level_at_or_below,

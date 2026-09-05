@@ -58,7 +58,7 @@ from Autodesk.Revit.DB import (
 from Autodesk.Revit.UI.Selection import ISelectionFilter, ObjectType
 from pyrevit import revit, forms, script
 from System.Collections.Generic import List as NetList
-from Tahir import wall_limits, wall_miter, wall_materials, wall_naming, wall_skin
+from BG import wall_limits, wall_miter, wall_materials, wall_naming, wall_skin
 
 doc    = revit.doc
 uidoc  = revit.uidoc
@@ -500,7 +500,7 @@ def compute_ext_type_name(cs, first_core, last_core):
 
 
 # NOTE: SKIN type names are no longer derived from the original wall type
-# name.  They come from the finish material's Mark, via Tahir.wall_naming --
+# name.  They come from the finish material's Mark, via BG.wall_naming --
 # see plan_skin_type below.
 
 

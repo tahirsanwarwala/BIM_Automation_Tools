@@ -1,9 +1,3 @@
 layout:
-  - WallConstraints
-  - SplitWalls
-  - SweepToWall
-  - MultiWallCreationV1
-  - MultiWallCreationV2
-  - WindowToCurtainWall
-  - WindowBands
-  - CurtainWallTrim
+  - Skin
+  - Extras

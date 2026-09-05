@@ -8,7 +8,7 @@ _LIB = os.path.join(_ROOT, "Revit API", "pyRevit-Tools.extension", "lib")
 if _LIB not in sys.path:
     sys.path.insert(0, _LIB)
 
-from Tahir import plan_shapes as ps
+from BG import plan_shapes as ps
 
 
 SQUARE = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
