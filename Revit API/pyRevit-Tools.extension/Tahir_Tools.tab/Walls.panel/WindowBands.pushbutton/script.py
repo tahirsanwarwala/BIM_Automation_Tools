@@ -7,20 +7,18 @@ structural framing member spanning the opening, and the band is joined
 to the wall behind it so the wall is cut and the quantities come out
 right.
 
-Which curtain walls ask is read off two parameters, BAND_PARAMS below.
-A curtain wall carrying a lintel parameter gets a beam sitting ON its
-head; one carrying a sill parameter gets a beam hanging UNDER its base.
-Either parameter counts as asking when it is a ticked Yes/No, or a text
-value that is not blank and does not say no.
-
-    ---------------------------------------------------------------
-    IF THE PARAMETER NAMES ARE WRONG, CHANGE THEM IN BAND_PARAMS.
-    Nothing else in this script needs to know what they are called.
-    ---------------------------------------------------------------
+Which curtain walls ask is read off their trim materials.  Head Trim
+Material names the lintel and Sill Trim Material names the sill, and a
+band is wanted where that material's name carries ST-02 or ST-03.  No
+material, or <By Category>, means no band on that side -- so a window
+can have a lintel and no sill, or the other way about, and most have
+neither.
 
 The band spans the curtain wall exactly -- the curtain wall IS the
 rough opening, since that is what it was built from -- and its depth
-and height come from the framing type, which is asked for once per run.
+and height come from the framing type, which is asked for once per
+BAND MATERIAL.  A cast stone head and a brick soldier course are not
+the same beam, and being asked twice is the point.
 
 Z justification is what puts the band on the right side of the opening:
 a lintel is justified to its BOTTOM so it sits on the head, a sill to
@@ -52,6 +50,7 @@ from Autodesk.Revit.DB import (
     BoundingBoxIntersectsFilter,
     BuiltInCategory,
     BuiltInParameter,
+    ElementId,
     FamilySymbol,
     FilteredElementCollector,
     JoinGeometryUtils,
@@ -76,12 +75,18 @@ output = script.get_output()
 
 TOOL_TITLE = "Window Bands"
 
-# The parameters that say a curtain wall wants a band, and which side
-# of the opening that band goes on.  Instance first, then type.
+# The material parameters that say a curtain wall wants a band, and
+# which side of the opening that band goes on.  Instance first, then
+# type, because either may carry it.
 BAND_PARAMS = (
-    ("BG_LINTEL", "lintel"),
-    ("BG_SILL",   "sill"),
+    ("Head Trim Material", "lintel"),
+    ("Sill Trim Material", "sill"),
 )
+
+# A trim material asks for a band when its NAME carries one of these.
+# Anything else -- <By Category>, a plain finish, nothing at all -- is
+# a window with no band on that side.
+BAND_MATERIALS = ("ST-02", "ST-03")
 
 # Z Justification values, from BuiltInParameter.Z_JUSTIFICATION.
 Z_JUST_TOP    = 0
@@ -89,9 +94,6 @@ Z_JUST_BOTTOM = 2
 
 # Anything shorter than this, in feet, is not an opening worth banding.
 MIN_BAND_LENGTH = 0.05
-
-# Words that mean "no" in a text parameter that could have named a band.
-NEGATIVES = ("", "no", "none", "n", "false", "0", "-", "na", "n/a")
 
 
 # ===========================================================================
@@ -152,41 +154,68 @@ def find_parameter(elem, name):
     return None
 
 
-def parameter_says_yes(elem, name):
-    """True when *elem*'s parameter *name* asks for a band.
+def material_name(elem, name):
+    """The name of the material in *elem*'s parameter *name*, or None.
 
-    Written for either shape the parameter could take, because which it
-    is is the model's business, not this tool's: a ticked Yes/No, or a
-    text value naming the band.  A text value that says no -- or says
-    nothing -- is not a request.
+    A material parameter stores an ElementId, so the material itself is
+    fetched and asked its name.  An unset one, and <By Category>, both
+    come back as no material at all, which is exactly the answer this
+    tool wants from a window with no band on that side.
     """
     p = find_parameter(elem, name)
     if p is None or not p.HasValue:
-        return False
+        return None
 
     try:
-        if p.StorageType.ToString() == "Integer":
-            return p.AsInteger() != 0
+        mat_id = p.AsElementId()
+    except Exception:
+        return None
+    if mat_id is None or mat_id == ElementId.InvalidElementId:
+        return None
+
+    try:
+        material = elem.Document.GetElement(mat_id)
+    except Exception:
+        return None
+    if material is None:
+        return None
+
+    return get_element_name(material)
+
+
+def band_material(wall, name):
+    """The band material on this curtain wall or its type, or None.
+
+    Only a material whose name carries one of BAND_MATERIALS counts.
+    The name is returned rather than a yes, because it is also what
+    decides WHICH framing type the band is: a cast stone head and a
+    brick soldier course are not the same beam.
+    """
+    candidates = [material_name(wall, name)]
+    try:
+        candidates.append(material_name(doc.GetElement(wall.GetTypeId()),
+                                        name))
     except Exception:
         pass
 
-    try:
-        text = p.AsString() or p.AsValueString() or ""
-    except Exception:
-        return False
+    for found in candidates:
+        if not found:
+            continue
+        upper = found.upper()
+        for wanted in BAND_MATERIALS:
+            if wanted.upper() in upper:
+                return found
+    return None
 
-    return text.strip().lower() not in NEGATIVES
 
-
-def wants_band(wall, name):
-    """True when this curtain wall, or its type, asks for band *name*."""
-    if parameter_says_yes(wall, name):
-        return True
-    try:
-        wall_type = doc.GetElement(wall.GetTypeId())
-    except Exception:
-        return False
-    return parameter_says_yes(wall_type, name)
+def wanted_bands(wall):
+    """The bands this curtain wall asks for, as [(side, material)]."""
+    found = []
+    for name, side in BAND_PARAMS:
+        material = band_material(wall, name)
+        if material:
+            found.append((side, material))
+    return found
 
 
 # ===========================================================================
@@ -246,8 +275,13 @@ def framing_types():
                 .OfCategory(BuiltInCategory.OST_StructuralFraming))
 
 
-def prompt_framing_type(types):
-    """Ask which framing type to use.  Once per run; None if cancelled."""
+def prompt_framing_type(types, material):
+    """Ask which framing type is the band for *material*.
+
+    Asked once per band material and cached, so an elevation of twenty
+    cast stone heads asks once, and asks again only when a brick
+    soldier course turns up.
+    """
     by_name = {}
     for sym in types:
         family = "<unknown>"
@@ -259,7 +293,8 @@ def prompt_framing_type(types):
 
     picked = forms.SelectFromList.show(
         sorted(by_name.keys()),
-        title="{}  |  Which framing type are the bands?".format(TOOL_TITLE),
+        title="{}  |  Which framing type is '{}'?".format(
+            TOOL_TITLE, material),
         button_name="Use this framing type",
         multiselect=False)
 
@@ -408,14 +443,13 @@ def cut_wall_with(band, wall):
     return None
 
 
-def band_wall(wall, symbol, notes):
-    """Place every band this curtain wall asks for.  Returns how many."""
-    label = "curtain wall id {}".format(wall.Id.IntegerValue)
+def band_wall(wall, asked, symbols, notes):
+    """Place every band this curtain wall asks for.  Returns how many.
 
-    asked = [(name, side) for name, side in BAND_PARAMS
-             if wants_band(wall, name)]
-    if not asked:
-        return 0
+    *asked* is [(side, material)] as found by wanted_bands, and
+    *symbols* maps a band material to the framing type chosen for it.
+    """
+    label = "curtain wall id {}".format(wall.Id.IntegerValue)
 
     extent = wall_extent(wall)
     if extent is None:
@@ -424,7 +458,11 @@ def band_wall(wall, symbol, notes):
     base_z, top_z = extent
 
     placed = 0
-    for name, side in asked:
+    for side, material in asked:
+        symbol = symbols.get(material)
+        if symbol is None:
+            continue          # no framing type chosen for this material
+
         if side == "lintel":
             z, justification = top_z, Z_JUST_BOTTOM
         else:
@@ -470,12 +508,15 @@ def main():
 
     notes = []
 
-    wanting = [w for w in walls
-               if any(wants_band(w, name) for name, _side in BAND_PARAMS)]
+    wanting = []
+    for wall in walls:
+        asked = wanted_bands(wall)
+        if asked:
+            wanting.append((wall, asked))
+
     if not wanting:
-        report([["-", "none of the picked curtain walls asks for a band "
-                      "({})".format(
-                          " or ".join(n for n, _s in BAND_PARAMS))]])
+        report([["-", "none of the picked curtain walls has a {} trim "
+                      "material".format(" or ".join(BAND_MATERIALS))]])
         return
 
     types = framing_types()
@@ -483,17 +524,29 @@ def main():
         report([["-", "no structural framing types in this model"]])
         return
 
-    # The dialog comes first, before the transaction opens.
-    symbol = prompt_framing_type(types)
-    if symbol is None:
-        return          # cancelled
+    # Every dialog happens here, before the transaction opens.
+    symbols = {}
+    for _wall, asked in wanting:
+        for _side, material in asked:
+            if material not in symbols:
+                symbols[material] = prompt_framing_type(types, material)
+
+    for material, symbol in symbols.items():
+        if symbol is None:
+            note(notes, "-",
+                 "no framing type chosen for '{}' - those bands were "
+                 "skipped".format(material))
+
+    if not any(symbols.values()):
+        report(notes)
+        return
 
     placed = 0
     t = Transaction(doc, "Window Bands")
     t.Start()
     try:
-        for wall in wanting:
-            placed += band_wall(wall, symbol, notes)
+        for wall, asked in wanting:
+            placed += band_wall(wall, asked, symbols, notes)
         t.Commit()
     except Exception:
         if t.HasStarted() and not t.HasEnded():
