@@ -60,12 +60,11 @@ was tried and taken back out.  Neither turns into a reveal: a sweep that
 stops at an opening is left ending at the jamb.
 
 A picked ROOF SOFFIT is never built.  It is a limit and nothing else:
-the walls running under it stop at its underside, exactly as they stop
-at a stone course.  Which walls those are is read off where the soffit
-sits in plan -- a soffit records no host, so its own outline is the
-only honest answer -- and a wall counts as under it when any part of
-its thickness is, not merely its centreline.  A pitched soffit stops
-walls at its LOWEST point, so none pokes through, and says so.
+every wall in the run stops at its underside, exactly as they stop at a
+stone course.  WHERE it sits in plan is not asked -- picking it is the
+statement that it governs this run -- and a wall stops at its LOWEST
+point, so nothing pokes through whatever the soffit turns out to be
+doing.
 
 The linked model is never modified.
 """
@@ -83,8 +82,8 @@ __doc__    = (
     "Sweep wall types come from STONE / EIFS in the sweep's type or "
     "material name; EIFS is dropped, and you are only asked about what "
     "that rule cannot read.\n"
-    "A picked roof soffit is never built: the walls under it just stop "
-    "at its underside.\n"
+    "A picked roof soffit is never built: every wall in the run just "
+    "stops at its lowest point.\n"
     "The linked model is left untouched."
 )
 
@@ -830,56 +829,15 @@ def plan_soffit(link_inst, soffit):
     return job, notes
 
 
-def wall_plan_segments(job):
-    """The wall's centreline in plan, as one or more 2D segments.
+def soffit_cutters(soffit_jobs):
+    """The (base_z, top_z) spans the picked soffits impose.
 
-    One for a straight wall.  A curved wall is tessellated, because the
-    tests that take a segment -- is this wall under that soffit --
-    would otherwise be asked about the arc's CHORD, which cuts across
-    ground the wall never touches and misses ground it does.
+    Every picked soffit, on every wall in the run.  Whether one happens
+    to overhang a given wall in plan is not asked: picking it IS the
+    statement that it governs this run, and a plan test could only
+    disagree with what was asked for.
     """
-    if not job.curved:
-        return [curve_ends(job.loc_curve)]
-
-    try:
-        pts = list(job.loc_curve.Tessellate())
-    except Exception:
-        pts = []
-
-    segments = []
-    for idx in range(len(pts) - 1):
-        segments.append(((pts[idx].X, pts[idx].Y),
-                         (pts[idx + 1].X, pts[idx + 1].Y)))
-    return segments or [curve_ends(job.loc_curve)]
-
-
-def soffit_cutters(job, soffit_jobs, used):
-    """The (base_z, top_z) spans the soffits impose on one wall.
-
-    A wall counts as under a soffit when any part of its THICKNESS is,
-    not merely its centreline: a soffit almost always stops at a wall's
-    face, and testing the bare centreline would miss every one of them.
-    Half the wall's width is that reach.
-
-    *used* is added to for every soffit that limits something, so the
-    caller can report the ones that limited nothing.
-    """
-    segments = wall_plan_segments(job)
-    reach    = (job.total_width or 0.0) / 2.0
-
-    cutters = []
-    for index, soffit_job in enumerate(soffit_jobs):
-        under = False
-        for p0, p1 in segments:
-            if soffit_lib.limits_wall(soffit_job.shape, p0, p1,
-                                      reach=reach):
-                under = True
-                break
-        if not under:
-            continue
-        used.add(index)
-        cutters.append((soffit_job.shape.base_z, soffit_job.shape.top_z))
-    return cutters
+    return [(job.shape.base_z, job.shape.top_z) for job in soffit_jobs]
 
 
 # ===========================================================================
@@ -1667,10 +1625,12 @@ def snap_to_levels(wall_jobs, sweep_jobs, soffit_jobs, levels):
 def band_walls(wall_jobs, sweep_jobs, soffit_jobs, levels, notes):
     """Work out the bands each wall is cut into.
 
-    Three things cut a wall.  A picked ROOF SOFFIT cuts every wall
-    running under it, at its own full extent -- and unlike a course it
-    is never suppressed by a window, because a soffit is a limit of the
-    same kind a level is: where one comes down, the wall stops.
+    Three things cut a wall.  A picked ROOF SOFFIT cuts EVERY wall in
+    the run, at its own full extent -- picking it is the statement that
+    it governs them, so no plan test stands between the two.  Unlike a
+    course it is never suppressed by a window either, because a soffit
+    is a limit of the same kind a level is: where one comes down, the
+    wall stops.
 
     The other two are as they were.  The CAST STONE sweeps hosted
     on it -- hosted decided by the link's own GetHostIds(), so a sweep
@@ -1687,8 +1647,8 @@ def band_walls(wall_jobs, sweep_jobs, soffit_jobs, levels, notes):
 
     Fills job.bands in place.
     """
-    cutting = [j for j in sweep_jobs if sweep_cuts_walls(j)]
-    used    = set()
+    cutting      = [j for j in sweep_jobs if sweep_cuts_walls(j)]
+    soffit_spans = soffit_cutters(soffit_jobs)
 
     for job in wall_jobs:
         # One cutter per RUN, not per sweep: a run knows which wall it
@@ -1707,7 +1667,7 @@ def band_walls(wall_jobs, sweep_jobs, soffit_jobs, levels, notes):
             cutters, [(w[2], w[3]) for w in job.windows])
 
         # Soffits are added AFTER that exemption, never inside it.
-        cutters = cutters + soffit_cutters(job, soffit_jobs, used)
+        cutters = cutters + soffit_spans
 
         gaps, dropped = wall_bands.subtract_spans(
             (job.base_z, job.top_z), cutters)
@@ -1735,12 +1695,6 @@ def band_walls(wall_jobs, sweep_jobs, soffit_jobs, levels, notes):
 
         if not job.bands:
             note(notes, job.label, "no band could be constrained")
-
-    for index, soffit_job in enumerate(soffit_jobs):
-        if index not in used:
-            note(notes, soffit_job.label,
-                 "no picked wall runs under this soffit - it limited "
-                 "nothing")
 
 
 # ===========================================================================
