@@ -20,7 +20,7 @@ extension. That separation is the point of the split.
 
 ## The tools
 
-**SKIN Tools** panel, two stacks:
+**SKIN Tools** panel -- two stacks and a button:
 
 | Button | Does |
 |---|---|
@@ -28,6 +28,7 @@ extension. That separation is the point of the split.
 | Wall Limits | Fixes wall base and top constraints that sit just off a level. |
 | Curtain Wall | Turns one linked window, or a linked curtain wall, into a curtain wall here. |
 | Window Bands | Places lintel and sill bands on curtain walls whose linked window carries an ST-02 or ST-03 trim material. |
+| Copy From Link | Copies elements of one category out of a link into this model, in place, skipping whatever is already here. |
 
 Multi Walls does on a whole selection what Curtain Wall does on one
 window. They share `BG.window_cw` rather than a copy of it.
@@ -55,6 +56,8 @@ Revit can execute the Revit API:
     wall_sketch       editing a wall's elevation profile
     wall_skin         measuring layer offsets and creating oriented walls
     window_cw         measuring a window and building its curtain wall
+    curtain_doors     carrying a door panel out of a linked curtain wall
+    link_copy         copying out of a link without copying twice
 
 Run the pure tests from the repository root:
 
