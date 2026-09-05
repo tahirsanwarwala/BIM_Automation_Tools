@@ -33,8 +33,11 @@ point.
 Z justification is what puts the band on the right side of the opening:
 a lintel is justified to its BOTTOM so it sits on the head, a sill to
 its TOP so it hangs under the sill.  Neither eats into the opening.
-A family that refuses the setting is reported, because a band left on
+Whether it took is checked by reading it back, because a band left on
 its own default justification is in the wrong place and looks right.
+Some framing families justify their two ends independently, and those
+ignore the single uniform setting entirely, so yz Justification is
+forced to Uniform and both ends are set as well as the whole.
 
 The reference level is read back, never assumed.  Revit reassigns a
 new beam's Reference Level for itself, and a Start Level Offset worked
@@ -110,6 +113,11 @@ BAND_MATERIALS = ("ST-02", "ST-03")
 # Z Justification values, from BuiltInParameter.Z_JUSTIFICATION.
 Z_JUST_TOP    = 0
 Z_JUST_BOTTOM = 2
+Z_JUST_NAMES  = {0: "Top", 1: "Center", 2: "Bottom", 3: "Origin"}
+
+# yz Justification: Uniform, as against Independent.  A beam justifying
+# its two ends independently ignores Z_JUSTIFICATION altogether.
+YZ_JUST_UNIFORM = 0
 
 # Anything shorter than this, in feet, is not an opening worth banding.
 MIN_BAND_LENGTH = 0.05
@@ -454,6 +462,41 @@ def set_parameter(elem, builtin, value):
         return False
 
 
+def set_z_justification(band, wanted):
+    """Justify *band* to *wanted*, and report what it actually took.
+
+    Three parameters, not one.  A framing family may justify its two
+    ends INDEPENDENTLY, and one that does ignores the single uniform
+    Z_JUSTIFICATION completely -- so yz Justification is forced back to
+    Uniform first, and both ends are set as well as the whole.  Which
+    of the three a given family listens to is the family's business.
+
+    Returns None when the band ended up justified as asked, or the name
+    of what it ended up as instead.  Read back rather than trusted: a
+    write that quietly does nothing leaves a band sitting in the wrong
+    place and looking perfectly well drawn, and the only way to know is
+    to ask afterwards.
+    """
+    set_parameter(band, BuiltInParameter.YZ_JUSTIFICATION,
+                  YZ_JUST_UNIFORM)
+    doc.Regenerate()
+
+    set_parameter(band, BuiltInParameter.Z_JUSTIFICATION, wanted)
+    set_parameter(band, BuiltInParameter.START_Z_JUSTIFICATION, wanted)
+    set_parameter(band, BuiltInParameter.END_Z_JUSTIFICATION, wanted)
+    doc.Regenerate()
+
+    try:
+        p = band.get_Parameter(BuiltInParameter.Z_JUSTIFICATION)
+        actual = p.AsInteger() if p is not None and p.HasValue else None
+    except Exception:
+        actual = None
+
+    if actual == wanted:
+        return None
+    return Z_JUST_NAMES.get(actual, "unknown")
+
+
 def beam_level_elevation(band, fallback):
     """The geometry-space elevation of the level *band* is actually on.
 
@@ -523,13 +566,15 @@ def place_band(symbol, wall, z, justification):
 
     # Justification last: it is the one setting whose failure changes
     # where the band sits without looking like a failure.
-    justified = set_parameter(
-        band, BuiltInParameter.Z_JUSTIFICATION, justification)
     set_parameter(band, BuiltInParameter.Z_OFFSET_VALUE, 0.0)
+    landed = set_z_justification(band, justification)
     doc.Regenerate()
 
-    if not justified:
-        return band, "placed, but its z justification could not be set"
+    if landed:
+        return band, (
+            "placed, but its z justification stayed {} instead of {} - "
+            "the framing family will not take it, so set it on the "
+            "type".format(landed, Z_JUST_NAMES[justification]))
     return band, None
 
 
