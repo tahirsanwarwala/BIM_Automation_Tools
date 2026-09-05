@@ -5,4 +5,5 @@ layout:
   - MultiWallCreationV1
   - MultiWallCreationV2
   - WindowToCurtainWall
+  - WindowBands
   - CurtainWallTrim
