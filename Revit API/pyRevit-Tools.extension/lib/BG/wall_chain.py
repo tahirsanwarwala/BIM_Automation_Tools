@@ -19,6 +19,7 @@ import clr
 clr.AddReference("RevitAPI")
 
 from Autodesk.Revit.DB import (
+    Arc,
     BuiltInCategory,
     BuiltInParameter,
     FilteredElementCollector,
@@ -147,7 +148,17 @@ def iter_solid_points(elem, transform=None):
 # ===========================================================================
 
 class WallFrame(object):
-    """A wall's location and orientation, ready to offset from."""
+    """A wall's location and orientation, ready to offset from.
+
+    Everything the tools ask of a wall's plan geometry is asked through
+    this, in one currency: ALONG, the distance travelled from the
+    curve's start.  For a straight wall that is a dot product; for a
+    curved one it is arc length.  Keeping the two behind one set of
+    questions is what lets the rest of the code stop caring which it
+    has -- and it is why *direction* is still here but is None for an
+    arc: a curved wall has no single direction, and anything still
+    reaching for one is asking a question with no answer.
+    """
 
     __slots__ = ("wall", "curve", "normal", "width", "is_line",
                  "origin", "direction", "length")
@@ -166,10 +177,129 @@ class WallFrame(object):
         self.direction = (p1 - p0).Normalize() if self.is_line else None
 
     def point_at(self, along):
-        """Point on the wall's location curve *along* feet from its start."""
-        return XYZ(self.origin.X + self.direction.X * along,
-                   self.origin.Y + self.direction.Y * along,
-                   self.origin.Z + self.direction.Z * along)
+        """Point on the wall's location curve *along* feet from its start.
+
+        Past either end of an ARC this clamps, because there is nowhere
+        to clamp to but the end: a circle's continuation comes back
+        round.  A line extrapolates, which several callers rely on.
+        """
+        if self.is_line:
+            return XYZ(self.origin.X + self.direction.X * along,
+                       self.origin.Y + self.direction.Y * along,
+                       self.origin.Z + self.direction.Z * along)
+
+        if self.length <= 0.0:
+            return self.origin
+        u = min(1.0, max(0.0, along / self.length))
+        return self.curve.Evaluate(u, True)
+
+    def along_of(self, point):
+        """How far along the curve *point* lies, in feet from the start.
+
+        A line answers by projection onto its direction, and answers
+        outside its own ends as readily as inside -- a merged frame is
+        measured that way and needs it.  An arc answers by projecting
+        onto itself, which cannot reach past its ends, and does not
+        need to.
+        """
+        if self.is_line:
+            return XYZ(point.X - self.origin.X,
+                       point.Y - self.origin.Y,
+                       point.Z - self.origin.Z).DotProduct(self.direction)
+
+        try:
+            hit = self.curve.Project(point)
+        except Exception:
+            hit = None
+        if hit is None:
+            return 0.0
+
+        try:
+            raw = hit.Parameter
+            lo  = self.curve.GetEndParameter(0)
+            hi  = self.curve.GetEndParameter(1)
+            if abs(hi - lo) < 1e-12:
+                return 0.0
+            return (raw - lo) / (hi - lo) * self.length
+        except Exception:
+            return 0.0
+
+    def radial_at(self, along):
+        """The outward normal at *along*, in plan.  None for a line.
+
+        An arc's normal turns as it goes, so there is no one vector for
+        the whole wall -- which is exactly why *normal* alone is not
+        enough for a curved wall and this exists.  The direction is
+        radial, and the SIGN comes from the wall's own normal, so
+        outward here means the same side outward means everywhere else.
+        """
+        if self.is_line:
+            return None
+        try:
+            centre = self.curve.Center
+        except Exception:
+            return None
+
+        p = self.point_at(along)
+        out = XYZ(p.X - centre.X, p.Y - centre.Y, 0.0)
+        if out.GetLength() < 1e-9:
+            return None
+        out = out.Normalize()
+
+        if self.normal is not None and out.DotProduct(self.normal) < 0:
+            out = XYZ(-out.X, -out.Y, 0.0)
+        return out
+
+    def offset_curve(self, along_lo, along_hi, offset, z=None):
+        """The stretch from *along_lo* to *along_hi*, moved sideways.
+
+        Sideways means along the wall's own outward normal: a straight
+        wall's offset is a parallel line, a curved wall's is a
+        CONCENTRIC arc, and translating an arc -- which is what a
+        parallel line's arithmetic would do to it -- would slide it off
+        its own centre instead.
+
+        The arc is rebuilt through three offset points, its ends and
+        its middle, rather than from a new radius and a pair of angles.
+        Same answer, and it needs to know nothing about which way round
+        the arc was drawn.
+
+        *z* overrides the elevation, for a run sitting above the wall's
+        own location curve.  None keeps the curve's.
+        """
+        if along_hi - along_lo < 1e-9:
+            return None
+
+        def moved(along):
+            p = self.point_at(along)
+            if self.is_line:
+                out = self.normal
+            else:
+                out = self.radial_at(along)
+            if out is None:
+                return None
+            return XYZ(p.X + out.X * offset,
+                       p.Y + out.Y * offset,
+                       p.Z if z is None else z)
+
+        a = moved(along_lo)
+        b = moved(along_hi)
+        if a is None or b is None:
+            return None
+
+        if self.is_line:
+            return Line.CreateBound(a, b)
+
+        mid = moved((along_lo + along_hi) / 2.0)
+        if mid is None:
+            return None
+        try:
+            return Arc.Create(a, b, mid)
+        except Exception:
+            # An offset that reached the arc's own centre, or past it.
+            # A line between the ends is wrong, and saying so is better
+            # than drawing it.
+            return None
 
 
 def wall_frame(wall, transform=None):
@@ -177,6 +307,10 @@ def wall_frame(wall, transform=None):
 
     Pass a link's total transform for a wall inside a link; leave it out for
     a wall in the current model.
+
+    A curved wall gets a frame like any other.  What its callers can do
+    with it is another matter -- frame.is_line is how they tell -- but
+    the frame itself is honest about arcs and answers in arc length.
     """
     try:
         loc = wall.Location

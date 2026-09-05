@@ -24,9 +24,11 @@ import clr
 clr.AddReference("RevitAPI")
 
 from Autodesk.Revit.DB import (
+    Arc,
     BuiltInParameter,
     ElementTransformUtils,
     GeometryInstance,
+    Line,
     Options,
     Solid,
     Transform,
@@ -145,6 +147,52 @@ def dist_loc_to_exterior(loc_line, total_w, skin_w, gap_w, core_w):
     return mapping.get(loc_line, total_w / 2.0)
 
 
+def offset_sideways(curve, orientation, distance):
+    """Move *curve* *distance* along *orientation*, in its own plane.
+
+    A line slides across, which is a translation.  An ARC does not: a
+    translated arc is the same arc somewhere else, still curving about
+    a centre it has left behind, and its ends no longer sit on the wall
+    it is meant to line.  What an arc needs is a CONCENTRIC arc --
+    same centre, radius larger or smaller by the offset -- and it is
+    rebuilt here through three radially moved points, its ends and its
+    middle, so nothing has to be known about which way it was drawn.
+
+    Returns None for an offset that reaches the arc's own centre or
+    passes it, which has no concentric answer.
+    """
+    orient = orientation.Normalize()
+
+    if isinstance(curve, Line):
+        vec = XYZ(orient.X * distance, orient.Y * distance,
+                  orient.Z * distance)
+        return curve.CreateTransformed(Transform.CreateTranslation(vec))
+
+    try:
+        centre = curve.Center
+    except Exception:
+        return None
+
+    def moved(u):
+        p = curve.Evaluate(u, True)
+        out = XYZ(p.X - centre.X, p.Y - centre.Y, 0.0)
+        if out.GetLength() < 1e-9:
+            return None
+        out = out.Normalize()
+        if out.DotProduct(orient) < 0:
+            out = XYZ(-out.X, -out.Y, 0.0)
+        return XYZ(p.X + out.X * distance, p.Y + out.Y * distance, p.Z)
+
+    a, mid, b = moved(0.0), moved(0.5), moved(1.0)
+    if a is None or mid is None or b is None:
+        return None
+
+    try:
+        return Arc.Create(a, b, mid)
+    except Exception:
+        return None
+
+
 def skin_centreline(loc_curve, orientation, dist_to_exterior, skin_width):
     """Centreline for a skin wall sitting in the source wall's finish.
 
@@ -152,13 +200,13 @@ def skin_centreline(loc_curve, orientation, dist_to_exterior, skin_width):
     wall's exterior face, measured or inferred.  The skin wall occupies
     the outermost finish layer, so its centreline sits half its own
     thickness inboard of that face.
+
+    Returns None where a curved wall's finish would have to be offset
+    to or past its own centre -- a skin tighter than the radius it
+    curves on, which no arc can be.
     """
     skin_off = dist_to_exterior - skin_width / 2.0
-
-    orient = orientation.Normalize()
-    vec = XYZ(orient.X * skin_off, orient.Y * skin_off, orient.Z * skin_off)
-
-    return loc_curve.CreateTransformed(Transform.CreateTranslation(vec))
+    return offset_sideways(loc_curve, orientation, skin_off)
 
 
 def _center_wall_on_curve(doc, wall, target_curve, orient):
@@ -167,7 +215,17 @@ def _center_wall_on_curve(doc, wall, target_curve, orient):
     Rather than trusting whichever Location Line default Wall.Create()
     applied, this measures the wall's real faces and cancels out any
     residual perpendicular error.
+
+    Only for a STRAIGHT wall.  The measurement projects every solid
+    point onto one normal, which is the wall's own direction all the way
+    along a line and nothing of the sort along an arc -- there it would
+    read the bulge as an error and shift a correctly placed wall to
+    "fix" it.  A curved wall is left where Wall.Create put it, which is
+    on the curve it was given.
     """
+    if not isinstance(target_curve, Line):
+        return
+
     try:
         n = orient.Normalize()
         ref_pt = target_curve.GetEndPoint(0)

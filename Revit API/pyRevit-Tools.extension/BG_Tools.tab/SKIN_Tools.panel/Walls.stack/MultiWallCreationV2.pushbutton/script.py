@@ -95,6 +95,7 @@ clr.AddReference("RevitAPI")
 clr.AddReference("RevitAPIUI")
 
 from Autodesk.Revit.DB import (
+    Arc,
     BuiltInCategory,
     BuiltInParameter,
     ElementId,
@@ -829,6 +830,29 @@ def plan_soffit(link_inst, soffit):
     return job, notes
 
 
+def wall_plan_segments(job):
+    """The wall's centreline in plan, as one or more 2D segments.
+
+    One for a straight wall.  A curved wall is tessellated, because the
+    tests that take a segment -- is this wall under that soffit --
+    would otherwise be asked about the arc's CHORD, which cuts across
+    ground the wall never touches and misses ground it does.
+    """
+    if not job.curved:
+        return [curve_ends(job.loc_curve)]
+
+    try:
+        pts = list(job.loc_curve.Tessellate())
+    except Exception:
+        pts = []
+
+    segments = []
+    for idx in range(len(pts) - 1):
+        segments.append(((pts[idx].X, pts[idx].Y),
+                         (pts[idx + 1].X, pts[idx + 1].Y)))
+    return segments or [curve_ends(job.loc_curve)]
+
+
 def soffit_cutters(job, soffit_jobs, used):
     """The (base_z, top_z) spans the soffits impose on one wall.
 
@@ -840,13 +864,18 @@ def soffit_cutters(job, soffit_jobs, used):
     *used* is added to for every soffit that limits something, so the
     caller can report the ones that limited nothing.
     """
-    p0, p1 = curve_ends(job.loc_curve)
-    reach  = (job.total_width or 0.0) / 2.0
+    segments = wall_plan_segments(job)
+    reach    = (job.total_width or 0.0) / 2.0
 
     cutters = []
     for index, soffit_job in enumerate(soffit_jobs):
-        if not soffit_lib.limits_wall(soffit_job.shape, p0, p1,
+        under = False
+        for p0, p1 in segments:
+            if soffit_lib.limits_wall(soffit_job.shape, p0, p1,
                                       reach=reach):
+                under = True
+                break
+        if not under:
             continue
         used.add(index)
         cutters.append((soffit_job.shape.base_z, soffit_job.shape.top_z))
@@ -864,7 +893,7 @@ class WallJob(object):
                  "loc_curve", "orientation", "total_width", "loc_line",
                  "loc_to_ext", "base_z", "top_z", "structural", "bands",
                  "windows", "rect_openings", "link_inst", "direction",
-                 "built_bands")
+                 "built_bands", "curved")
 
 
 def _length_param(elements, names, builtin_names):
@@ -1218,14 +1247,17 @@ def plan_wall(link_inst, wall):
     raw_curve = wall.Location.Curve if wall.Location is not None else None
     if raw_curve is None:
         return None, [[label, "wall has no location curve"]]
-    if not isinstance(raw_curve, Line):
-        return None, [[label, "curved wall - not supported"]]
+    if not isinstance(raw_curve, (Line, Arc)):
+        return None, [[label, "location curve is neither a line nor an "
+                              "arc - not supported"]]
 
-    pt0 = link_tf.OfPoint(raw_curve.GetEndPoint(0))
-    pt1 = link_tf.OfPoint(raw_curve.GetEndPoint(1))
-    if pt0.DistanceTo(pt1) < MIN_RUN_LENGTH:
+    loc_curve = raw_curve.CreateTransformed(link_tf)
+    curved    = not isinstance(loc_curve, Line)
+
+    pt0 = loc_curve.GetEndPoint(0)
+    pt1 = loc_curve.GetEndPoint(1)
+    if loc_curve.Length < MIN_RUN_LENGTH:
         return None, [[label, "wall too short"]]
-    loc_curve = Line.CreateBound(pt0, pt1)
 
     # Rotate the orientation vector: transforming origin+direction and
     # subtracting the transformed origin isolates the rotation.
@@ -1237,14 +1269,22 @@ def plan_wall(link_inst, wall):
                       orient_tip.Y - origin_tf.Y,
                       orient_tip.Z - origin_tf.Z).Normalize()
 
+    # Measured off the solid for a straight wall, and NOT for a curved
+    # one: the measurement projects every solid point onto one normal,
+    # and a curved wall's normal turns as it goes, so the far face would
+    # come back as wherever the arc bulges furthest that way.  A curved
+    # wall falls back to the compound structure's own arithmetic in
+    # prepare_bands, which is exact whatever shape the wall is.
     loc_to_ext = None
-    try:
-        meas = wall_skin.measure_face_offsets(
-            wall, pt0, orientation, link_tf)
-        if meas:
-            loc_to_ext = meas[0]
-    except Exception as ex:
-        logger.debug("Face measurement failed on {}: {}".format(label, ex))
+    if not curved:
+        try:
+            meas = wall_skin.measure_face_offsets(
+                wall, pt0, orientation, link_tf)
+            if meas:
+                loc_to_ext = meas[0]
+        except Exception as ex:
+            logger.debug("Face measurement failed on {}: {}".format(
+                label, ex))
 
     # ---- Vertical extent, from the constraint parameters only.
     base_p = wall.get_Parameter(BuiltInParameter.WALL_BASE_CONSTRAINT)
@@ -1294,7 +1334,10 @@ def plan_wall(link_inst, wall):
     job.source_doc  = link_doc
     job.loc_curve   = loc_curve
     job.link_inst   = link_inst
-    job.direction   = (pt1 - pt0).Normalize()
+    job.curved      = curved
+    # No single direction for an arc, and nothing that still wants one
+    # is asked to work on a curved wall.
+    job.direction   = None if curved else (pt1 - pt0).Normalize()
     job.orientation = orientation
     job.total_width = wall.Width
     job.loc_line    = (wall.get_Parameter(
@@ -1306,6 +1349,19 @@ def plan_wall(link_inst, wall):
     job.structural  = structural
     job.bands       = []          # filled in by band_walls
     job.built_bands = []          # filled in by build_bands
+
+    if curved:
+        # An insert is measured as a distance ALONG a straight frame,
+        # and everything downstream of that -- the curtain wall on a
+        # window, the hole cut for an opening -- lays it back down the
+        # same way.  A curved wall's skin is built; what is in it is
+        # not, and saying so is better than placing a window on the
+        # chord of the arc it belongs to.
+        job.windows, job.rect_openings = [], []
+        return job, [[label,
+                      "curved wall: the skin is built, but its windows "
+                      "and openings are not - say so if you need them"]]
+
     job.windows, job.rect_openings = wall_inserts(
         wall, link_tf, pt0, (pt1 - pt0).Normalize())
     return job, notes_none()
@@ -1326,8 +1382,15 @@ def merge_wall_jobs(wall_jobs):
     the first member, which the shared key has already guaranteed is
     the same for all of them.
     """
-    if len(wall_jobs) < 2:
+    # A curved wall is colinear with nothing, and colinear_chains works
+    # on 2D segments -- an arc's chord, which is not where the wall is.
+    curved   = [job for job in wall_jobs if job.curved]
+    straight = [job for job in wall_jobs if not job.curved]
+
+    if len(straight) < 2:
         return wall_jobs
+
+    wall_jobs = straight
 
     segments = []
     keys     = []
@@ -1371,6 +1434,10 @@ def merge_wall_jobs(wall_jobs):
         job.source_doc  = first.source_doc
         job.loc_curve   = Line.CreateBound(XYZ(x0, y0, z), XYZ(x1, y1, z))
         job.link_inst   = first.link_inst
+        # A merged run is straight by construction: only straight jobs
+        # reach here at all.  Spelled out because WallJob uses __slots__
+        # and an unset one raises rather than reading as False.
+        job.curved      = False
         # Derived from the MERGED curve, not copied from *first*: a
         # merged run is one wall and the direction is its own, not
         # whichever member happened to come first.
@@ -1401,7 +1468,9 @@ def merge_wall_jobs(wall_jobs):
             job.rect_openings.extend(wall_jobs[i].rect_openings)
         merged.append(job)
 
-    return merged
+    # The curved ones went nowhere near any of this, and come back
+    # untouched.
+    return merged + curved
 
 
 def notes_none():
@@ -2156,10 +2225,23 @@ def prepare_bands(wall_jobs, skin_plans, notes):
 
             curve = wall_skin.skin_centreline(
                 job.loc_curve, job.orientation, d, skin_w)
+            if curve is None:
+                note(notes, job.label,
+                     "its skin would have to be offset to or past the "
+                     "centre this wall curves on, and no arc does that")
+                continue
 
-            o0 = job.loc_curve.GetEndPoint(0)
-            o1 = job.loc_curve.GetEndPoint(1)
-            original = ((o0.X, o0.Y), (o1.X, o1.Y))
+            # "original" is what mitre_prepared judges adjacency on, and
+            # it is a straight segment.  A curved wall has none -- its
+            # chord is not where it runs -- so it is handed None and
+            # mitring passes it by.  Joining still happens, so Revit
+            # cleans whatever junction it can.
+            if job.curved:
+                original = None
+            else:
+                o0 = job.loc_curve.GetEndPoint(0)
+                o1 = job.loc_curve.GetEndPoint(1)
+                original = ((o0.X, o0.Y), (o1.X, o1.Y))
 
             for band in job.bands:
                 prepared.append({
@@ -2201,14 +2283,21 @@ def mitre_prepared(prepared, notes):
     for key, items in groups.items():
         for item in items:
             item["group"] = key
-        if len(items) < 2:
+
+        # Only the straight ones.  A curved band still belongs to its
+        # elevation group -- that is what it is joined within -- but it
+        # has no straight centreline to judge a corner on, and handing
+        # its chord to the mitre would drag a corner to where the wall
+        # is not.
+        straight = [item for item in items if item["original"] is not None]
+        if len(straight) < 2:
             continue
 
         try:
             originals = []
             offsets   = []
             zs        = []
-            for item in items:
+            for item in straight:
                 sc = item["curve"]
                 s0, s1 = sc.GetEndPoint(0), sc.GetEndPoint(1)
                 originals.append(item["original"])
@@ -2217,11 +2306,11 @@ def mitre_prepared(prepared, notes):
 
             # See the matching note in build_sweep_walls for why the
             # reach is the thickest wall in the group.
-            reach = max(item["job"].total_width for item in items)
+            reach = max(item["job"].total_width for item in straight)
             mitred = wall_miter.miter_chain(originals, offsets,
                                             tees=True, tee_reach=reach)
 
-            for idx, item in enumerate(items):
+            for idx, item in enumerate(straight):
                 (x0, y0), (x1, y1) = mitred[idx]
                 z0, z1 = zs[idx]
                 item["curve"] = Line.CreateBound(XYZ(x0, y0, z0),
