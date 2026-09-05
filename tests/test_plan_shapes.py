@@ -52,6 +52,24 @@ class TestPointInRing(unittest.TestCase):
         self.assertFalse(ps.point_in_ring((0.0, 0.0), [(1.0, 1.0)]))
 
 
+class TestRingArea(unittest.TestCase):
+
+    def test_counter_clockwise_is_positive(self):
+        self.assertAlmostEqual(ps.ring_area(SQUARE), 100.0)
+
+    def test_clockwise_is_negative(self):
+        self.assertAlmostEqual(ps.ring_area(list(reversed(SQUARE))), -100.0)
+
+    def test_an_ell_loses_its_notch(self):
+        self.assertAlmostEqual(ps.ring_area(ELL), 64.0)
+
+    def test_a_hole_is_smaller_than_its_boundary(self):
+        self.assertLess(abs(ps.ring_area(HOLE)), abs(ps.ring_area(SQUARE)))
+
+    def test_a_degenerate_ring_has_no_area(self):
+        self.assertAlmostEqual(ps.ring_area([(0.0, 0.0), (1.0, 1.0)]), 0.0)
+
+
 class TestSegmentsCross(unittest.TestCase):
 
     def test_an_x_crosses(self):

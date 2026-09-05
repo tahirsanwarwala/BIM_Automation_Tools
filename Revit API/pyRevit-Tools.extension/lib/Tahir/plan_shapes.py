@@ -85,6 +85,22 @@ def ring_edges(ring):
         yield ring[i], ring[(i + 1) % n]
 
 
+def ring_area(ring):
+    """The signed area a closed ring encloses; negative when clockwise.
+
+    Used to tell a soffit's boundary from the lightwells punched
+    through it: the boundary is the loop enclosing the most area, and
+    which loop Revit hands back first says nothing about that.
+    """
+    if len(ring) < 3:
+        return 0.0
+
+    total = 0.0
+    for a, b in ring_edges(ring):
+        total += a[0] * b[1] - b[0] * a[1]
+    return total / 2.0
+
+
 def point_in_ring(point, ring, tol=TOL):
     """True when *point* is inside the closed *ring*, edges included.
 

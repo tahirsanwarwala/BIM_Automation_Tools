@@ -6,8 +6,9 @@ curtain wall on the new skin wall, and every rectangular opening is cut
 out of the skin's elevation.  V1 is left alone -- it is a separate
 button, and this one is where the openings work is being proved.
 
-Select any mix of walls and wall sweeps in a LINKED model -- by box or
-by click, adding and removing until the selection is right, then Finish.
+Select any mix of walls, wall sweeps and roof soffits in a LINKED model
+-- by box or by click, adding and removing until the selection is right,
+then Finish.
 
 Each CAST STONE sweep becomes a wall in the host model, exactly as
 Sweep To Wall makes one.
@@ -58,14 +59,22 @@ length of the wall it came from, openings and all -- cutting it at them
 was tried and taken back out.  Neither turns into a reveal: a sweep that
 stops at an opening is left ending at the jamb.
 
+A picked ROOF SOFFIT is never built.  It is a limit and nothing else:
+the walls running under it stop at its underside, exactly as they stop
+at a stone course.  Which walls those are is read off where the soffit
+sits in plan -- a soffit records no host, so its own outline is the
+only honest answer -- and a wall counts as under it when any part of
+its thickness is, not merely its centreline.  A pitched soffit stops
+walls at its LOWEST point, so none pokes through, and says so.
+
 The linked model is never modified.
 """
 
 __title__  = "Multi Wall\nCreation V2"
 __author__ = "Tahir Sanwarwala"
 __doc__    = (
-    "Select any mix of walls and wall sweeps in a LINKED model -- drag "
-    "a box or click, then click Finish.\n"
+    "Select any mix of walls, wall sweeps and roof soffits in a LINKED "
+    "model -- drag a box or click, then click Finish.\n"
     "Each CAST STONE sweep becomes a wall in the host model; each wall "
     "becomes skin walls that stop at the stone sweeps running on it.  "
     "EIFS sweeps are ignored, picked or not.\n"
@@ -74,6 +83,8 @@ __doc__    = (
     "Sweep wall types come from STONE / EIFS in the sweep's type or "
     "material name; EIFS is dropped, and you are only asked about what "
     "that rule cannot read.\n"
+    "A picked roof soffit is never built: the walls under it just stop "
+    "at its underside.\n"
     "The linked model is left untouched."
 )
 
@@ -105,6 +116,7 @@ from Autodesk.Revit.UI.Selection import ISelectionFilter, ObjectType
 from pyrevit import revit, forms, script
 
 from Tahir import (
+    soffit as soffit_lib,
     wall_bands,
     wall_chain,
     wall_constraints,
@@ -268,8 +280,8 @@ def sweep_is_convertible(sweep):
     return True, None
 
 
-class LinkedWallOrSweepFilter(ISelectionFilter):
-    """Allow Basic Walls and horizontal wall sweeps inside a link.
+class LinkedSourceFilter(ISelectionFilter):
+    """Allow Basic Walls, horizontal wall sweeps and roof soffits.
 
     For linked elements Revit calls AllowElement() on the
     RevitLinkInstance and AllowReference() on each candidate reference
@@ -293,13 +305,13 @@ class LinkedWallOrSweepFilter(ISelectionFilter):
                 return sweep_is_convertible(elem)[0]
             if isinstance(elem, Wall):
                 return elem.WallType.Kind == WallKind.Basic
-            return False
+            return soffit_lib.is_soffit(elem)
         except Exception:
             return False
 
 
 def pick_sources():
-    """Select walls and sweeps in links, then Finish.
+    """Select walls, sweeps and roof soffits in links, then Finish.
 
     PickObjects rather than a loop of PickObject: it is what gives the
     selection Revit's own behaviour -- a rubber-band box as well as
@@ -317,26 +329,28 @@ def pick_sources():
     things this tool can use -- reveals, vertical sweeps and non-Basic
     walls are never added in the first place.
 
-    Returns (wall_picks, sweep_picks), each a list of
+    Returns (wall_picks, sweep_picks, soffit_picks), each a list of
     (RevitLinkInstance, element).  PickObjects de-duplicates its own
-    result, so neither list can hold the same element twice.
+    result, so no list can hold the same element twice.
     """
+    empty = ([], [], [])
     try:
         refs = uidoc.Selection.PickObjects(
-            ObjectType.LinkedElement, LinkedWallOrSweepFilter(),
-            "Select walls and wall sweeps in a linked model, then click "
-            "Finish")
+            ObjectType.LinkedElement, LinkedSourceFilter(),
+            "Select walls, wall sweeps and roof soffits in a linked "
+            "model, then click Finish")
     except OperationCanceledException:
-        return [], []
+        return empty
     except Exception as ex:
         logger.debug("Selection ended: {}".format(ex))
-        return [], []
+        return empty
 
     if not refs:
-        return [], []
+        return empty
 
-    walls  = []
-    sweeps = []
+    walls   = []
+    sweeps  = []
+    soffits = []
     for ref in refs:
         link_inst = doc.GetElement(ref.ElementId)
         link_doc  = link_inst.GetLinkDocument()
@@ -348,8 +362,10 @@ def pick_sources():
             sweeps.append((link_inst, elem))
         elif isinstance(elem, Wall):
             walls.append((link_inst, elem))
+        elif soffit_lib.is_soffit(elem):
+            soffits.append((link_inst, elem))
 
-    return walls, sweeps
+    return walls, sweeps, soffits
 
 
 # ===========================================================================
@@ -778,6 +794,57 @@ def plan_sweep(link_inst, sweep):
     job.type_name = sweep_type_name(sweep)
     job.wall_type = None          # filled in by resolve_sweep_types
     return job, notes
+
+
+# ===========================================================================
+# SOFFITS
+# ===========================================================================
+
+class SoffitJob(object):
+    """One linked roof soffit, measured.  Never built, only obeyed."""
+
+    __slots__ = ("label", "shape")
+
+
+def plan_soffit(link_inst, soffit):
+    """Measure one soffit.  Returns (SoffitJob or None, notes)."""
+    label = "soffit id {}".format(soffit.Id.IntegerValue)
+
+    shape, reasons = soffit_lib.measure(
+        soffit, link_inst.GetTotalTransform())
+    notes = [[label, reason] for reason in reasons]
+
+    if shape is None:
+        return None, notes
+
+    job = SoffitJob()
+    job.label = label
+    job.shape = shape
+    return job, notes
+
+
+def soffit_cutters(job, soffit_jobs, used):
+    """The (base_z, top_z) spans the soffits impose on one wall.
+
+    A wall counts as under a soffit when any part of its THICKNESS is,
+    not merely its centreline: a soffit almost always stops at a wall's
+    face, and testing the bare centreline would miss every one of them.
+    Half the wall's width is that reach.
+
+    *used* is added to for every soffit that limits something, so the
+    caller can report the ones that limited nothing.
+    """
+    p0, p1 = curve_ends(job.loc_curve)
+    reach  = (job.total_width or 0.0) / 2.0
+
+    cutters = []
+    for index, soffit_job in enumerate(soffit_jobs):
+        if not soffit_lib.limits_wall(soffit_job.shape, p0, p1,
+                                      reach=reach):
+            continue
+        used.add(index)
+        cutters.append((soffit_job.shape.base_z, soffit_job.shape.top_z))
+    return cutters
 
 
 # ===========================================================================
@@ -1480,7 +1547,7 @@ def sweep_cuts_walls(job):
     return get_element_name(job.wall_type) == wall_bands.CAST_STONE_TYPE_NAME
 
 
-def snap_to_levels(wall_jobs, sweep_jobs, levels):
+def snap_to_levels(wall_jobs, sweep_jobs, soffit_jobs, levels):
     """Pull every end that all but reaches a level onto it.
 
     A sweep an inch shy of a level binds its base to the level BELOW
@@ -1512,16 +1579,31 @@ def snap_to_levels(wall_jobs, sweep_jobs, levels):
             wall_constraints.snap_span_to_levels(
                 job.base_z, job.top_z, levels, min_height=MIN_RUN_LENGTH)
 
+    # Soffits snap for the same reason sweeps do.  A soffit an inch shy
+    # of a level would stop the wall under it an inch shy of that level
+    # too, and that wall would then be constrained to the level BELOW.
+    for job in soffit_jobs:
+        job.shape.base_z, job.shape.top_z, _moved = \
+            wall_constraints.snap_span_to_levels(
+                job.shape.base_z, job.shape.top_z, levels,
+                min_height=MIN_RUN_LENGTH)
 
-def band_walls(wall_jobs, sweep_jobs, levels, notes):
+
+def band_walls(wall_jobs, sweep_jobs, soffit_jobs, levels, notes):
     """Work out the bands each wall is cut into.
 
-    Two things cut a wall.  The CAST STONE sweeps hosted on it -- hosted
-    decided by the link's own GetHostIds(), so a sweep on a neighbouring
-    wall is never mistaken for one on this one, and cast stone by
-    sweep_cuts_walls, so a hand-typed sweep passes a wall by without
-    breaking it.  And every level a leftover stretch crosses, because a
-    wall crossing a level is the one thing the house rule never allows.
+    Three things cut a wall.  A picked ROOF SOFFIT cuts every wall
+    running under it, at its own full extent -- and unlike a course it
+    is never suppressed by a window, because a soffit is a limit of the
+    same kind a level is: where one comes down, the wall stops.
+
+    The other two are as they were.  The CAST STONE sweeps hosted
+    on it -- hosted decided by the link's own GetHostIds(), so a sweep
+    on a neighbouring wall is never mistaken for one on this one, and
+    cast stone by sweep_cuts_walls, so a hand-typed sweep passes a wall
+    by without breaking it.  And every level a leftover stretch crosses,
+    because a wall crossing a level is the one thing the house rule
+    never allows.
 
     Nothing is rounded: wall_constraints.plan_wall is called with
     allow_round=False so a band end stays exactly on the sweep face or
@@ -1531,6 +1613,7 @@ def band_walls(wall_jobs, sweep_jobs, levels, notes):
     Fills job.bands in place.
     """
     cutting = [j for j in sweep_jobs if sweep_cuts_walls(j)]
+    used    = set()
 
     for job in wall_jobs:
         # One cutter per RUN, not per sweep: a run knows which wall it
@@ -1547,6 +1630,9 @@ def band_walls(wall_jobs, sweep_jobs, levels, notes):
         # wall's heights entirely.
         cutters = wall_bands.cutters_clear_of_windows(
             cutters, [(w[2], w[3]) for w in job.windows])
+
+        # Soffits are added AFTER that exemption, never inside it.
+        cutters = cutters + soffit_cutters(job, soffit_jobs, used)
 
         gaps, dropped = wall_bands.subtract_spans(
             (job.base_z, job.top_z), cutters)
@@ -1574,6 +1660,12 @@ def band_walls(wall_jobs, sweep_jobs, levels, notes):
 
         if not job.bands:
             note(notes, job.label, "no band could be constrained")
+
+    for index, soffit_job in enumerate(soffit_jobs):
+        if index not in used:
+            note(notes, soffit_job.label,
+                 "no picked wall runs under this soffit - it limited "
+                 "nothing")
 
 
 # ===========================================================================
@@ -2362,13 +2454,14 @@ def report(notes):
 # ===========================================================================
 
 def main():
-    wall_picks, sweep_picks = pick_sources()
-    if not wall_picks and not sweep_picks:
+    wall_picks, sweep_picks, soffit_picks = pick_sources()
+    if not wall_picks and not sweep_picks and not soffit_picks:
         return          # cancelled: create nothing, report nothing
 
-    notes      = []
-    sweep_jobs = []
-    wall_jobs  = []
+    notes       = []
+    sweep_jobs  = []
+    wall_jobs   = []
+    soffit_jobs = []
 
     for link_inst, sweep in sweep_picks:
         try:
@@ -2392,6 +2485,17 @@ def main():
         if job is not None:
             wall_jobs.append(job)
 
+    for link_inst, soffit in soffit_picks:
+        try:
+            job, job_notes = plan_soffit(link_inst, soffit)
+        except Exception as ex:
+            note(notes, "soffit id {}".format(soffit.Id.IntegerValue),
+                 "could not measure this soffit: {}".format(ex))
+            continue
+        notes.extend(job_notes)
+        if job is not None:
+            soffit_jobs.append(job)
+
     wall_jobs = merge_wall_jobs(wall_jobs)
 
     if not sweep_jobs and not wall_jobs:
@@ -2411,9 +2515,9 @@ def main():
     # Before banding: the bands are cut at the sweeps' own elevations,
     # so the snap has to reach the sweeps first or the walls would be
     # cut where the sweeps used to be.
-    snap_to_levels(wall_jobs, sweep_jobs, levels)
+    snap_to_levels(wall_jobs, sweep_jobs, soffit_jobs, levels)
 
-    band_walls(wall_jobs, sweep_jobs, levels, notes)
+    band_walls(wall_jobs, sweep_jobs, soffit_jobs, levels, notes)
 
     t = Transaction(doc, "Multi Wall Creation")
     t.Start()
