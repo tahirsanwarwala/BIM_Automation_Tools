@@ -334,6 +334,25 @@ def _matches_thickness(wall_type, thickness, tol=TYPE_THICKNESS_TOL):
     return abs(width - thickness) <= tol
 
 
+def _types_at_thickness(doc, materials, thickness):
+    """Basic wall types finished in any of *materials* and *thickness* thick.
+
+    Deduplicated by Id, since two materials cannot share a type but the
+    same type can be reached twice through a caller's own repetition.
+    """
+    found = []
+    seen  = set()
+    for mat in materials:
+        for wt in find_wall_types_using_material(doc, mat.Id):
+            if not _matches_thickness(wt, thickness):
+                continue
+            if wt.Id in seen:
+                continue
+            seen.add(wt.Id)
+            found.append(wt)
+    return found
+
+
 def used_skin_shading_colors(doc):
     """Return the shading colours already taken by SKIN materials in *doc*."""
     used = set()
@@ -661,9 +680,27 @@ def plan_skin_wall_type(doc, source_material, source_doc, thickness,
     matches = find_host_materials_by_mark(doc, mark)
 
     if len(matches) > 1:
+        # Several host materials carrying one Mark is not by itself a
+        # question for the user.  What the caller needs is a wall type of
+        # the linked finish's own thickness, and across those materials
+        # there is usually exactly one -- the Mark is shared precisely
+        # because they are the same finish at different thicknesses.
+        # Only a genuine tie, or nothing at all, is worth a dialog.
+        exact = _types_at_thickness(doc, matches, thickness)
+
+        if len(exact) == 1:
+            return {"action": "use", "type": exact[0],
+                    "name": element_name(exact[0])}
+
+        if len(exact) > 1:
+            reason = "{} wall types at {} carry Mark '{}'".format(
+                len(exact), thk_text, mark)
+        else:
+            reason = ("{} host materials share Mark '{}' and none has a {} "
+                      "wall type".format(len(matches), mark, thk_text))
+
         return _plan_from_user_pick(
-            doc, "{} host materials share Mark '{}'".format(len(matches), mark),
-            src_name, thk_text, thickness, tool_title)
+            doc, reason, src_name, thk_text, thickness, tool_title)
 
     if len(matches) == 1:
         host_mat = matches[0]
