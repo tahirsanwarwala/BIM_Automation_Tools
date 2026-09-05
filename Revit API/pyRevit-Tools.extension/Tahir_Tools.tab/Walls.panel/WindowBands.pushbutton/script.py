@@ -7,12 +7,20 @@ structural framing member spanning the opening, and the band is joined
 to the wall behind it so the wall is cut and the quantities come out
 right.
 
-Which curtain walls ask is read off their trim materials.  Head Trim
-Material names the lintel and Sill Trim Material names the sill, and a
-band is wanted where that material's name carries ST-02 or ST-03.  No
-material, or <By Category>, means no band on that side -- so a window
-can have a lintel and no sill, or the other way about, and most have
-neither.
+Which curtain walls ask is read off the LINKED WINDOW each one was
+built from.  Head Trim Material names the lintel and Sill Trim Material
+names the sill, and a band is wanted where that material's name carries
+ST-02 or ST-03.  No material, or <By Category>, means no band on that
+side -- so a window can have a lintel and no sill, or the other way
+about, and most have neither.
+
+A curtain wall records nothing about the window it replaced, so the two
+are matched on where they sit: the window whose plan position is
+closest to the curtain wall's, of those whose own height contains it.
+Stacked windows share a plan position, which is why the height has to
+come into it.  Two identical windows side by side can in principle be
+swapped for each other, and it does not matter -- identical windows
+carry identical trim.
 
 The band spans the curtain wall exactly -- the curtain wall IS the
 rough opening, since that is what it was built from -- and its depth
@@ -56,6 +64,7 @@ from Autodesk.Revit.DB import (
     JoinGeometryUtils,
     Line,
     Outline,
+    RevitLinkInstance,
     Transaction,
     Wall,
     WallKind,
@@ -94,6 +103,17 @@ Z_JUST_BOTTOM = 2
 
 # Anything shorter than this, in feet, is not an opening worth banding.
 MIN_BAND_LENGTH = 0.05
+
+# How far, in feet, a linked window's plan position may be from the
+# curtain wall's and still be the window it was built from.  Generous
+# on purpose: the curtain wall sits on the skin, which stands off the
+# source wall's face, so the two are never exactly on top of each other.
+MATCH_PLAN_TOL = 2.0
+
+# ...and how far outside the window's own height the curtain wall's
+# middle may fall.  Tight on purpose: this is what tells one storey's
+# window from the one stacked above it.
+MATCH_Z_TOL = 0.5
 
 
 # ===========================================================================
@@ -183,18 +203,18 @@ def material_name(elem, name):
     return get_element_name(material)
 
 
-def band_material(wall, name):
-    """The band material on this curtain wall or its type, or None.
+def band_material(window, name):
+    """The band material on this linked window or its type, or None.
 
     Only a material whose name carries one of BAND_MATERIALS counts.
     The name is returned rather than a yes, because it is also what
     decides WHICH framing type the band is: a cast stone head and a
     brick soldier course are not the same beam.
     """
-    candidates = [material_name(wall, name)]
+    candidates = [material_name(window, name)]
     try:
-        candidates.append(material_name(doc.GetElement(wall.GetTypeId()),
-                                        name))
+        candidates.append(material_name(
+            window.Document.GetElement(window.GetTypeId()), name))
     except Exception:
         pass
 
@@ -208,14 +228,74 @@ def band_material(wall, name):
     return None
 
 
-def wanted_bands(wall):
-    """The bands this curtain wall asks for, as [(side, material)]."""
+def wanted_bands(window):
+    """The bands this linked window asks for, as [(side, material)]."""
     found = []
     for name, side in BAND_PARAMS:
-        material = band_material(wall, name)
+        material = band_material(window, name)
         if material:
             found.append((side, material))
     return found
+
+
+def linked_windows():
+    """Every window in every loaded link, placed in host coordinates.
+
+    Returned as (x, y, z_lo, z_hi, window).  The bounding box rather
+    than the location point, because where a window's location point
+    sits vertically is a family's own business and the box is not.
+    """
+    found = []
+    for link_inst in FilteredElementCollector(doc) \
+            .OfClass(RevitLinkInstance):
+        link_doc = link_inst.GetLinkDocument()
+        if link_doc is None:
+            continue
+        transform = link_inst.GetTotalTransform()
+
+        windows = FilteredElementCollector(link_doc) \
+            .OfCategory(BuiltInCategory.OST_Windows) \
+            .WhereElementIsNotElementType()
+
+        for window in windows:
+            try:
+                bbox = window.get_BoundingBox(None)
+            except Exception:
+                continue
+            if bbox is None:
+                continue
+            lo = transform.OfPoint(bbox.Min)
+            hi = transform.OfPoint(bbox.Max)
+            found.append(((lo.X + hi.X) / 2.0, (lo.Y + hi.Y) / 2.0,
+                          min(lo.Z, hi.Z), max(lo.Z, hi.Z), window))
+    return found
+
+
+def match_window(wall, base_z, top_z, windows):
+    """The linked window this curtain wall was built from, or None."""
+    loc = wall.Location
+    curve = loc.Curve if loc is not None else None
+    if curve is None:
+        return None
+
+    p0 = curve.GetEndPoint(0)
+    p1 = curve.GetEndPoint(1)
+    cx = (p0.X + p1.X) / 2.0
+    cy = (p0.Y + p1.Y) / 2.0
+    cz = (base_z + top_z) / 2.0
+
+    best = None
+    best_distance = None
+    for x, y, z_lo, z_hi, window in windows:
+        if cz < z_lo - MATCH_Z_TOL or cz > z_hi + MATCH_Z_TOL:
+            continue
+        distance = ((x - cx) ** 2 + (y - cy) ** 2) ** 0.5
+        if distance > MATCH_PLAN_TOL:
+            continue
+        if best_distance is None or distance < best_distance:
+            best_distance = distance
+            best = window
+    return best
 
 
 # ===========================================================================
@@ -443,18 +523,13 @@ def cut_wall_with(band, wall):
     return None
 
 
-def band_wall(wall, asked, symbols, notes):
+def band_wall(wall, extent, asked, symbols, notes):
     """Place every band this curtain wall asks for.  Returns how many.
 
     *asked* is [(side, material)] as found by wanted_bands, and
     *symbols* maps a band material to the framing type chosen for it.
     """
     label = "curtain wall id {}".format(wall.Id.IntegerValue)
-
-    extent = wall_extent(wall)
-    if extent is None:
-        note(notes, label, "could not measure this curtain wall")
-        return 0
     base_z, top_z = extent
 
     placed = 0
@@ -508,15 +583,35 @@ def main():
 
     notes = []
 
+    windows = linked_windows()
+    if not windows:
+        report([["-", "no windows in any loaded link - there is nothing "
+                      "to read the trim materials from"]])
+        return
+
     wanting = []
     for wall in walls:
-        asked = wanted_bands(wall)
+        label  = "curtain wall id {}".format(wall.Id.IntegerValue)
+        extent = wall_extent(wall)
+        if extent is None:
+            note(notes, label, "could not measure this curtain wall")
+            continue
+
+        window = match_window(wall, extent[0], extent[1], windows)
+        if window is None:
+            note(notes, label,
+                 "no linked window sits here - cannot tell whether it "
+                 "has bands")
+            continue
+
+        asked = wanted_bands(window)
         if asked:
-            wanting.append((wall, asked))
+            wanting.append((wall, extent, asked))
 
     if not wanting:
-        report([["-", "none of the picked curtain walls has a {} trim "
-                      "material".format(" or ".join(BAND_MATERIALS))]])
+        report(notes + [["-", "none of the picked curtain walls has a {} "
+                              "trim material".format(
+                                  " or ".join(BAND_MATERIALS))]])
         return
 
     types = framing_types()
@@ -526,7 +621,7 @@ def main():
 
     # Every dialog happens here, before the transaction opens.
     symbols = {}
-    for _wall, asked in wanting:
+    for _wall, _extent, asked in wanting:
         for _side, material in asked:
             if material not in symbols:
                 symbols[material] = prompt_framing_type(types, material)
@@ -545,8 +640,8 @@ def main():
     t = Transaction(doc, "Window Bands")
     t.Start()
     try:
-        for wall, asked in wanting:
-            placed += band_wall(wall, asked, symbols, notes)
+        for wall, extent, asked in wanting:
+            placed += band_wall(wall, extent, asked, symbols, notes)
         t.Commit()
     except Exception:
         if t.HasStarted() and not t.HasEnded():
