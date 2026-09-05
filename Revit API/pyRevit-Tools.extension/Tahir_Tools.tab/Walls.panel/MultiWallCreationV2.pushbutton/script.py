@@ -153,6 +153,12 @@ BG_LEVEL_PARAM   = "BG_LEVEL"
 # Anything longer is an opening the sweep genuinely stops at.  One inch.
 SWEEP_GAP_TOL = 1.0 / 12.0
 
+# An opening whose bottom comes within this of the wall's base is not a
+# hole in the wall -- it is a notch out of its base, and it is cut as
+# one, so the profile runs straight through instead of leaving a
+# hairline of wall under the opening.  One inch.
+OPENING_BASE_MERGE_TOL = 1.0 / 12.0
+
 TOOL_TITLE = "Multi Wall Creation V2"
 
 
@@ -2292,10 +2298,28 @@ def build_bands(prepared, notes):
 # OPENINGS
 # ===========================================================================
 
-def opening_profile(wall, holes, base, top):
-    """Curves for *wall*'s elevation with every hole in *holes* cut out.
+def merge_notches(notches):
+    """Overlapping base notches become one, as deep as the deeper.
 
-    Returns the wall's own rectangle followed by one loop per hole, all
+    Two openings that both run to the floor and overlap in plan cannot
+    be two notches: their outlines would cross, and the profile would
+    be self-intersecting rather than merely wrong.  One notch spanning
+    both, at the greater height, is the shape they actually describe.
+    """
+    merged = []
+    for lo, hi, z_hi in sorted(notches):
+        if merged and lo <= merged[-1][1]:
+            prev_lo, prev_hi, prev_z = merged[-1]
+            merged[-1] = (prev_lo, max(prev_hi, hi), max(prev_z, z_hi))
+        else:
+            merged.append((lo, hi, z_hi))
+    return merged
+
+
+def opening_profile(wall, holes, notches, base, top):
+    """Curves for *wall*'s elevation, cut by its holes and its notches.
+
+    Returns the wall's own outline followed by one loop per hole, all
     as closed loops in the wall's elevation plane.  Revit takes the
     first loop as the outline and the rest as holes in it.  Every hole
     for a given wall MUST reach this in one call: wall_sketch.apply_profile
@@ -2308,6 +2332,15 @@ def opening_profile(wall, holes, base, top):
     projection and the clamping before calling this, because a hole
     that clamps to nothing there is reported and dropped before it gets
     here.
+
+    *notches* is (lo, hi, z_hi) for the openings that reach the wall's
+    BASE.  Those are not holes at all.  Drawn as one, a hole's bottom
+    edge has to be held clear of the outline's bottom edge or the two
+    loops would touch, and that clearance is a hairline of wall left
+    standing under the opening -- which is what this exists to stop.
+    A notch is instead cut INTO the outline: the profile walks up one
+    jamb, across the head and down the other, and the opening runs
+    clean into the base.
 
     *base* and *top* are the elevations this wall was actually BUILT to
     -- the matching entry from job.built_bands -- not read back off the
@@ -2329,7 +2362,17 @@ def opening_profile(wall, holes, base, top):
                    p0.Y + direction.Y * along,
                    z)
 
-    loops = [[(0.0, base), (length, base), (length, top), (0.0, top)]]
+    outline = [(0.0, base)]
+    for lo, hi, z_hi in merge_notches(notches):
+        outline.append((lo, base))
+        outline.append((lo, z_hi))
+        outline.append((hi, z_hi))
+        outline.append((hi, base))
+    outline.append((length, base))
+    outline.append((length, top))
+    outline.append((0.0, top))
+
+    loops = [outline]
     for lo, hi, z_lo, z_hi in holes:
         loops.append([(lo, z_lo), (hi, z_lo), (hi, z_hi), (lo, z_hi)])
 
@@ -2402,13 +2445,24 @@ def cut_openings(wall_jobs, notes):
                 direction = (p1 - p0).Normalize()
                 length = p0.DistanceTo(p1)
 
-                valid = []
+                valid   = []
+                notches = []
                 for centre, width, z_lo, z_hi, opening in entry["holes"]:
                     along = (centre - p0).DotProduct(direction)
                     lo = max(along - width / 2.0, wall_bands.TOL)
                     hi = min(along + width / 2.0, length - wall_bands.TOL)
-                    hole_z_lo = max(z_lo, base + wall_bands.TOL)
                     hole_z_hi = min(z_hi, top - wall_bands.TOL)
+
+                    # An opening that all but reaches the wall's base is
+                    # cut INTO the base rather than held a hairline
+                    # clear of it.  The test is the opening's own
+                    # bottom, before any clamping, since the clamp is
+                    # what would have opened the gap.
+                    to_base = z_lo <= base + OPENING_BASE_MERGE_TOL
+
+                    hole_z_lo = base if to_base else max(
+                        z_lo, base + wall_bands.TOL)
+
                     if (hi - lo < MIN_RUN_LENGTH
                             or hole_z_hi - hole_z_lo < MIN_RUN_LENGTH):
                         note(notes, job.label,
@@ -2416,12 +2470,16 @@ def cut_openings(wall_jobs, notes):
                              "the wall - left uncut".format(
                                  opening.Id.IntegerValue))
                         continue
-                    valid.append((lo, hi, hole_z_lo, hole_z_hi))
 
-                if not valid:
+                    if to_base:
+                        notches.append((lo, hi, hole_z_hi))
+                    else:
+                        valid.append((lo, hi, hole_z_lo, hole_z_hi))
+
+                if not valid and not notches:
                     continue
 
-                curves = opening_profile(host, valid, base, top)
+                curves = opening_profile(host, valid, notches, base, top)
 
                 failure = wall_sketch.apply_profile(
                     doc, host, curves,
