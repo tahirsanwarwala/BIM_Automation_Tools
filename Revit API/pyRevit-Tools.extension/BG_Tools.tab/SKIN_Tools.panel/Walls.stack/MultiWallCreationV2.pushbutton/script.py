@@ -66,6 +66,14 @@ statement that it governs this run -- and a wall stops at its LOWEST
 point, so nothing pokes through whatever the soffit turns out to be
 doing.
 
+A wall ALREADY STANDING where one would be built is left alone, and
+nothing is built on top of it.  The test is per wall, not per source:
+one sweep becomes a run of walls, and only the ones standing where a
+wall already stands are dropped -- the rest of that sweep is built as
+though nothing had happened.  Same type, same two ends, same base and
+top: all four, or it is a different wall.  Windows and openings still
+go onto the wall that was already there.
+
 The linked model is never modified.
 """
 
@@ -84,6 +92,8 @@ __doc__    = (
     "that rule cannot read.\n"
     "A picked roof soffit is never built: every wall in the run just "
     "stops at its lowest point.\n"
+    "A wall already standing where one would go is left alone -- per "
+    "wall, so the rest of a sweep's run is still built.\n"
     "The linked model is left untouched."
 )
 
@@ -120,6 +130,7 @@ from BG import (
     wall_bands,
     wall_chain,
     wall_constraints,
+    wall_exists,
     wall_materials,
     wall_miter,
     wall_naming,
@@ -2010,7 +2021,7 @@ def apply_bg_level(wall, band):
         return False
 
 
-def build_sweep_walls(sweep_jobs, levels, notes):
+def build_sweep_walls(sweep_jobs, levels, notes, existing):
     """Create the walls for every measured sweep.  Inside a transaction.
 
     Mitring is across sweeps, not within one.  Two sweeps meeting at a
@@ -2020,6 +2031,11 @@ def build_sweep_walls(sweep_jobs, levels, notes):
     AND the wall type it resolved to.  A stone band then trims into a
     stone band and not into a course at a different height, or of a
     different type where one was picked by hand.
+
+    A run standing where a wall of its own type already stands at its
+    own height is skipped, and only that run.  The mitre has already
+    happened by then, so what is compared is the curve the wall would
+    actually have been built on -- not the one it was measured as.
     """
     items = []
     for job in sweep_jobs:
@@ -2052,6 +2068,7 @@ def build_sweep_walls(sweep_jobs, levels, notes):
 
     unwritten = {}
     no_level  = {}
+    skipped   = [0]           # a list, so the inner loop can add to it
     for group in groups.values():
         built = []
         try:
@@ -2096,12 +2113,27 @@ def build_sweep_walls(sweep_jobs, levels, notes):
                      "could not constrain a run of this sweep: {}".format(ex))
                 continue
 
+            type_id = job.wall_type.Id.IntegerValue
+            standing = wall_exists.find(
+                existing, type_id, curve, run.base_z, run.top_z)
+            if standing is not None:
+                skipped[0] += 1
+                # Still offered for joining.  The wall is there, its new
+                # neighbours meet it, and a corner left unjoined because
+                # one side of it was built last week looks no better than
+                # any other unjoined corner.
+                built.append((curve_ends(curve), standing))
+                continue
+
             try:
                 wall = create_sweep_wall(
                     curve, segment.frame, job.wall_type, band)
             except Exception as ex:
                 note(notes, label, "wall creation failed: {}".format(ex))
                 continue
+
+            wall_exists.register(existing, type_id, curve,
+                                 run.base_z, run.top_z, wall)
 
             if not apply_bg_level(wall, band):
                 no_level[job.label] = no_level.get(job.label, 0) + 1
@@ -2114,6 +2146,7 @@ def build_sweep_walls(sweep_jobs, levels, notes):
 
     report_unwritten(notes, unwritten, BG_PROFILE_PARAM)
     report_unwritten(notes, no_level, BG_LEVEL_PARAM)
+    return skipped[0]
 
 
 def resolve_skin_type(plan, job, executed, key):
@@ -2276,17 +2309,35 @@ def mitre_prepared(prepared, notes):
             continue
 
 
-def build_bands(prepared, notes):
+def build_bands(prepared, notes, existing):
     """Create one skin wall per prepared band.  Inside a transaction.
 
     Walls are joined afterwards, group by group, so Revit cleans each
     corner and tee it can -- see join_at_junctions.
+
+    A band standing where a wall of its own type already stands at its
+    own elevations is not built again.  The wall that IS there goes into
+    job.built_bands in its place, so the windows and openings that
+    belong to that band are still hosted and still cut -- they are what
+    the band was for, and the wall being older does not change that.
     """
     no_level = {}
+    skipped  = 0
     for item in prepared:
         item["wall"] = None
         job  = item["job"]
         band = item["band"]
+
+        standing = wall_exists.find(
+            existing, item["type"].Id.IntegerValue, item["curve"],
+            band["base_z"], band["top_z"])
+        if standing is not None:
+            item["wall"] = standing
+            job.built_bands.append(
+                (band["base_z"], band["top_z"], standing))
+            skipped += 1
+            continue
+
         try:
             wall = wall_skin.create_oriented_wall(
                 doc, item["curve"], item["type"].Id,
@@ -2301,6 +2352,9 @@ def build_bands(prepared, notes):
             apply_constraints(wall, band)
             item["wall"] = wall
             job.built_bands.append((band["base_z"], band["top_z"], wall))
+            wall_exists.register(
+                existing, item["type"].Id.IntegerValue, item["curve"],
+                band["base_z"], band["top_z"], wall)
             if not apply_bg_level(wall, band):
                 no_level[job.label] = no_level.get(job.label, 0) + 1
         except Exception as ex:
@@ -2317,6 +2371,7 @@ def build_bands(prepared, notes):
             [(curve_ends(item["curve"]), item["wall"]) for item in group])
 
     report_unwritten(notes, no_level, BG_LEVEL_PARAM)
+    return skipped
 
 
 # ===========================================================================
@@ -2602,6 +2657,10 @@ def main():
 
     band_walls(wall_jobs, sweep_jobs, soffit_jobs, levels, notes)
 
+    # What is already here, read once.  Both builders check against it
+    # and add to it, so nothing is built twice within a run either.
+    existing = wall_exists.host_index(doc)
+
     t = Transaction(doc, "Multi Wall Creation")
     t.Start()
     try:
@@ -2620,11 +2679,12 @@ def main():
         logger.debug("Could not set failure handling: {}".format(ex))
 
     try:
-        build_sweep_walls(sweep_jobs, levels, notes)
+        sweeps_skipped = build_sweep_walls(
+            sweep_jobs, levels, notes, existing)
 
         prepared = prepare_bands(wall_jobs, skin_plans, notes)
         mitre_prepared(prepared, notes)
-        build_bands(prepared, notes)
+        bands_skipped = build_bands(prepared, notes, existing)
 
         build_curtain_walls(window_plans, levels, notes)
 
@@ -2642,6 +2702,12 @@ def main():
         cut_openings(wall_jobs, notes)
     except Exception as ex:
         note(notes, "-", "cutting openings failed: {}".format(ex))
+
+    already = sweeps_skipped + bands_skipped
+    if already:
+        note(notes, "-",
+             "{} wall(s) were already standing in the right place and "
+             "were left alone".format(already))
 
     # Silence on success: only problems open the output window.
     report(notes)

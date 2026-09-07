@@ -58,6 +58,7 @@ Revit can execute the Revit API:
     window_cw         measuring a window and building its curtain wall
     curtain_doors     carrying a door panel out of a linked curtain wall
     link_copy         copying out of a link without copying twice
+    wall_exists       is a wall of this type already standing here
 
 Run the pure tests from the repository root:
 
