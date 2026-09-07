@@ -378,17 +378,28 @@ def match_curtain_type(plan, types):
 
 
 def prompt_curtain_type(types, mark, prefix):
-    """Ask the user to pick a curtain wall type.  None means cancelled."""
+    """Ask the user to pick a curtain wall type.  None means cancelled.
+
+    Two different questions, and the title says which.  A source WITH a
+    Type Mark whose '<prefix>_Window' type is missing is a naming gap
+    worth naming.  A source with no Type Mark at all is not a gap --
+    there was never anything to look up -- so it simply asks.
+    """
     by_name = {}
     for wt in types:
         by_name[get_element_name(wt)] = wt
     if not by_name:
         return None
 
+    if prefix:
+        title = "No '{}{}' type - pick one for Type Mark '{}'".format(
+            prefix, CURTAIN_SUFFIX, mark or "<none>")
+    else:
+        title = "No Type Mark to go on - pick a curtain wall type"
+
     chosen = forms.SelectFromList.show(
         sorted(by_name.keys()),
-        title="No '{}{}' type - pick one for Type Mark '{}'".format(
-            prefix or "?", CURTAIN_SUFFIX, mark or "<none>"),
+        title=title,
         button_name="Use this type",
         multiselect=False)
 
