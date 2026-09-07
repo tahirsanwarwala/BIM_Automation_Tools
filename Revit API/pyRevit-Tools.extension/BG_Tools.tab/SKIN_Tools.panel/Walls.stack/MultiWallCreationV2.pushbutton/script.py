@@ -2057,7 +2057,7 @@ def build_sweep_walls(sweep_jobs, levels, notes, existing):
             items.append({"job": job, "run": run, "segment": segment})
 
     if not items:
-        return
+        return 0          # nothing laid out, so nothing skipped either
 
     groups = {}
     span_ids = wall_bands.group_indices(
