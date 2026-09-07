@@ -49,7 +49,7 @@ resolves to WS.  With no matching type you are asked to pick one, once
 per prefix - a type is never created or duplicated.
 
 A CURTAIN WALL is matched the same way, on its own Type Mark, and only
-a curtain wall with NO Type Mark at all falls back to 'WA_WINDOW' by
+a curtain wall with NO Type Mark at all falls back to 'WS_WINDOW' by
 name - asked about only when this model has no such type.  Note that
 its type mark and its mark are two different things here: the INSTANCE
 mark is the window number BG_WINDOW NUMBER wants, and it is the TYPE
@@ -77,7 +77,7 @@ __doc__    = (
     "wall it sits on, and a curtain wall is created to match it.\n"
     "The type comes from the Type Mark prefix (WA12 -> WA_Window, "
     "W04 -> W_Window); a linked curtain wall with no Type Mark falls "
-    "back to WA_WINDOW.\n"
+    "back to WS_WINDOW.\n"
     "A window gives its width, height and sill from its own parameters "
     "and always comes out rectangular, arched ones included; a linked "
     "curtain wall gives its length, constraints and sketched profile, "
@@ -136,7 +136,7 @@ MIN_EXTENT      = 0.02    # feet, below this a measured width/height is junk
 # says nothing worth matching on -- a curtain wall's mark is the window
 # number, not a family code -- so the prefix rule that answers for a
 # window has nothing to answer with here.
-CURTAIN_TYPE_NAME = "WA_WINDOW"
+CURTAIN_TYPE_NAME = "WS_WINDOW"
 
 # Print the measurements table every run.  Off by default: a run that
 # worked has nothing to say, and printing is what opens the output
