@@ -26,6 +26,7 @@ extension. That separation is the point of the split.
 |---|---|
 | Multi Walls | Select walls, wall sweeps and roof soffits in a LINKED model. Builds the skin walls, the sweep walls, the curtain walls for the windows, and cuts the rectangular openings. |
 | Wall Limits | Fixes wall base and top constraints that sit just off a level. |
+| Split Wall | Splits a wall HORIZONTALLY at a picked edge, which Revit itself will not do. The original becomes the lower half. |
 | Curtain Wall | Turns one linked window, or a linked curtain wall, into a curtain wall here. |
 | Window Bands | Places lintel and sill bands on curtain walls whose linked window carries an ST-02 or ST-03 trim material. |
 | Copy From Link | Copies elements of one category out of a link into this model, in place, skipping whatever is already here. |
@@ -59,6 +60,7 @@ Revit can execute the Revit API:
     curtain_doors     carrying a door panel out of a linked curtain wall
     link_copy         copying out of a link without copying twice
     wall_exists       is a wall of this type already standing here
+    wall_bind         binding a wall to an extent, and cloning it
 
 Run the pure tests from the repository root:
 
