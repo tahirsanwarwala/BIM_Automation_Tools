@@ -323,13 +323,25 @@ def bind_extent(doc, wall, band):
        of its own; an unconnected wall's top follows its base, and
        cannot be overtaken by it.
 
-    2. Binding the TOP to its level before the offset lands.  Binding
-       snaps the top to the level itself, and Revit reports the offset
-       as read-only until it regenerates -- so there is a regeneration
-       in between whether we want one or not.  Where that snap would
-       put the top under the base (a band hanging above the topmost
-       level, with a positive offset) the BASE is parked below the
-       level for those two steps and restored after.
+    2. Binding the TOP to its new level while the OLD offset is still
+       on the wall.  Revit reports the offset as read-only until it has
+       regenerated, so there is a regeneration between naming the level
+       and writing the offset whether we want one or not -- and that
+       regeneration does NOT put the top on the level.  It puts it at
+       the level plus whatever offset the wall is still carrying, which
+       is the old wall's, not this band's.
+
+       A wall topping out 10'-8" below LEVEL 03, rebound to LEVEL 02,
+       tries to top out 10'-8" below LEVEL 02 -- under its own base at
+       LEVEL 01.  Revit queues that as a failure it will not let anyone
+       ignore and posts it at COMMIT, long after this tool has read the
+       finished constraints back and found every one of them correct.
+
+       So the offset is tried FIRST, before any regeneration: when
+       Revit takes it, level and offset land together and there is no
+       intermediate state to guard at all.  When it will not, the BASE
+       is parked below wherever that regeneration is going to put the
+       top, and restored after.
 
     Neither parked value survives the call; both exist only between
     regenerations, and both belong inside the caller's sub-transaction.
@@ -338,6 +350,11 @@ def bind_extent(doc, wall, band):
     top_lvl_z  = elevation_of(doc, band["top_level_id"])
     if base_lvl_z is None:
         raise ValueError("the band's base level could not be read")
+
+    # Read before anything moves.  Once the top is unbound this offset is
+    # no longer on show, and it is one of the answers to where Revit will
+    # put the top when it rebinds.
+    prior_top_off = pval(wall, BuiltInParameter.WALL_TOP_OFFSET)
 
     # 1. Let the top go, so the base can move freely under it.
     set_param(wall, BuiltInParameter.WALL_HEIGHT_TYPE,
@@ -359,15 +376,42 @@ def bind_extent(doc, wall, band):
         doc.Regenerate()
         return
 
-    # 2. Park the base if binding the top would otherwise dip under it.
+    # 2. Name the new level and try the offset in the same breath.  When
+    # Revit takes both, nothing is evaluated in between and there is
+    # nothing to guard against.
+    set_param(wall, BuiltInParameter.WALL_HEIGHT_TYPE, band["top_level_id"])
+
+    p = wall.get_Parameter(BuiltInParameter.WALL_TOP_OFFSET)
+    if p is not None and not p.IsReadOnly:
+        p.Set(band["top_offset"])
+        doc.Regenerate()
+        return
+
+    # It would not take the offset yet, so a regeneration is coming and
+    # the top will land somewhere of Revit's choosing.  There are three
+    # readings of where, and no way from outside to tell which one Revit
+    # means: the offset it reports now, the offset the wall arrived
+    # carrying, and none at all -- the top sitting on the level itself.
+    # The lowest of the three is the only one safe to plan for, and
+    # parking deeper than necessary costs nothing, because the base comes
+    # straight back up two regenerations later.
+    stale = None
+    try:
+        if p is not None and p.HasValue:
+            stale = p.AsDouble()
+    except Exception:
+        stale = None
+
+    worst   = min(x for x in (stale, prior_top_off, 0.0) if x is not None)
+    landing = top_lvl_z + worst
+    base_z  = base_lvl_z + band["base_offset"]
+
     parked = None
-    if top_lvl_z <= base_lvl_z + band["base_offset"] + TOL:
+    if landing <= base_z + TOL:
         parked = band["base_offset"]
         set_param(wall, BuiltInParameter.WALL_BASE_OFFSET,
-                  top_lvl_z - base_lvl_z - SAFE_MARGIN)
-        doc.Regenerate()
+                  landing - base_lvl_z - SAFE_MARGIN)
 
-    set_param(wall, BuiltInParameter.WALL_HEIGHT_TYPE, band["top_level_id"])
     doc.Regenerate()
 
     p = wall.get_Parameter(BuiltInParameter.WALL_TOP_OFFSET)
