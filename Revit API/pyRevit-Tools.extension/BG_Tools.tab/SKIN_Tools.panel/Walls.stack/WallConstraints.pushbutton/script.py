@@ -10,7 +10,10 @@ it creates):
                        with a negative Top Offset.  Never an unconnected
                        height.
   * No wall crosses a level.  One that does is cut into bands, one per
-    storey, each bound by the rule above.
+    storey, each bound by the rule above -- the same cut Multi Wall
+    Creation makes, through the same wall_constraints.plan_wall.  A wall
+    crossing four levels becomes five walls; the original keeps the
+    lowest band and its id.
   * Ends that are not on a level are rounded to the nearest whole inch.
     Ends that ARE on a level stay exactly where they are.
 
@@ -388,35 +391,52 @@ def process_wall(wall, levels):
 # REPORT
 # ===============================================================================
 
-# Statuses worth opening the output window for: a wall that could not be
-# fixed, or one fixed only as far as it could go.  Everything else -
-# fixed, split, already correct, skipped - is a run that did its job and
-# has nothing to say.
+# Statuses worth opening the output window for.  Two kinds:
+#
+# A wall that could not be fixed, or was fixed only as far as it could
+# go -- something to act on.
 PROBLEM_STATUSES = ("Needs split", "Failed", "Partly failed",
                     "Fixed - still needs split")
 
+# ...and a wall that was SPLIT, which is not a problem but is a change
+# to the model's element count, and the one thing a silent run leaves
+# genuinely unanswerable: did it cut at the levels or not.  A wall
+# merely re-constrained moves nothing and needs no telling; new walls
+# do.  Matched by prefix, since the status carries the count.
+SPLIT_STATUS_PREFIX = "Split into"
+
+
+def is_reportable(status):
+    """True when this wall's outcome is worth printing."""
+    return (status in PROBLEM_STATUSES
+            or status.startswith(SPLIT_STATUS_PREFIX))
+
 
 def report(results):
-    """Print the walls that need a human, or nothing at all.
+    """Print the walls that were split or need a human, or nothing.
 
-    Printing is what opens the output window, so staying quiet on a clean
-    run is the whole point: anything printed here is something to act on.
+    Printing is what opens the output window, so staying quiet on a run
+    with nothing to say is still the point.  A wall that was merely
+    re-constrained has nothing to say: it did not move and there is no
+    new element to look at.  A wall that was SPLIT does -- there are
+    walls in the model that were not there before, and no other way to
+    find out whether the cut happened.
     """
-    problems = [r for r in results if r.status in PROBLEM_STATUSES]
-    if not problems:
+    shown = [r for r in results if is_reportable(r.status)]
+    if not shown:
         return
 
     counts = {}
     for r in results:
         counts[r.status] = counts.get(r.status, 0) + 1
 
-    output.print_md("## Fix Wall Constraints - {0} of {1} wall(s) need "
-                    "attention".format(len(problems), len(results)))
+    output.print_md("## Fix Wall Constraints - {0} of {1} wall(s) split "
+                    "or needing attention".format(len(shown), len(results)))
     output.print_md(" | ".join(
         "**{0}**: {1}".format(k, v) for k, v in sorted(counts.items())))
 
     rows = []
-    for r in problems:
+    for r in shown:
         rows.append([
             output.linkify(r.wall_id),
             r.type_name,
