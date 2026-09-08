@@ -26,6 +26,11 @@ stay fractional, which means a seam against a neighbour that WAS rounded
 can be out by up to half an inch -- that seam is the thing To Check is
 asking to be looked at.
 
+To Check is about what the sketch PREVENTED, not about the sketch.  A
+sketched wall whose ends already sit on whole inches and which crosses
+no level had nothing prevented, so it is as finished as any other wall
+and says nothing at all.
+
 Apart from that inch rounding, walls do not move: every offset is
 computed so the wall keeps the absolute elevations it already had.
 
@@ -51,11 +56,13 @@ __doc__    = (
     "Walls that cross a level are split into one wall per storey; the\n"
     "original wall is kept as the lowest band.\n"
     "Ends that are not on a level are rounded to the nearest inch.\n"
-    "Walls with a sketched profile are constrained only, and listed as\n"
-    "To Check: rounding or splitting one would move its outline.\n"
+    "Walls with a sketched profile are constrained only - rounding or\n"
+    "splitting one would move its outline - and are listed as To Check\n"
+    "if that leaves their ends off a whole inch, or a level uncut.\n"
     "The Base Constraint level is written into BG_LEVEL.\n"
-    "Curtain walls, stacked walls, walls attached to a roof or floor,\n"
-    "grouped walls and linked walls are reported but never touched."
+    "Stacked walls, walls attached to a roof or floor, grouped walls\n"
+    "and linked walls are reported but never touched.  Curtain walls\n"
+    "are passed over in silence: they have no constraints to fix."
 )
 
 import traceback
@@ -104,10 +111,18 @@ find_parameter = wall_bind.find_parameter
 # Kinds this tool refuses, in its own words.  wall_bind holds no
 # opinion about which kinds a caller can handle.
 BARRED_KINDS = {
-    WallKind.Curtain: "curtain wall (not supported in this version)",
+    WallKind.Curtain: "curtain wall (no base/top constraints to put right)",
     WallKind.Stacked: "stacked wall (sub-walls carry their own constraints)",
     WallKind.Unknown: "unsupported wall kind",
 }
+
+# Refusals not worth a row.  Every other refusal is: the user picked the
+# wall and the tool would not touch it, which is worth saying.  A curtain
+# wall is different in kind -- it has no base and top constraints for
+# this tool to be right or wrong about, so one swept up in a selection is
+# not a mistake to be told about.  Matched on the opening words of the
+# reason above.
+SILENT_SKIP_REASONS = ("curtain wall",)
 
 
 def blocking_reason(wall):
@@ -240,7 +255,8 @@ def inserts_outside(wall, band_top_z):
 class Result(object):
     """One row of the report."""
 
-    __slots__ = ("wall_id", "type_name", "before", "after", "status", "notes")
+    __slots__ = ("wall_id", "type_name", "before", "after", "status",
+                 "notes", "to_check")
 
     def __init__(self, wall_id, type_name):
         self.wall_id   = wall_id
@@ -249,6 +265,9 @@ class Result(object):
         self.after     = ""
         self.status    = ""
         self.notes     = []
+        # Set for a wall this tool deliberately left work on, so the
+        # wrapper can rename it without asking Revit a second time.
+        self.to_check  = False
 
 
 def describe(base_lvl_id, base_off, top_lvl_id, top_off):
@@ -269,7 +288,14 @@ def _process_wall(wall, levels):
 
     reason = blocking_reason(wall)
     if reason:
-        res.status = "Skipped"
+        # Most refusals are worth saying out loud: the user picked the
+        # wall and the tool would not touch it.  A curtain wall is not
+        # like that -- it has no base and top constraints to put right
+        # in the first place, so there is nothing to report, only noise
+        # to make in a selection that swept one up.
+        res.status = ("Not applicable"
+                      if reason.startswith(SILENT_SKIP_REASONS)
+                      else "Skipped")
         res.notes.append(reason)
         return res
 
@@ -305,10 +331,26 @@ def _process_wall(wall, levels):
         return res
 
     if profile_edited:
-        res.notes.append("profile edited: bound to its levels, but the ends "
-                         "were not rounded and the wall was not split - "
-                         "both would move the sketched outline, so do them "
-                         "by hand")
+        # Being sketched is not itself worth reporting.  What is worth
+        # reporting is what the sketch PREVENTED, and on a wall whose
+        # ends already sit on whole inches and which crosses no level,
+        # it prevented nothing -- the wall is as finished as any other.
+        _b, base_moved = wc.snap_end(base_z, levels)
+        _t, top_moved  = wc.snap_end(top_z, levels)
+
+        outstanding = []
+        if base_moved or top_moved:
+            outstanding.append("the ends were not rounded to a whole inch")
+        if plan["needs_split"]:
+            outstanding.append("the wall was not split at the {0} level(s) "
+                               "it crosses".format(len(plan["interior"])))
+
+        res.to_check = bool(outstanding)
+        if res.to_check:
+            res.notes.append(
+                "profile edited: {0}; doing that automatically would move "
+                "the sketched outline, so it is left for you".format(
+                    " and ".join(outstanding)))
 
     # The original wall keeps the lowest band, so nothing hosted in it may
     # reach above that band -- Revit would delete such inserts outright.
@@ -417,13 +459,15 @@ TO_CHECK = "To Check"
 def process_wall(wall, levels):
     """Fix one wall, and flag it when work was left for a human.
 
-    A sketched wall comes back bound to its levels but unrounded and
-    unsplit, which is not the same as finished -- and a status of "Fixed"
-    would say it was.  So it is renamed here, once, at the point where
-    every path out of _process_wall has come back together.
+    A sketched wall that still wants rounding or cutting comes back
+    bound to its levels and no more, which is not the same as finished --
+    and a status of "Fixed" would say it was.  So it is renamed here,
+    once, at the point where every path out of _process_wall has come
+    back together.  A sketched wall with nothing outstanding never sets
+    the flag and stays as quiet as any other finished wall.
     """
     res = _process_wall(wall, levels)
-    if res.status not in URGENT_STATUSES and is_profile_edited(wall):
+    if res.status not in URGENT_STATUSES and res.to_check:
         res.status = TO_CHECK
     return res
 
@@ -432,12 +476,12 @@ def process_wall(wall, levels):
 # REPORT
 # ===============================================================================
 
-# Only two outcomes need no telling: the wall was put right, or it was
-# already right.  Nothing moved that a drawing would show, and nothing
-# was held back.  Every other status -- Skipped, Failed, Partly failed,
-# Needs split, Split into N -- is either something to act on or a change
-# to the model's element count, and says so.
-QUIET_STATUSES = ("Fixed", "Already correct")
+# Outcomes that need no telling: the wall was put right, it was already
+# right, or it was never this tool's business.  Every other status --
+# Skipped, To Check, Failed, Partly failed, Needs split, Split into N --
+# is either something to act on or a change to the model's element
+# count, and says so.
+QUIET_STATUSES = ("Fixed", "Already correct", "Not applicable")
 
 # ...and even a quiet status speaks when the tool held something back.
 # A sketched wall says so through its own To Check status; a BG_LEVEL
