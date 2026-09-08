@@ -1,4 +1,3 @@
 layout:
   - MultiWallCreationV2
   - WallConstraints
-  - SplitWallHorizontal

@@ -21,11 +21,22 @@ Limits uses.
 Both halves then get their Base Constraint level's name written into
 BG_LEVEL.
 
-WHAT THE EDGE IS FOR is only its ELEVATION.  Where it sits in plan, how
-long it is and which way it runs are all ignored -- a horizontal cut
-needs one number, and the edge is a convenient way to point at it.  An
-edge that is genuinely horizontal gives that number exactly; anything
-else gives the height of the point you clicked, and says so.
+WHAT THE REFERENCE IS FOR is only its ELEVATION.  Where it sits in
+plan, how long it is and which way it runs are all ignored -- a
+horizontal cut needs one number, and the thing you point at is a
+convenient way to say it.
+
+The pick comes in two goes, because no single Revit pick spans both
+models.  A LINKED reference is offered first, since that is where the
+references usually are; Esc moves the pick into this model, and Esc
+again ends the run.
+
+Five kinds of thing can name a height, tried in this order: a line --
+model, detail or reference -- gives its own; a horizontal reference
+plane gives its own; a level gives its elevation; a solid edge gives
+its own; and anything else gives the height of the POINT you clicked,
+which is still the height you pointed at.  Only the last of those is
+approximate, and it says so.
 
 A wall attached to a roof or floor, inside a group, or of a kind whose
 constraints do not describe it -- curtain, stacked -- is refused rather
@@ -37,8 +48,9 @@ __title__  = "Split\nWall"
 __author__ = "Tahir Sanwarwala"
 __doc__    = (
     "Split a wall HORIZONTALLY, which Revit itself will not do.\n"
-    "Pick the wall, then pick an edge or line at the height to cut at "
-    "-- in this model or in a link; only its elevation is used.\n"
+    "Pick the wall, then pick a reference at the height to cut at: a "
+    "line, a reference plane, a level or an edge.  A LINKED one is "
+    "offered first; Esc to pick in this model instead.\n"
     "The original wall keeps its id and becomes the LOWER half; a new "
     "wall is built above it, matching it in everything but height.\n"
     "Both halves are bound to levels and get BG_LEVEL written.\n"
@@ -52,12 +64,15 @@ clr.AddReference("RevitAPI")
 clr.AddReference("RevitAPIUI")
 
 from Autodesk.Revit.DB import (
+    CurveElement,
     FilteredElementCollector,
     Level,
+    ReferencePlane,
     RevitLinkInstance,
     Transaction,
     Wall,
     WallKind,
+    XYZ,
 )
 from Autodesk.Revit.Exceptions import OperationCanceledException
 from Autodesk.Revit.UI.Selection import ISelectionFilter, ObjectType
@@ -138,12 +153,15 @@ class WallFilter(ISelectionFilter):
         return False
 
 
-class EdgeFilter(ISelectionFilter):
-    """Anything at all, host or linked.
+class AnythingFilter(ISelectionFilter):
+    """Anything at all.
 
-    Only an elevation is wanted, and every element in the model has one
+    Only an elevation is wanted, and everything in a model has one
     somewhere -- so refusing categories here would only stop the user
-    pointing at the thing they can see.
+    pointing at the thing they can see.  A linked pick needs
+    AllowElement to accept the RevitLinkInstance and AllowReference to
+    accept what is inside it, and saying yes to both covers a host pick
+    as well.
     """
 
     def AllowElement(self, elem):
@@ -171,98 +189,184 @@ def pick_wall():
     return elem if isinstance(elem, Wall) else None
 
 
-def _edge_from_reference(ref):
-    """The picked Edge as a curve, or None.
+def _levelish_z(elem, transform):
+    """The elevation *elem* names, or None, with the kind that named it.
 
-    Host geometry resolves directly.  Linked geometry needs the
-    reference re-expressed inside the link before the linked document
-    will recognise it, and the whole thing is wrapped because a
-    reference to something that is not an edge at all -- a face, a whole
-    element -- simply will not resolve, which is an answer rather than a
-    failure.
+    Five kinds of thing can name a height, and they are asked in the
+    order of how exactly they answer:
+
+      * a LINE -- model, detail or reference.  ObjectType.Edge never
+        reaches one of these: a line has no solid and so no edges, which
+        is why a detail line drawn to mark a course could not be picked
+        at all.  GeometryCurve is where its geometry actually lives.
+      * a REFERENCE PLANE, which in an elevation view looks exactly like
+        a line and is a natural thing to point at.
+      * a LEVEL, whose elevation is the whole point of it.
+      * a solid EDGE, for a reference whose geometry carries one.
+
+    Returns (z, kind) or (None, None).  *transform* is the link's, or
+    None for something in this model.
+    """
+    def moved(point):
+        return transform.OfPoint(point) if transform is not None else point
+
+    if isinstance(elem, CurveElement):
+        try:
+            curve = elem.GeometryCurve
+            a = moved(curve.GetEndPoint(0))
+            b = moved(curve.GetEndPoint(1))
+        except Exception:
+            return None, None
+        if abs(a.Z - b.Z) > LEVEL_EDGE_TOL:
+            return None, "sloped line"
+        return (a.Z + b.Z) / 2.0, "line"
+
+    if isinstance(elem, ReferencePlane):
+        try:
+            a = moved(elem.BubbleEnd)
+            b = moved(elem.FreeEnd)
+        except Exception:
+            return None, None
+        if abs(a.Z - b.Z) > LEVEL_EDGE_TOL:
+            return None, "sloped reference plane"
+        return (a.Z + b.Z) / 2.0, "reference plane"
+
+    if isinstance(elem, Level):
+        try:
+            return moved(XYZ(0.0, 0.0, elem.Elevation)).Z, "level"
+        except Exception:
+            return None, None
+
+    return None, None
+
+
+def _edge_z(ref, owner, transform):
+    """The elevation of the solid edge behind *ref*, or (None, None).
+
+    Linked geometry needs the reference re-expressed inside the link
+    before the linked document will recognise it.  The whole thing is
+    wrapped because a reference to something that is not an edge -- a
+    face, a whole element -- simply will not resolve, which is an answer
+    rather than a failure.
     """
     try:
-        owner = doc.GetElement(ref.ElementId)
-    except Exception:
-        return None
-    if owner is None:
-        return None
-
-    if isinstance(owner, RevitLinkInstance):
-        link_doc = owner.GetLinkDocument()
-        if link_doc is None:
-            return None
-        try:
+        if transform is not None:
+            link_doc = owner.GetLinkDocument()
             inner = link_doc.GetElement(ref.LinkedElementId)
             geo = inner.GetGeometryObjectFromReference(
                 ref.CreateReferenceInLink())
-            curve = geo.AsCurve()
-            return curve.CreateTransformed(owner.GetTotalTransform())
-        except Exception:
-            return None
-
-    try:
-        geo = owner.GetGeometryObjectFromReference(ref)
-        return geo.AsCurve()
+        else:
+            geo = owner.GetGeometryObjectFromReference(ref)
+        curve = geo.AsCurve()
+        a = curve.GetEndPoint(0)
+        b = curve.GetEndPoint(1)
+        if transform is not None:
+            a = transform.OfPoint(a)
+            b = transform.OfPoint(b)
     except Exception:
-        return None
+        return None, None
+
+    if abs(a.Z - b.Z) > LEVEL_EDGE_TOL:
+        return None, "sloped edge"
+    return (a.Z + b.Z) / 2.0, "edge"
+
+
+def _elevation_from(ref):
+    """(z, note) in MODEL coordinates for whatever was picked."""
+    try:
+        owner = doc.GetElement(ref.ElementId)
+    except Exception:
+        owner = None
+    if owner is None:
+        return None, "that pick could not be read"
+
+    transform = None
+    elem = owner
+    if isinstance(owner, RevitLinkInstance):
+        link_doc = owner.GetLinkDocument()
+        if link_doc is None:
+            return None, "that link is not loaded"
+        transform = owner.GetTotalTransform()
+        try:
+            elem = link_doc.GetElement(ref.LinkedElementId)
+        except Exception:
+            elem = None
+
+    kind = None
+    z = None
+
+    if elem is not None:
+        z, kind = _levelish_z(elem, transform)
+
+    if z is None:
+        edge_z, edge_kind = _edge_z(ref, owner, transform)
+        if edge_z is not None:
+            z, kind = edge_z, edge_kind
+        elif edge_kind is not None:
+            kind = kind or edge_kind
+
+    if z is not None:
+        return z, None
+
+    # Nothing readable was horizontal, so fall back to where the user
+    # actually clicked.  That is still the height they pointed at, and
+    # for a sloped reference it is the only sensible reading of it.
+    try:
+        point = ref.GlobalPoint
+    except Exception:
+        point = None
+    if point is None:
+        return None, "that pick has no readable height"
+
+    return point.Z, "{0} - the height of the point picked was used".format(
+        "that {0} is not horizontal".format(kind) if kind
+        else "no line, plane, level or edge behind that pick")
 
 
 def pick_elevation():
-    """Pick an edge or line and return (elevation, note) in LEVEL space.
+    """Pick a reference and return (elevation, note) in LEVEL space.
+
+    Two picks offered, not one, because no single Revit pick spans both
+    documents: ObjectType.LinkedElement reaches into a link and refuses
+    this model, ObjectType.Element the other way round.  The LINKED one
+    goes first, since that is where the references usually are, and Esc
+    moves into this model rather than ending the run.
 
     Level elevations are measured from the Project Base Point while
     picked geometry comes back in internal model coordinates, so the
     difference is taken out here -- once, at the boundary -- and
     everything downstream is in one space.
-
-    A truly horizontal edge gives its own elevation.  Anything else
-    gives the height of the point clicked, with a note, because that is
-    still the height the user pointed at.
     """
-    try:
-        ref = uidoc.Selection.PickObject(
-            ObjectType.Edge, EdgeFilter(),
-            "Pick a horizontal edge or line at the height to cut at")
-    except OperationCanceledException:
-        return None, None
-    except Exception as ex:
-        logger.debug("Edge pick ended: {}".format(ex))
-        return None, None
+    attempts = (
+        (ObjectType.LinkedElement,
+         "Pick a reference in a LINK at the height to cut at "
+         "(Esc to pick in this model instead)"),
+        (ObjectType.Element,
+         "Pick a line, reference plane, level or edge in THIS model "
+         "at the height to cut at"),
+    )
+
+    ref = None
+    for object_type, prompt in attempts:
+        try:
+            ref = uidoc.Selection.PickObject(
+                object_type, AnythingFilter(), prompt)
+        except OperationCanceledException:
+            ref = None
+        except Exception as ex:
+            logger.debug("Reference pick ended: {}".format(ex))
+            ref = None
+        if ref is not None:
+            break
+
     if ref is None:
         return None, None
 
-    delta = window_cw.project_base_elevation(doc)
-    note = None
-    z = None
-
-    curve = _edge_from_reference(ref)
-    if curve is not None:
-        try:
-            z0 = curve.GetEndPoint(0).Z
-            z1 = curve.GetEndPoint(1).Z
-        except Exception:
-            z0 = z1 = None
-        if z0 is not None:
-            if abs(z0 - z1) <= LEVEL_EDGE_TOL:
-                z = (z0 + z1) / 2.0
-            else:
-                note = ("the edge is not horizontal, so the height of "
-                        "the point picked was used")
-
+    z, note = _elevation_from(ref)
     if z is None:
-        try:
-            point = ref.GlobalPoint
-        except Exception:
-            point = None
-        if point is None:
-            return None, ("that pick has no readable height - try an "
-                          "edge rather than a face")
-        z = point.Z
-        if note is None:
-            note = "no edge behind that pick; the point picked was used"
+        return None, note
 
-    return z - delta, note
+    return z - window_cw.project_base_elevation(doc), note
 
 
 # ===========================================================================
