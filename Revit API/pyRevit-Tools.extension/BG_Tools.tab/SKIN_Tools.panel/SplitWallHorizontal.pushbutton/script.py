@@ -78,7 +78,7 @@ from Autodesk.Revit.Exceptions import OperationCanceledException
 from Autodesk.Revit.UI.Selection import ISelectionFilter, ObjectType
 from pyrevit import revit, forms, script
 
-from BG import wall_bind, wall_constraints, window_cw
+from BG import wall_bind, wall_constraints
 
 doc    = revit.doc
 uidoc  = revit.uidoc
@@ -272,7 +272,7 @@ def _edge_z(ref, owner, transform):
 
 
 def _elevation_from(ref):
-    """(z, note) in MODEL coordinates for whatever was picked."""
+    """(z, note) in project internal coordinates for the pick."""
     try:
         owner = doc.GetElement(ref.ElementId)
     except Exception:
@@ -324,7 +324,7 @@ def _elevation_from(ref):
 
 
 def pick_elevation():
-    """Pick a reference and return (elevation, note) in LEVEL space.
+    """Pick a reference and return (elevation, note).
 
     Two picks offered, not one, because no single Revit pick spans both
     documents: ObjectType.LinkedElement reaches into a link and refuses
@@ -332,10 +332,12 @@ def pick_elevation():
     goes first, since that is where the references usually are, and Esc
     moves into this model rather than ending the run.
 
-    Level elevations are measured from the Project Base Point while
-    picked geometry comes back in internal model coordinates, so the
-    difference is taken out here -- once, at the boundary -- and
-    everything downstream is in one space.
+    No coordinate correction, and that is deliberate.  Level.Elevation
+    and a picked point are BOTH in the project's internal coordinates,
+    and everything this tool compares them against -- host_levels here,
+    wall_extent in BG.wall_bind -- reads Level.Elevation raw.  Taking
+    the project base point out of one side and not the other is what
+    put a cut at -781 feet on a wall standing at 997.
     """
     attempts = (
         (ObjectType.LinkedElement,
@@ -362,11 +364,7 @@ def pick_elevation():
     if ref is None:
         return None, None
 
-    z, note = _elevation_from(ref)
-    if z is None:
-        return None, note
-
-    return z - window_cw.project_base_elevation(doc), note
+    return _elevation_from(ref)
 
 
 # ===========================================================================
