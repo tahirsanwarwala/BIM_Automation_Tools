@@ -344,7 +344,8 @@ def process_wall(wall, levels):
     if not apply_bg_level(wall, bands[0]):
         unwritten += 1
 
-    new_ids = []
+    new_ids  = []
+    new_rows = []
     for band in bands[1:]:
         try:
             new_wall = create_band_wall(wall, band)
@@ -357,6 +358,10 @@ def process_wall(wall, levels):
             if not apply_bg_level(new_wall, band):
                 unwritten += 1
             new_ids.append(new_wall.Id)
+            new_rows.append("{0} is {1}".format(
+                _eid(new_wall.Id),
+                describe(band["base_level_id"], band["base_offset"],
+                         band["top_level_id"], band["top_offset"])))
         except Exception as ex:
             res.status = "Partly failed"
             res.notes.append("band {0} not created: {1}".format(
@@ -366,9 +371,13 @@ def process_wall(wall, levels):
     if res.status != "Partly failed":
         res.status = "Split into {0}".format(len(bands)) if new_ids else "Fixed"
 
-    if new_ids:
-        res.notes.append("new walls: {0}".format(
-            ", ".join(str(_eid(i)) for i in new_ids)))
+    if new_rows:
+        # Where each new wall ENDED UP, not just its id.  Two walls of
+        # one type stacked exactly on each other look identical to the
+        # single wall they came from -- there is no seam to see -- so
+        # the extents are the only way to read the outcome without
+        # hunting each new wall down and opening its properties.
+        res.notes.append("new: " + "; ".join(new_rows))
 
     if unwritten:
         res.notes.append(
