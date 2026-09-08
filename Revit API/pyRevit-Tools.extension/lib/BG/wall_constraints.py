@@ -151,10 +151,13 @@ def plan_wall(base_z, top_z, levels, tol=TOL, allow_split=True,
     decided a split is unsafe -- but ``needs_split`` still reports that
     it crosses a level so the run can say so.
 
-    When *allow_round* is False the ends are used exactly as given.
-    Callers should think twice before asking for that: two walls cut
-    from one elevation only keep meeting if BOTH are rounded or NEITHER
-    is, and rounding is decided per wall.
+    When *allow_round* is False the ends are used exactly as given.  The
+    caller sets this for walls whose geometry is drawn against the
+    constraints, such as a sketched profile, where moving an end would
+    drag the sketch with it.  Note that rounding is decided per wall, so
+    two walls cut from one elevation only keep meeting if BOTH are
+    rounded or NEITHER is -- a caller that exempts some walls should say
+    which, so the seams can be checked.
 
     Returns a dict:
         base_z, top_z   the rounded span

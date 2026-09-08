@@ -17,6 +17,15 @@ it creates):
   * Ends that are not on a level are rounded to the nearest whole inch.
     Ends that ARE on a level stay exactly where they are.
 
+A wall whose elevation profile is sketched is the one exception to the
+rounding and the splitting: both would carry the outline with them, and
+Revit will not carry an outline across a split at all.  Such a wall is
+bound to its levels, left otherwise untouched, and reported as To Check
+so the rounding and the cut can be made by hand.  Its ends therefore
+stay fractional, which means a seam against a neighbour that WAS rounded
+can be out by up to half an inch -- that seam is the thing To Check is
+asking to be looked at.
+
 Apart from that inch rounding, walls do not move: every offset is
 computed so the wall keeps the absolute elevations it already had.
 
@@ -42,6 +51,8 @@ __doc__    = (
     "Walls that cross a level are split into one wall per storey; the\n"
     "original wall is kept as the lowest band.\n"
     "Ends that are not on a level are rounded to the nearest inch.\n"
+    "Walls with a sketched profile are constrained only, and listed as\n"
+    "To Check: rounding or splitting one would move its outline.\n"
     "The Base Constraint level is written into BG_LEVEL.\n"
     "Curtain walls, stacked walls, walls attached to a roof or floor,\n"
     "grouped walls and linked walls are reported but never touched."
@@ -247,7 +258,7 @@ def describe(base_lvl_id, base_off, top_lvl_id, top_off):
         _level_name(top_lvl_id), _feet_to_text(top_off))
 
 
-def process_wall(wall, levels):
+def _process_wall(wall, levels):
     """Fix one wall.  Returns a Result; never raises."""
     try:
         type_name = _name(wall.WallType)
@@ -273,18 +284,16 @@ def process_wall(wall, levels):
 
     profile_edited = is_profile_edited(wall)
 
-    # Rounding applies to every wall, sketched profile or not.  Rounding
-    # only SOME of them is what opens overlaps: a soldier course and the
-    # common bond above it are cut from one elevation, and the moment one
-    # end is taken to the nearest inch and the other is left 11/16" off
-    # it, the two courses overlap by the difference.  Consistency matters
-    # more here than holding a sketched wall still, because a wall left
-    # alone is not left in agreement with its neighbour.
-    allow_round = True
-
-    # Splitting is still refused for a sketched wall.  Revit will not
-    # carry an edited profile across a split, so the upper band would
-    # come out with its openings missing -- a loss, not a disagreement.
+    # A sketched wall is bound to its levels and otherwise left exactly
+    # where it is.  Rounding an end would carry the outline with it, and
+    # Revit will not carry an outline across a split at all, so the upper
+    # band would come out with its openings missing.  Neither is a thing
+    # to do to a wall on the wall's behalf.
+    #
+    # That leaves real work undone -- fractional ends, and a wall still
+    # crossing a level -- so the wall is handed back as To Check rather
+    # than quietly counted as fixed.  See process_wall.
+    allow_round = not profile_edited
     allow_split = not profile_edited
 
     try:
@@ -296,9 +305,10 @@ def process_wall(wall, levels):
         return res
 
     if profile_edited:
-        res.notes.append("profile edited: rounded and re-constrained but "
-                         "never split - check the sketched outline still "
-                         "sits where it should")
+        res.notes.append("profile edited: bound to its levels, but the ends "
+                         "were not rounded and the wall was not split - "
+                         "both would move the sketched outline, so do them "
+                         "by hand")
 
     # The original wall keeps the lowest band, so nothing hosted in it may
     # reach above that band -- Revit would delete such inserts outright.
@@ -397,6 +407,27 @@ def process_wall(wall, levels):
     return res
 
 
+# A wall whose outcome was worse than "needs a human eye" keeps its own
+# status: To Check would read as a softening of it.
+URGENT_STATUSES = ("Failed", "Partly failed", "Skipped")
+
+TO_CHECK = "To Check"
+
+
+def process_wall(wall, levels):
+    """Fix one wall, and flag it when work was left for a human.
+
+    A sketched wall comes back bound to its levels but unrounded and
+    unsplit, which is not the same as finished -- and a status of "Fixed"
+    would say it was.  So it is renamed here, once, at the point where
+    every path out of _process_wall has come back together.
+    """
+    res = _process_wall(wall, levels)
+    if res.status not in URGENT_STATUSES and is_profile_edited(wall):
+        res.status = TO_CHECK
+    return res
+
+
 # ===============================================================================
 # REPORT
 # ===============================================================================
@@ -409,12 +440,10 @@ def process_wall(wall, levels):
 QUIET_STATUSES = ("Fixed", "Already correct")
 
 # ...and even a quiet status speaks when the tool held something back.
-# A wall whose profile is sketched keeps its fractional ends ON PURPOSE,
-# because rounding an end of a sketched wall would carry the sketch with
-# it; a run that says nothing about that looks exactly like a run that
-# tried to round the wall and failed.  Same for a BG_LEVEL that would
-# not take.  Matched on the opening words of the note that records each.
-CAVEAT_NOTES = ("profile edited", BG_LEVEL_PARAM)
+# A sketched wall says so through its own To Check status; a BG_LEVEL
+# that would not take has no status of its own, so it is matched on the
+# opening words of the note that records it.
+CAVEAT_NOTES = (BG_LEVEL_PARAM,)
 
 
 def is_reportable(res):
