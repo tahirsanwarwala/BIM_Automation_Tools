@@ -273,9 +273,18 @@ def process_wall(wall, levels):
 
     profile_edited = is_profile_edited(wall)
 
-    # A sketched profile is measured from the constraints it was drawn
-    # against, so nudging those ends would drag the sketch with them.
-    allow_round = not profile_edited
+    # Rounding applies to every wall, sketched profile or not.  Rounding
+    # only SOME of them is what opens overlaps: a soldier course and the
+    # common bond above it are cut from one elevation, and the moment one
+    # end is taken to the nearest inch and the other is left 11/16" off
+    # it, the two courses overlap by the difference.  Consistency matters
+    # more here than holding a sketched wall still, because a wall left
+    # alone is not left in agreement with its neighbour.
+    allow_round = True
+
+    # Splitting is still refused for a sketched wall.  Revit will not
+    # carry an edited profile across a split, so the upper band would
+    # come out with its openings missing -- a loss, not a disagreement.
     allow_split = not profile_edited
 
     try:
@@ -287,8 +296,9 @@ def process_wall(wall, levels):
         return res
 
     if profile_edited:
-        res.notes.append("profile edited: constraints only, no rounding, "
-                         "never split")
+        res.notes.append("profile edited: rounded and re-constrained but "
+                         "never split - check the sketched outline still "
+                         "sits where it should")
 
     # The original wall keeps the lowest band, so nothing hosted in it may
     # reach above that band -- Revit would delete such inserts outright.
