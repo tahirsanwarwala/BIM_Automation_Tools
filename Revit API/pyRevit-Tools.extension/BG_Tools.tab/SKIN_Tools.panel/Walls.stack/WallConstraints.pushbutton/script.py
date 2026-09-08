@@ -391,38 +391,40 @@ def process_wall(wall, levels):
 # REPORT
 # ===============================================================================
 
-# Statuses worth opening the output window for.  Two kinds:
-#
-# A wall that could not be fixed, or was fixed only as far as it could
-# go -- something to act on.
-PROBLEM_STATUSES = ("Needs split", "Failed", "Partly failed",
-                    "Fixed - still needs split")
+# Only two outcomes need no telling: the wall was put right, or it was
+# already right.  Nothing moved that a drawing would show, and nothing
+# was held back.  Every other status -- Skipped, Failed, Partly failed,
+# Needs split, Split into N -- is either something to act on or a change
+# to the model's element count, and says so.
+QUIET_STATUSES = ("Fixed", "Already correct")
 
-# ...and a wall that was SPLIT, which is not a problem but is a change
-# to the model's element count, and the one thing a silent run leaves
-# genuinely unanswerable: did it cut at the levels or not.  A wall
-# merely re-constrained moves nothing and needs no telling; new walls
-# do.  Matched by prefix, since the status carries the count.
-SPLIT_STATUS_PREFIX = "Split into"
+# ...and even a quiet status speaks when the tool held something back.
+# A wall whose profile is sketched keeps its fractional ends ON PURPOSE,
+# because rounding an end of a sketched wall would carry the sketch with
+# it; a run that says nothing about that looks exactly like a run that
+# tried to round the wall and failed.  Same for a BG_LEVEL that would
+# not take.  Matched on the opening words of the note that records each.
+CAVEAT_NOTES = ("profile edited", BG_LEVEL_PARAM)
 
 
-def is_reportable(status):
+def is_reportable(res):
     """True when this wall's outcome is worth printing."""
-    return (status in PROBLEM_STATUSES
-            or status.startswith(SPLIT_STATUS_PREFIX))
+    if res.status not in QUIET_STATUSES:
+        return True
+    return any(n.startswith(CAVEAT_NOTES) for n in res.notes)
 
 
 def report(results):
-    """Print the walls that were split or need a human, or nothing.
+    """Print every wall whose outcome is not self-evident, or nothing.
 
     Printing is what opens the output window, so staying quiet on a run
-    with nothing to say is still the point.  A wall that was merely
-    re-constrained has nothing to say: it did not move and there is no
-    new element to look at.  A wall that was SPLIT does -- there are
-    walls in the model that were not there before, and no other way to
-    find out whether the cut happened.
+    with nothing to say is still the point.  A wall that was simply put
+    right has nothing to say.  Anything else does, and the reason the
+    net is wider than "problems" is that the two quietest outcomes --
+    a wall SKIPPED, and a wall fixed but knowingly left unrounded --
+    look from the model exactly like the tool not working.
     """
-    shown = [r for r in results if is_reportable(r.status)]
+    shown = [r for r in results if is_reportable(r)]
     if not shown:
         return
 
@@ -430,8 +432,8 @@ def report(results):
     for r in results:
         counts[r.status] = counts.get(r.status, 0) + 1
 
-    output.print_md("## Fix Wall Constraints - {0} of {1} wall(s) split "
-                    "or needing attention".format(len(shown), len(results)))
+    output.print_md("## Fix Wall Constraints - {0} of {1} wall(s) worth "
+                    "a look".format(len(shown), len(results)))
     output.print_md(" | ".join(
         "**{0}**: {1}".format(k, v) for k, v in sorted(counts.items())))
 
