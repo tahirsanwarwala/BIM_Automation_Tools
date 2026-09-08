@@ -17,6 +17,10 @@ it creates):
 Apart from that inch rounding, walls do not move: every offset is
 computed so the wall keeps the absolute elevations it already had.
 
+Each wall's Base Constraint level is written into its BG_LEVEL
+parameter afterwards, the same as Multi Wall Creation does for the
+walls it builds.
+
 Walls whose top or base is attached to another element are left alone:
 their parameters describe an extent their geometry does not follow, and
 the API cannot re-create an attachment on a wall this tool would make.
@@ -35,6 +39,7 @@ __doc__    = (
     "Walls that cross a level are split into one wall per storey; the\n"
     "original wall is kept as the lowest band.\n"
     "Ends that are not on a level are rounded to the nearest inch.\n"
+    "The Base Constraint level is written into BG_LEVEL.\n"
     "Curtain walls, stacked walls, walls attached to a roof or floor,\n"
     "grouped walls and linked walls are reported but never touched."
 )
@@ -48,6 +53,7 @@ clr.AddReference("RevitAPIUI")
 from Autodesk.Revit.DB import (
     BuiltInParameter,
     Element,
+    ElementId,
     FilteredElementCollector,
     Level,
     StorageType,
@@ -70,6 +76,16 @@ logger = script.get_logger()
 output = script.get_output()
 
 TOL = wc.TOL
+
+# The Base Constraint level's name is written here, as Multi Wall
+# Creation writes it for the walls it builds.
+BG_LEVEL_PARAM = "BG_LEVEL"
+
+# A height to park an unconnected wall at while its base is moved, and
+# how far below its top level to park a base that would otherwise end
+# up above it.  Both only ever exist between two regenerations.
+SAFE_HEIGHT = 1.0
+SAFE_MARGIN = 1.0
 
 
 def bip(name):
@@ -219,6 +235,57 @@ def _name(elem):
         if val:
             return val
     return "<unknown>"
+
+
+def find_parameter(elem, name):
+    """Return *elem*'s parameter called *name*, ignoring case, or None.
+
+    LookupParameter is case-sensitive, which is a poor match for
+    parameter names written one way in a shared parameter file and
+    another in the model -- BG_LEVEL against BG_Level, say.
+    """
+    try:
+        p = elem.LookupParameter(name)
+        if p is not None:
+            return p
+    except Exception:
+        pass
+
+    wanted = (name or "").strip().lower()
+    try:
+        for p in elem.Parameters:
+            try:
+                if p.Definition.Name.strip().lower() == wanted:
+                    return p
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return None
+
+
+def apply_bg_level(wall, band):
+    """Write the name of *wall*'s Base Constraint level into BG_LEVEL.
+
+    The level comes from the BAND the wall was bound to rather than
+    read back off the wall, so it says the same thing the constraint
+    says even if Revit later re-hosts it.
+
+    Returns False when the parameter is missing, read-only or not text.
+    The wall's constraints are correct either way, so the caller reports
+    it rather than treating the wall as failed.
+    """
+    level = doc.GetElement(band["base_level_id"])
+    if level is None:
+        return False
+
+    p = find_parameter(wall, BG_LEVEL_PARAM)
+    if p is None or p.IsReadOnly:
+        return False
+    try:
+        return bool(p.Set(_name(level)))
+    except Exception:
+        return False
 
 
 def _level_name(level_id):
@@ -387,68 +454,105 @@ def inserts_outside(wall, band_top_z):
 # WRITING A WALL
 # ===============================================================================
 
-def bind_top(wall, top_level_id, top_offset):
-    """Set the top constraint and its offset together.
+def _elevation_of(level_id):
+    """A level's elevation, or None when the id is not a level."""
+    if not _is_valid(level_id):
+        return None
+    level = doc.GetElement(level_id)
+    return level.Elevation if isinstance(level, Level) else None
 
-    Setting the constraint alone snaps the top to the level itself.  When
-    the band sits ABOVE its own top level -- which happens whenever a band
-    rises past the highest level in the model and has to hang off it with
-    a positive offset -- that leaves a wall of zero or negative height,
-    and Revit raises "the top of the Wall is lower than the base".
 
-    The offset therefore has to land before the document regenerates.
-    Revit reports WALL_TOP_OFFSET as read-only while the wall is still
-    unconnected, and only re-evaluates that on a regeneration, so the
-    regeneration is done only when the offset really is unreachable.
+def bind_extent(wall, band):
+    """Move a wall onto *band* without ever inverting it on the way.
+
+    "The top of the Wall is lower than the base" is not a complaint
+    about where the wall ends up -- the plan always has the top above
+    the base -- but about where it passes through.  Two moments can
+    invert a wall mid-flight, and each is closed here rather than
+    retried:
+
+    1. Moving the BASE while the top is still bound to the old level.
+       Raise a wall two storeys and its base overtakes a top that has
+       not moved yet.  So the top is UNBOUND first, and given a height
+       of its own; an unconnected wall's top follows its base, and
+       cannot be overtaken by it.
+
+    2. Binding the TOP to its level before the offset lands.  Binding
+       snaps the top to the level itself, and Revit reports the offset
+       as read-only until it regenerates -- so there is a regeneration
+       in between whether we want one or not.  Where that snap would
+       put the top under the base (a band hanging above the topmost
+       level, with a positive offset) the BASE is parked below the
+       level for those two steps and restored after.
+
+    Neither parked value survives the function; both exist only between
+    regenerations, and both are inside the caller's sub-transaction.
     """
-    _set(wall, BuiltInParameter.WALL_HEIGHT_TYPE, top_level_id)
+    base_lvl_z = _elevation_of(band["base_level_id"])
+    top_lvl_z  = _elevation_of(band["top_level_id"])
+    if base_lvl_z is None:
+        raise ValueError("the band's base level could not be read")
+
+    # 1. Let the top go, so the base can move freely under it.
+    _set(wall, BuiltInParameter.WALL_HEIGHT_TYPE, ElementId.InvalidElementId)
+    _set(wall, BuiltInParameter.WALL_USER_HEIGHT_PARAM,
+         max(band["height"], SAFE_HEIGHT))
+    doc.Regenerate()
+
+    _set(wall, BuiltInParameter.WALL_BASE_CONSTRAINT, band["base_level_id"])
+    _set(wall, BuiltInParameter.WALL_BASE_OFFSET, band["base_offset"])
+    doc.Regenerate()
+
+    if top_lvl_z is None:
+        # No top level to bind to.  The unconnected height above IS the
+        # answer, and it is already the band's own.
+        _set(wall, BuiltInParameter.WALL_USER_HEIGHT_PARAM, band["height"])
+        doc.Regenerate()
+        return
+
+    # 2. Park the base if binding the top would otherwise dip under it.
+    parked = None
+    if top_lvl_z <= base_lvl_z + band["base_offset"] + TOL:
+        parked = band["base_offset"]
+        _set(wall, BuiltInParameter.WALL_BASE_OFFSET,
+             top_lvl_z - base_lvl_z - SAFE_MARGIN)
+        doc.Regenerate()
+
+    _set(wall, BuiltInParameter.WALL_HEIGHT_TYPE, band["top_level_id"])
+    doc.Regenerate()
 
     p = wall.get_Parameter(BuiltInParameter.WALL_TOP_OFFSET)
     if p is None or p.IsReadOnly:
-        doc.Regenerate()
-        p = wall.get_Parameter(BuiltInParameter.WALL_TOP_OFFSET)
-    if p is None or p.IsReadOnly:
         raise ValueError("Top Offset is not writable on this wall")
-
-    p.Set(top_offset)
+    p.Set(band["top_offset"])
     doc.Regenerate()
+
+    if parked is not None:
+        _set(wall, BuiltInParameter.WALL_BASE_OFFSET, parked)
+        doc.Regenerate()
 
 
 def apply_constraints(wall, band):
     """Set one wall's four constraint parameters.
 
-    The order matters: moving one end before the other can momentarily
-    invert the wall and make Revit reject the change.  Both orders are
-    tried, each inside a sub-transaction so a rejected attempt leaves
-    nothing behind.
+    One route, not two.  Trying base-then-top and then top-then-base was
+    a way of hoping one order happened to avoid inverting the wall;
+    bind_extent avoids it by construction, so there is nothing left to
+    hope for.  The sub-transaction stays, so a wall Revit still refuses
+    leaves nothing behind.
     """
-    def set_base():
-        _set(wall, BuiltInParameter.WALL_BASE_CONSTRAINT,
-             band["base_level_id"])
-        _set(wall, BuiltInParameter.WALL_BASE_OFFSET, band["base_offset"])
-
-    def set_top():
-        bind_top(wall, band["top_level_id"], band["top_offset"])
-
-    last_error = None
-    for order in ((set_base, set_top), (set_top, set_base)):
-        st = SubTransaction(doc)
-        st.Start()
+    st = SubTransaction(doc)
+    st.Start()
+    try:
+        bind_extent(wall, band)
+        doc.Regenerate()
+        st.Commit()
+    except Exception as ex:
         try:
-            for step in order:
-                step()
-            doc.Regenerate()
-            st.Commit()
-            return
-        except Exception as ex:
-            try:
-                st.RollBack()
-            except Exception:
-                pass
-            last_error = ex
-
-    raise ValueError("Revit rejected the new constraints: {0}".format(
-        last_error))
+            st.RollBack()
+        except Exception:
+            pass
+        raise ValueError("Revit rejected the new constraints: {0}".format(ex))
 
 
 def verify(wall, band):
@@ -551,7 +655,7 @@ def create_band_wall(src, band):
         new_wall.Flip()
         doc.Regenerate()
 
-    bind_top(new_wall, band["top_level_id"], band["top_offset"])
+    bind_extent(new_wall, band)
 
     copy_instance_params(src, new_wall)
 
@@ -657,6 +761,14 @@ def process_wall(wall, levels):
     if not changed and len(bands) == 1:
         res.status = "Already correct"
         res.after = res.before
+        # BG_LEVEL is written even here.  The constraints being right
+        # already says nothing about whether the parameter was ever
+        # filled, and a wall this tool has looked at should come away
+        # with both.
+        if not apply_bg_level(wall, bands[0]):
+            res.notes.append(
+                "{0} could not be written - parameter missing, "
+                "read-only, or not a text parameter".format(BG_LEVEL_PARAM))
         if plan["needs_split"]:
             res.status = "Needs split"
         return res
@@ -677,6 +789,10 @@ def process_wall(wall, levels):
         res.notes.append(problem)
         return res
 
+    unwritten = 0
+    if not apply_bg_level(wall, bands[0]):
+        unwritten += 1
+
     new_ids = []
     for band in bands[1:]:
         try:
@@ -687,6 +803,8 @@ def process_wall(wall, levels):
                 doc.Delete(new_wall.Id)
                 doc.Regenerate()
                 raise ValueError(problem)
+            if not apply_bg_level(new_wall, band):
+                unwritten += 1
             new_ids.append(new_wall.Id)
         except Exception as ex:
             res.status = "Partly failed"
@@ -700,6 +818,12 @@ def process_wall(wall, levels):
     if new_ids:
         res.notes.append("new walls: {0}".format(
             ", ".join(str(_eid(i)) for i in new_ids)))
+
+    if unwritten:
+        res.notes.append(
+            "{0} could not be written on {1} wall(s) - parameter "
+            "missing, read-only, or not a text parameter".format(
+                BG_LEVEL_PARAM, unwritten))
 
     if plan["rounded"]:
         res.notes.append("rounded to the nearest inch")
