@@ -17,19 +17,21 @@ it creates):
   * Ends that are not on a level are rounded to the nearest whole inch.
     Ends that ARE on a level stay exactly where they are.
 
-A wall whose elevation profile is sketched is the one exception to the
-rounding and the splitting: both would carry the outline with them, and
-Revit will not carry an outline across a split at all.  Such a wall is
-bound to its levels, left otherwise untouched, and reported as To Check
-so the rounding and the cut can be made by hand.  Its ends therefore
-stay fractional, which means a seam against a neighbour that WAS rounded
-can be out by up to half an inch -- that seam is the thing To Check is
-asking to be looked at.
+A wall whose elevation profile is sketched is treated more carefully,
+because moving an end carries the outline with it.  It is never split --
+Revit will not carry an outline across a split at all, so the upper band
+would come out with its openings missing.  It IS rounded, but only while
+the move stays within 1/16", the same distance this tool already treats
+as one elevation; a move that small is not worth refusing and not worth
+mentioning.  An end further off a whole inch than that is a real shift
+in the sketch, so the wall is left exactly where it is.
 
-To Check is about what the sketch PREVENTED, not about the sketch.  A
-sketched wall whose ends already sit on whole inches and which crosses
-no level had nothing prevented, so it is as finished as any other wall
-and says nothing at all.
+Which is not the same as finished, so such a wall comes back as To
+Check.  To Check is about what the sketch PREVENTED, never about the
+sketch: a wall rounded within tolerance and crossing no level had
+nothing prevented, and says nothing at all.  A wall left unrounded has
+ends that will not meet a rounded neighbour, and that seam is exactly
+what To Check is asking to be looked at.
 
 Apart from that inch rounding, walls do not move: every offset is
 computed so the wall keeps the absolute elevations it already had.
@@ -56,9 +58,10 @@ __doc__    = (
     "Walls that cross a level are split into one wall per storey; the\n"
     "original wall is kept as the lowest band.\n"
     "Ends that are not on a level are rounded to the nearest inch.\n"
-    "Walls with a sketched profile are constrained only - rounding or\n"
-    "splitting one would move its outline - and are listed as To Check\n"
-    "if that leaves their ends off a whole inch, or a level uncut.\n"
+    "Walls with a sketched profile are never split, and are rounded\n"
+    "only while the end moves 1/16\" or less - further would shift the\n"
+    "outline.  They are listed as To Check when that leaves an end off\n"
+    "a whole inch, or a level uncut.\n"
     "The Base Constraint level is written into BG_LEVEL.\n"
     "Stacked walls, walls attached to a roof or floor, grouped walls\n"
     "and linked walls are reported but never touched.  Curtain walls\n"
@@ -310,17 +313,27 @@ def _process_wall(wall, levels):
 
     profile_edited = is_profile_edited(wall)
 
-    # A sketched wall is bound to its levels and otherwise left exactly
-    # where it is.  Rounding an end would carry the outline with it, and
-    # Revit will not carry an outline across a split at all, so the upper
-    # band would come out with its openings missing.  Neither is a thing
-    # to do to a wall on the wall's behalf.
-    #
-    # That leaves real work undone -- fractional ends, and a wall still
-    # crossing a level -- so the wall is handed back as To Check rather
-    # than quietly counted as fixed.  See process_wall.
-    allow_round = not profile_edited
+    # Splitting a sketched wall is never on: Revit will not carry an
+    # edited outline across a split, so the upper band would come out
+    # with its openings missing.
     allow_split = not profile_edited
+
+    # Rounding one is a matter of degree.  The end that moves carries the
+    # sketch with it, so the only question is how far -- and a move no
+    # bigger than the distance this tool already calls "the same
+    # elevation" is not a move worth refusing, nor worth telling anyone
+    # about.  Past that it is a real shift in the outline, and the wall
+    # is left exactly where it is for a human to deal with.
+    allow_round = True
+    if profile_edited:
+        base_snap, _ = wc.snap_end(base_z, levels)
+        top_snap, _  = wc.snap_end(top_z, levels)
+        drift = max(abs(base_snap - base_z), abs(top_snap - top_z))
+        # A hair of slack, for the same reason snap_span_to_levels needs
+        # it: an end exactly a sixteenth off a whole inch does not come
+        # out exactly a sixteenth away in binary, and the rule is that
+        # only a drift of MORE than a sixteenth is left for a human.
+        allow_round = drift <= TOL + 1e-9
 
     try:
         plan = wc.plan_wall(base_z, top_z, levels,
@@ -332,15 +345,14 @@ def _process_wall(wall, levels):
 
     if profile_edited:
         # Being sketched is not itself worth reporting.  What is worth
-        # reporting is what the sketch PREVENTED, and on a wall whose
-        # ends already sit on whole inches and which crosses no level,
-        # it prevented nothing -- the wall is as finished as any other.
-        _b, base_moved = wc.snap_end(base_z, levels)
-        _t, top_moved  = wc.snap_end(top_z, levels)
-
+        # reporting is what the sketch PREVENTED, and on a wall that was
+        # rounded anyway and crosses no level, it prevented nothing --
+        # the wall is as finished as any other.
         outstanding = []
-        if base_moved or top_moved:
-            outstanding.append("the ends were not rounded to a whole inch")
+        if not allow_round:
+            outstanding.append(
+                'the ends are more than 1/16" off a whole inch, so they '
+                'were not rounded')
         if plan["needs_split"]:
             outstanding.append("the wall was not split at the {0} level(s) "
                                "it crosses".format(len(plan["interior"])))
@@ -371,7 +383,16 @@ def _process_wall(wall, levels):
          "top_level_id":  _eid(bands[0]["top_level_id"]),
          "top_offset":    bands[0]["top_offset"]})
 
-    if not changed and len(bands) == 1:
+    # constraints_changed calls offsets within 1/16" equal, which is the
+    # right rule for "has this wall drifted off its level" and the wrong
+    # one for "did the plan move it".  A rounding of less than 1/16" is
+    # deliberate and small, and comparing it away would compute it and
+    # then throw it out.  So a plan that moved an end at all counts as a
+    # change, however little it moved it by.
+    rounding_moved = (abs(plan["base_z"] - base_z) > 1e-9
+                      or abs(plan["top_z"] - top_z) > 1e-9)
+
+    if not changed and not rounding_moved and len(bands) == 1:
         res.status = "Already correct"
         res.after = res.before
         # BG_LEVEL is written even here.  The constraints being right
