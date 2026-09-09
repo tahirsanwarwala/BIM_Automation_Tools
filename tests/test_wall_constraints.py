@@ -349,5 +349,43 @@ class TestSnapSpanToLevels(unittest.TestCase):
         self.assertAlmostEqual(lower_top, upper_base)
 
 
+class TestCoincidentLevels(unittest.TestCase):
+    """Two levels sharing one elevation, as found in a real model.
+
+    Multi Wall Creation lost a whole wall to this: the cut list is
+    [base] + interior levels + [top], so a level shadowed by another at
+    the same height put two identical cuts in a row, and the band
+    between them had no height for constraints_for to bind.
+    """
+
+    # LEVEL 08 with a parapet level sitting exactly on it.
+    DOUBLED = [("L07", 143.5), ("L08", 156.0),
+               ("PARAPET", 156.0), ("ROOF", 168.0)]
+
+    def test_two_levels_at_one_elevation_are_one_cut(self):
+        self.assertEqual(
+            wc.interior_levels(5.0, 15.0, LEVELS + [("L2b", 10.0)]),
+            [("L2", 10.0)])
+
+    def test_levels_closer_than_tolerance_are_one_cut(self):
+        near = LEVELS + [("L2b", 10.0 + wc.TOL / 2.0)]
+        self.assertEqual(wc.interior_levels(5.0, 15.0, near), [("L2", 10.0)])
+
+    def test_levels_further_apart_than_tolerance_are_two_cuts(self):
+        apart = LEVELS + [("L2b", 10.0 + 4 * IN)]
+        self.assertEqual(len(wc.interior_levels(5.0, 15.0, apart)), 2)
+
+    def test_a_band_across_doubled_levels_is_not_zero_height(self):
+        plan = wc.plan_wall(155.1667, 157.5, self.DOUBLED, allow_round=False)
+        self.assertEqual(len(plan["bands"]), 2)
+        for band in plan["bands"]:
+            self.assertGreater(band["top_z"] - band["base_z"], wc.TOL)
+
+    def test_the_bands_still_span_the_whole_wall(self):
+        plan = wc.plan_wall(155.1667, 157.5, self.DOUBLED, allow_round=False)
+        self.assertAlmostEqual(plan["bands"][0]["base_z"], 155.1667)
+        self.assertAlmostEqual(plan["bands"][-1]["top_z"], 157.5)
+
+
 if __name__ == "__main__":
     unittest.main()

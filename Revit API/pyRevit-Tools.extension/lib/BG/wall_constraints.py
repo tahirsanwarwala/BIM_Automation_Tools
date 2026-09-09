@@ -83,11 +83,30 @@ def interior_levels(base_z, top_z, levels, tol=TOL):
 
     A level within *tol* of either end is flush with it, not crossed by
     it, so it is excluded.
+
+    Levels sharing an elevation are returned ONCE.  A model routinely
+    carries two names for one height -- a parapet level drawn on the
+    roof level, a structural level shadowing an architectural one -- and
+    they are one cut through a wall, not two.  Returning both puts two
+    identical cuts in a row in plan_wall's cut list, and the band
+    between them has no height for constraints_for to bind: it raises,
+    and the whole gap it was building bands for is lost with it.  A wall
+    disappearing because someone named a height twice is not a rule
+    anybody wrote down.
+
+    Which of the shadowing levels survives does not matter, because
+    constraints_for looks the level up again by elevation.
     """
     inside = [(i, e) for i, e in levels
               if e > base_z + tol and e < top_z - tol]
     inside.sort(key=lambda pair: pair[1])
-    return inside
+
+    distinct = []
+    for pair in inside:
+        if distinct and abs(pair[1] - distinct[-1][1]) <= tol:
+            continue
+        distinct.append(pair)
+    return distinct
 
 
 def constraints_for(base_z, top_z, levels, tol=TOL):
