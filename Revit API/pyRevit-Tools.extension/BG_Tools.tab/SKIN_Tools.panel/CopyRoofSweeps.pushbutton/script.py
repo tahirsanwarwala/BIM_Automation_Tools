@@ -1,28 +1,32 @@
 # -*- coding: utf-8 -*-
-"""Rebuild fascias and gutters from a linked model onto this model's roofs.
+"""Copy fascias and gutters out of a linked model, in place.
 
 Pick the fascias and gutters you want in a LINKED model -- drag a box or
-click, then Finish -- and each one is built again here, standing on the
-roof of yours that matches the one it stood on in the link.
+click, then Finish -- and each one is copied into this model where it
+already stands, on your own roofs.
 
-They are REBUILT rather than copied because they cannot be copied.
-Revit says "Can't copy part of element", and it means it: a fascia is a
-profile swept along references to edges of its host roof, and those
-references point into the linked file.  Copy has nothing to work with.
+WHY THIS IS A COPY AND NOT A REBUILD.  Hosted sweeps look uncopyable:
+select one in a link and Revit is apt to answer "Can't copy part of
+element".  That message is about the SELECTION, not the element.  Revit
+lets you TAB into a single SEGMENT of a fascia, and a segment really is
+part of an element and really cannot be copied.  The whole element
+copies perfectly well -- which is why Copy to Clipboard and Paste
+Aligned in Place works by hand, and why this tool does the same thing
+through ElementTransformUtils.CopyElements.
 
-THE ROOFS MUST ALREADY BE HERE.  This tool does not bring them over.
-Where it cannot find the roof a sweep stood on, it asks you to point at
-it, once, and remembers your answer for every other sweep on that roof.
+An earlier version of this tool tried to rebuild each sweep on the host
+roof's edges instead.  That cannot be done: the API has AddSegment and
+RemoveSegment, and no way whatever to READ the segments a hosted sweep
+already has.  Nothing can be rebuilt that cannot first be read.
 
-WHERE A ROOF IS NOT QUITE THE ONE IN THE LINK, the sweep is still built
--- from the edges that did match -- and the report says how many
-segments it got.  Two edges to add by hand beats starting again, and
-this is the failure that actually happens: a roof copied over and then
-joined, attached or reshaped is no longer edge-for-edge the original.
+THE ROOFS MUST ALREADY BE HERE, and they must be in the same place.
+A copied sweep needs its host, and Revit rehosts it onto whatever of
+yours stands where the link's roof stood.  Where the roof is missing
+the copy fails, and the row says so in Revit's own words.
 
-WHAT IS ALREADY HERE IS LEFT ALONE.  A sweep of the same family and type
-already standing on any one of the edges wanted is taken as this one,
-already done, so the tool is safe to run twice.
+WHAT IS ALREADY HERE IS LEFT ALONE.  A fascia of the same family and
+type already standing within an inch of the same place is taken as this
+one, already done, so the tool is safe to run twice.
 
 The linked model is never modified.
 """
@@ -31,12 +35,13 @@ __title__  = "Copy Roof\nSweeps"
 __author__ = "Tahir Sanwarwala"
 __doc__    = (
     "Pick fascias and gutters in a LINKED model and click Finish.  Each "
-    "one is rebuilt in this model on the matching roof.\n"
-    "They cannot be copied -- Revit's \"Can't copy part of element\" -- "
-    "so they are recreated on this model's own roof edges.\n"
-    "The roofs must already be here; where one cannot be found you are "
-    "asked to pick it.  A sweep already standing on the same edges is "
-    "left alone.\n"
+    "one is copied into this model in place, on your own roofs.\n"
+    "Revit's \"Can't copy part of element\" is about picking a single "
+    "SEGMENT of a sweep; the whole element copies, and that is what "
+    "this does.\n"
+    "The roofs must already be here for the copies to host onto.\n"
+    "Anything already here -- same family and type, within an inch of "
+    "the same place -- is left alone.\n"
     "The linked model is left untouched."
 )
 
@@ -46,12 +51,13 @@ import clr
 clr.AddReference("RevitAPI")
 clr.AddReference("RevitAPIUI")
 
-from Autodesk.Revit.DB import BuiltInCategory, RevitLinkInstance, Transaction
+from Autodesk.Revit.DB import (
+    BuiltInCategory, Category, RevitLinkInstance, Transaction)
 from Autodesk.Revit.Exceptions import OperationCanceledException
 from Autodesk.Revit.UI.Selection import ISelectionFilter, ObjectType
 from pyrevit import revit, forms, script
 
-from BG import link_copy, roof_sweep, sweep_geom
+from BG import link_copy
 
 doc    = revit.doc
 uidoc  = revit.uidoc
@@ -60,8 +66,7 @@ output = script.get_output()
 
 TOOL_TITLE = "Copy Roof Sweeps"
 
-SWEEP_CATEGORIES = (int(BuiltInCategory.OST_Fascia),
-                    int(BuiltInCategory.OST_Gutter))
+WANTED = (BuiltInCategory.OST_Fascia, BuiltInCategory.OST_Gutter)
 
 
 # ===========================================================================
@@ -83,11 +88,32 @@ def report(notes):
     output.print_table(notes, columns=["Element", "Note"])
 
 
-def label_for(elem):
-    """A row label naming a sweep and what it is."""
-    family, type_name = link_copy.type_key(elem)
+def wanted_category_ids():
+    """The ElementIds of the two categories this tool copies."""
+    ids = []
+    for bic in WANTED:
+        try:
+            cat = Category.GetCategory(doc, bic)
+        except Exception:
+            cat = None
+        if cat is not None:
+            ids.append(cat.Id)
+    return ids
+
+
+def label_for(elem, key):
+    """A row label naming the element and what it is."""
+    family, type_name = key
     return "{} ({}: {})".format(link_copy.eid_value(elem.Id),
                                 family or "?", type_name or "?")
+
+
+def link_name(link_inst):
+    """The link's own name, for a row that is about the link itself."""
+    try:
+        return link_inst.Name
+    except Exception:
+        return "link {}".format(link_copy.eid_value(link_inst.Id))
 
 
 # ===========================================================================
@@ -101,6 +127,9 @@ class LinkedSweepFilter(ISelectionFilter):
     RevitLinkInstance and AllowReference() on each candidate reference
     within it, so the real test has to live in AllowReference.
     """
+
+    def __init__(self, category_ids):
+        self.category_ids = [link_copy.eid_value(i) for i in category_ids]
 
     def AllowElement(self, elem):
         return isinstance(elem, RevitLinkInstance)
@@ -117,12 +146,12 @@ class LinkedSweepFilter(ISelectionFilter):
             cat = elem.Category if elem is not None else None
             if cat is None:
                 return False
-            return link_copy.eid_value(cat.Id) in SWEEP_CATEGORIES
+            return link_copy.eid_value(cat.Id) in self.category_ids
         except Exception:
             return False
 
 
-def pick_sweeps():
+def pick_sweeps(category_ids):
     """Pick linked fascias and gutters, then Finish.
 
     PickObjects rather than a loop of PickObject: it is what gives the
@@ -133,124 +162,34 @@ def pick_sweeps():
     "Select links" toggle at the bottom right must be on, or a box
     ignores link geometry.  Clicking works either way.
 
-    Returns [(RevitLinkInstance, link doc, sweep element)].
+    Returns {link instance id: (RevitLinkInstance, link doc, [elements])}.
     """
     try:
         refs = uidoc.Selection.PickObjects(
-            ObjectType.LinkedElement, LinkedSweepFilter(),
+            ObjectType.LinkedElement, LinkedSweepFilter(category_ids),
             "Select the fascias and gutters to copy, then click Finish")
     except OperationCanceledException:
-        return []
+        return {}
     except Exception as ex:
         logger.debug("Selection ended: {}".format(ex))
-        return []
+        return {}
 
-    picked = []
+    picked = {}
     for ref in refs or []:
         link_inst = doc.GetElement(ref.ElementId)
-        link_doc = link_inst.GetLinkDocument()
+        link_doc  = link_inst.GetLinkDocument()
         if link_doc is None:
             continue
         elem = link_doc.GetElement(ref.LinkedElementId)
-        if elem is None or roof_sweep.sweep_kind(elem) is None:
+        if elem is None:
             continue
-        picked.append((link_inst, link_doc, elem))
+
+        key = link_copy.eid_value(link_inst.Id)
+        if key not in picked:
+            picked[key] = (link_inst, link_doc, [])
+        picked[key][2].append(elem)
+
     return picked
-
-
-def ask_for_roof(linked_roof, box):
-    """Ask the user to point at the host roof.  Returns it, or None.
-
-    Raised BEFORE the transaction, like every other dialog in this
-    extension.
-    """
-    forms.alert(
-        "No roof in this model matches the linked {}.\n\n"
-        "Pick the roof here that it corresponds to, or press Escape to "
-        "skip every sweep standing on it.".format(
-            roof_sweep.roof_label(linked_roof, box)),
-        title=TOOL_TITLE)
-    try:
-        ref = uidoc.Selection.PickObject(
-            ObjectType.Element, "Pick the matching roof in THIS model")
-    except OperationCanceledException:
-        return None
-    except Exception:
-        return None
-    return doc.GetElement(ref.ElementId) if ref is not None else None
-
-
-# ===========================================================================
-# PLANNING -- everything decided before the transaction opens
-# ===========================================================================
-
-class Plan(object):
-    """One sweep, resolved as far as it can be without writing."""
-
-    def __init__(self, link_doc, sweep, kind, references, keys, total):
-        self.link_doc = link_doc
-        self.sweep = sweep
-        self.kind = kind
-        self.references = references
-        # The edge keys of the references, kept from when the segments
-        # were read.  Recomputing them later would mean resolving every
-        # reference's geometry a second time for no new information.
-        self.keys = keys
-        self.matched = len(references)
-        self.total = total
-
-
-def plan_one(sweep, transform, roofs, chosen, indexes, notes):
-    """Work out which host edges a sweep wants.  Returns a Plan or None."""
-    segments, problems = roof_sweep.segment_edges(sweep, transform)
-    total = len(segments) + len(problems)
-
-    # Every problem printed as its own row, in its own words.  An
-    # earlier version counted them all as "not hosted on a roof",
-    # which named a cause it had not established -- and when the read
-    # failed before any segment was even looked at, that sentence was
-    # simply untrue.
-    for problem in problems:
-        note(notes, label_for(sweep), problem)
-
-    if not segments:
-        note(notes, label_for(sweep),
-             "nothing could be rebuilt from it - see the row(s) above "
-             "for why")
-        return None
-
-    references = []
-    keys = []
-    for segment in segments:
-        roof_id = link_copy.eid_value(segment.roof.Id)
-
-        if roof_id in chosen:
-            host_roof = chosen[roof_id]
-        else:
-            match = roof_sweep.match_roof(segment.roof, transform, roofs)
-            host_roof = match.element if match is not None else None
-            if host_roof is None:
-                host_roof = ask_for_roof(
-                    segment.roof,
-                    roof_sweep.linked_roof_box(segment.roof, transform))
-            # Remembered either way, the refusal included, so a dozen
-            # sweeps on one roof cost one prompt rather than a dozen.
-            chosen[roof_id] = host_roof
-
-        if host_roof is None:
-            continue
-
-        host_id = link_copy.eid_value(host_roof.Id)
-        if host_id not in indexes:
-            indexes[host_id] = roof_sweep.edge_index(host_roof)
-
-        reference = roof_sweep.lookup_edge(indexes[host_id], segment)
-        if reference is not None:
-            references.append(reference)
-            keys.append(segment.key)
-
-    return Plan(sweep.Document, sweep, roof_sweep.sweep_kind(sweep),
-                references, keys, total)
 
 
 # ===========================================================================
@@ -258,91 +197,84 @@ def plan_one(sweep, transform, roofs, chosen, indexes, notes):
 # ===========================================================================
 
 def main():
-    picked = pick_sweeps()
+    category_ids = wanted_category_ids()
+    if not category_ids:
+        report([["-", "this model has no Fascia or Gutter category"]])
+        return
+
+    picked = pick_sweeps(category_ids)
     if not picked:
         return          # cancelled, or nothing picked
 
     notes = []
-    roofs = roof_sweep.host_roofs(doc)
-    if not roofs:
-        note(notes, "-",
-             "this model holds no roofs, so there is nothing to build on "
-             "- copy the roofs over first")
-        report(notes)
-        return
 
-    # Both remembered across the whole run: chosen so one unmatched roof
-    # costs one prompt, indexes so a roof's geometry is regenerated once
-    # however many sweeps stand on it.
-    chosen  = {}
-    indexes = {}
+    # What is already here, read once for both categories rather than
+    # searched again for every element picked.
+    index = {}
+    for category_id in category_ids:
+        for key, points in link_copy.host_index(doc, category_id).items():
+            index.setdefault(key, []).extend(points)
 
-    plans = []
-    for link_inst, _link_doc, sweep in picked:
-        transform = link_inst.GetTotalTransform()
-        plan = plan_one(sweep, transform, roofs, chosen, indexes, notes)
-        if plan is not None:
-            plans.append(plan)
-
-    if not plans:
-        report(notes)
-        return
-
-    index = roof_sweep.existing_index(doc)
-
-    created = 0
-    partial = 0
+    copied  = 0
     skipped = 0
+    to_copy = []
 
-    t = Transaction(doc, "Copy roof sweeps from link")
-    t.Start()
-    try:
-        for plan in plans:
-            type_key = link_copy.type_key(plan.sweep)
+    for link_inst, link_doc, elements in picked.values():
+        transform = link_inst.GetTotalTransform()
 
-            if sweep_geom.already_there(index, type_key, plan.keys):
+        wanted = []
+        for elem in elements:
+            key   = link_copy.type_key(elem)
+            point = link_copy.element_point(elem, transform)
+
+            if point is None:
+                note(notes, label_for(elem, key),
+                     "could not be located, so it was left out - there "
+                     "is no way to tell whether it is already here")
+                continue
+
+            if link_copy.already_there(index, key, point):
                 skipped += 1
                 continue
 
-            sweep_type, copied, reason = roof_sweep.ensure_type(
-                plan.link_doc, doc, plan.sweep)
-            if sweep_type is None:
-                note(notes, label_for(plan.sweep), reason)
+            wanted.append(elem.Id)
+            # Added to the index straight away, so two picked elements
+            # sitting on top of each other do not both come over.
+            index.setdefault(key, []).append(point)
+
+        to_copy.append((link_inst, link_doc, wanted))
+
+    # One transaction for the whole run.  A copy across documents
+    # writes to this one like any other edit, and needs a transaction
+    # like any other edit.
+    t = Transaction(doc, "Copy roof sweeps from link")
+    t.Start()
+    try:
+        for link_inst, link_doc, wanted in to_copy:
+            if not wanted:
                 continue
-            if copied:
-                note(notes, label_for(plan.sweep),
-                     "its type was not in this model and was brought over")
 
-            new_sweep, reason = roof_sweep.create_sweep(
-                doc, plan.kind, sweep_type, plan.references)
-            if new_sweep is None:
-                note(notes, label_for(plan.sweep), reason)
+            new_ids, reason = link_copy.copy_elements(
+                link_inst, link_doc, doc, wanted)
+
+            if reason:
+                note(notes, link_name(link_inst),
+                     "could not copy {} element(s): {}\n\n"
+                     "If this says \"Can't copy part of element\", the "
+                     "roof each sweep hosts onto is probably not in this "
+                     "model yet - copy the roofs first.".format(
+                         len(wanted), reason))
                 continue
 
-            roof_sweep.apply_offsets(new_sweep, plan.sweep)
-            created += 1
-
-            # Recorded so a second picked sweep on the same edges does
-            # not follow this one in.
-            index.setdefault(type_key, set()).update(plan.keys)
-
-            if plan.matched < plan.total:
-                partial += 1
-                note(notes, label_for(plan.sweep),
-                     "partial: built on {} of its {} segments - the rest "
-                     "have no matching edge on the host roof".format(
-                         plan.matched, plan.total))
+            copied += len(new_ids)
         t.Commit()
     except Exception:
         if t.HasStarted() and not t.HasEnded():
             t.RollBack()
         raise
 
-    summary = "{} rebuilt, {} already here".format(created, skipped)
-    if partial:
-        summary += ", {} of them only partly".format(partial)
-
-    if not created:
+    summary = "{} copied, {} already here".format(copied, skipped)
+    if not copied:
         note(notes, "-", summary)
     else:
         output.print_md("### {} - {}".format(TOOL_TITLE, summary))
