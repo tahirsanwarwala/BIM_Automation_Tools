@@ -52,7 +52,7 @@ clr.AddReference("RevitAPI")
 clr.AddReference("RevitAPIUI")
 
 from Autodesk.Revit.DB import (
-    BuiltInCategory, Category, Options, RevitLinkInstance, Transaction,
+    BuiltInCategory, Category, Options, RevitLinkInstance,
     ViewDetailLevel, XYZ)
 from Autodesk.Revit.Exceptions import OperationCanceledException
 from Autodesk.Revit.UI.Selection import ISelectionFilter, ObjectType
@@ -87,6 +87,15 @@ def report(notes):
     # The header goes in columns= and NOWHERE else.  Passing it as a
     # row as well prints it twice, once as a heading and once as data.
     output.print_table(notes, columns=["Element", "Note"])
+
+    # And again as plain lines underneath.  The table is the readable
+    # form, but a long reason in a narrow cell gets clipped on screen
+    # and lost when the window is copied -- which has now hidden the
+    # one row that mattered three runs running.  These lines survive a
+    # copy and paste.
+    output.print_md("**Every note again, in full:**")
+    for label, text in notes:
+        output.print_md("- `{}` - {}".format(label, text))
 
 
 def wanted_category_ids():
@@ -308,34 +317,37 @@ def main():
 
         to_copy.append((link_inst, link_doc, wanted))
 
-    # One transaction for the whole run.  A copy across documents
-    # writes to this one like any other edit, and needs a transaction
-    # like any other edit.
-    t = Transaction(doc, "Copy roof sweeps from link")
-    t.Start()
-    try:
-        for link_inst, link_doc, wanted in to_copy:
-            if not wanted:
-                continue
+    # NO TRANSACTION HERE, and that is the whole point.
+    #
+    # ElementTransformUtils.CopyElements has two overloads and they
+    # want opposite things.  The SAME-document one edits the model and
+    # must be inside a transaction, like any other edit.  The
+    # CROSS-document one -- the one that reads from a link -- opens and
+    # commits a transaction OF ITS OWN, and throws if the destination
+    # already has one open.
+    #
+    # Wrapping this in a transaction is what made the tool report
+    # "8 picked, 0 copied": every call threw before it started.
+    for link_inst, link_doc, wanted in to_copy:
+        if not wanted:
+            continue
 
-            new_ids, reason = link_copy.copy_elements(
-                link_inst, link_doc, doc, wanted)
+        new_ids, reason = link_copy.copy_elements(
+            link_inst, link_doc, doc, wanted)
 
-            if reason:
-                note(notes, link_name(link_inst),
-                     "could not copy {} element(s): {}\n\n"
-                     "If this says \"Can't copy part of element\", the "
-                     "roof each sweep hosts onto is probably not in this "
-                     "model yet - copy the roofs first.".format(
-                         len(wanted), reason))
-                continue
+        if reason:
+            note(notes, link_name(link_inst),
+                 "could not copy {} element(s): {}".format(
+                     len(wanted), reason))
+            continue
 
-            copied += len(new_ids)
-        t.Commit()
-    except Exception:
-        if t.HasStarted() and not t.HasEnded():
-            t.RollBack()
-        raise
+        if not new_ids:
+            note(notes, link_name(link_inst),
+                 "Revit accepted {} element(s) and returned none - they "
+                 "were refused without an error".format(len(wanted)))
+            continue
+
+        copied += len(new_ids)
 
     # The number PICKED is in the summary because "0 copied" on its own
     # is unreadable: it cannot be told from a selection that never
