@@ -5,24 +5,33 @@ Pick the fascias and gutters you want in a LINKED model -- drag a box or
 click, then Finish -- and each one is copied into this model where it
 already stands, on your own roofs.
 
-WHY THIS IS A COPY AND NOT A REBUILD.  Hosted sweeps look uncopyable:
-select one in a link and Revit is apt to answer "Can't copy part of
-element".  That message is about the SELECTION, not the element.  Revit
-lets you TAB into a single SEGMENT of a fascia, and a segment really is
-part of an element and really cannot be copied.  The whole element
-copies perfectly well -- which is why Copy to Clipboard and Paste
-Aligned in Place works by hand, and why this tool does the same thing
-through ElementTransformUtils.CopyElements.
+IT TRIES TWICE, and the second way is the one that usually earns its
+keep.
 
-An earlier version of this tool tried to rebuild each sweep on the host
-roof's edges instead.  That cannot be done: the API has AddSegment and
-RemoveSegment, and no way whatever to READ the segments a hosted sweep
-already has.  Nothing can be rebuilt that cannot first be read.
+FIRST it asks Revit to copy the element, one at a time.  Singly,
+because Revit answers a batch with "Copying one or more elements
+failed" and takes the whole call down with it, so one awkward sweep
+would cost you the other seven.
 
-THE ROOFS MUST ALREADY BE HERE, and they must be in the same place.
-A copied sweep needs its host, and Revit rehosts it onto whatever of
-yours stands where the link's roof stood.  Where the roof is missing
-the copy fails, and the row says so in Revit's own words.
+WHERE THE COPY IS REFUSED the sweep is BUILT INSTEAD, with NewFascia,
+on the edges of the roof already standing here.  Which edges cannot be
+asked: a hosted sweep has AddSegment and RemoveSegment and nothing
+that reads back the segments it holds.  So its GEOMETRY is asked
+instead -- the edge a fascia was swept along lies on the surface of
+the fascia's own solid, and no other edge of the roof comes within
+inches of it.  See BG.roof_sweep, which does the measuring.
+
+CHECK WHICH EDGE A REBUILT SWEEP LANDED ON.  A fascia covers a roof's
+end face, so the top and the bottom edge of that face both lie on its
+solid, and only one of them is the real host.  The tool takes the
+higher of the two, which is the eave edge a fascia hangs from.  That
+is a convention, and a roof it does not hold for will put the sweep an
+inch or two out.  Every rebuilt element says so in the report.
+
+THE ROOFS MUST ALREADY BE HERE, in the same place as the link's.
+Both routes need them: the copy needs something to rehost onto, and
+the rebuild needs edges to measure against.  Where the roof is missing
+the row says so.
 
 WHAT IS ALREADY HERE IS LEFT ALONE.  A fascia of the same family and
 type already standing within an inch of the same place is taken as this
@@ -36,10 +45,9 @@ __author__ = "Tahir Sanwarwala"
 __doc__    = (
     "Pick fascias and gutters in a LINKED model and click Finish.  Each "
     "one is copied into this model in place, on your own roofs.\n"
-    "Revit's \"Can't copy part of element\" is about picking a single "
-    "SEGMENT of a sweep; the whole element copies, and that is what "
-    "this does.\n"
-    "The roofs must already be here for the copies to host onto.\n"
+    "Where Revit refuses to copy one, it is REBUILT on the matching "
+    "edge of your roof instead - check which edge it landed on.\n"
+    "The roofs must already be here, in the same place as the link's.\n"
     "Anything already here -- same family and type, within an inch of "
     "the same place -- is left alone.\n"
     "The linked model is left untouched."
@@ -52,13 +60,13 @@ clr.AddReference("RevitAPI")
 clr.AddReference("RevitAPIUI")
 
 from Autodesk.Revit.DB import (
-    BuiltInCategory, Category, Options, RevitLinkInstance,
+    BuiltInCategory, Category, Options, RevitLinkInstance, Transaction,
     ViewDetailLevel, XYZ)
 from Autodesk.Revit.Exceptions import OperationCanceledException
 from Autodesk.Revit.UI.Selection import ISelectionFilter, ObjectType
 from pyrevit import revit, forms, script
 
-from BG import link_copy
+from BG import link_copy, roof_sweep
 
 doc    = revit.doc
 uidoc  = revit.uidoc
@@ -328,6 +336,8 @@ def main():
     # down with it.  Copied singly, each one succeeds or fails on its
     # own and says which it was.  The cost is one API call per element,
     # which for a selection this size is nothing.
+    refused = []        # (link inst, link doc, element, label)
+
     for link_inst, link_doc, wanted in to_copy:
         for elem_id in wanted:
             elem  = link_doc.GetElement(elem_id)
@@ -338,29 +348,99 @@ def main():
             new_ids, reason = link_copy.copy_elements(
                 link_inst, link_doc, doc, [elem_id])
 
-            if reason:
-                note(notes, label, "not copied: {}".format(reason))
+            if new_ids:
+                copied += len(new_ids)
                 continue
 
-            if not new_ids:
+            if elem is None:
+                note(notes, label, "not copied: {}".format(
+                    reason or "it could not be read from the link"))
+                continue
+
+            refused.append((link_inst, link_doc, elem, label,
+                            reason or "Revit returned nothing"))
+
+    # Anything Revit would not copy is BUILT instead.  Types first,
+    # while no transaction is open, because bringing a type over is
+    # itself a cross-document copy and wants the same clear field.
+    built = 0
+    plans = []
+    if refused:
+        for link_inst, link_doc, elem, label, reason in refused:
+            sweep_type, type_copied, type_reason = roof_sweep.ensure_type(
+                link_doc, doc, elem)
+            if sweep_type is None:
+                note(notes, label, "not copied ({}), and {}".format(
+                    reason, type_reason))
+                continue
+            if type_copied:
                 note(notes, label,
-                     "Revit accepted it and returned nothing - refused "
-                     "without an error")
-                continue
+                     "its type was not in this model and was brought over")
+            plans.append((link_inst, elem, label, sweep_type, reason))
 
-            copied += len(new_ids)
+    if plans:
+        # Read every roof's edges ONCE for the whole run.  This is the
+        # expensive part -- it regenerates each roof's geometry -- and
+        # doing it per sweep would multiply that by the selection.
+        roofs_with_edges = [(roof, roof_sweep.roof_edges(roof))
+                            for roof in roof_sweep.host_roofs(doc)]
+
+        t = Transaction(doc, "Rebuild roof sweeps from link")
+        t.Start()
+        try:
+            for link_inst, elem, label, sweep_type, reason in plans:
+                transform = link_inst.GetTotalTransform()
+                matches, why = roof_sweep.edges_under_sweep(
+                    elem, transform, roofs_with_edges)
+
+                if why:
+                    note(notes, label,
+                         "not copied ({}), and could not be rebuilt: "
+                         "{}".format(reason, why))
+                    continue
+
+                kind = roof_sweep.sweep_kind(elem)
+                made = 0
+                failures = []
+                for chain in roof_sweep.chain_edges(matches):
+                    new_sweep, build_reason = roof_sweep.create_sweep(
+                        doc, kind, sweep_type, chain)
+                    if new_sweep is None:
+                        failures.append(build_reason)
+                        continue
+                    roof_sweep.apply_offsets(new_sweep, elem)
+                    made += 1
+
+                if made:
+                    built += made
+                    note(notes, label,
+                         "Revit would not copy it, so it was REBUILT on "
+                         "{} roof edge(s) as {} element(s) - check it "
+                         "sits on the right edge".format(
+                             len(matches), made))
+                else:
+                    note(notes, label,
+                         "not copied ({}), and could not be rebuilt: "
+                         "{}".format(reason,
+                                     failures[0] if failures
+                                     else "no run of edges to build on"))
+            t.Commit()
+        except Exception:
+            if t.HasStarted() and not t.HasEnded():
+                t.RollBack()
+            raise
 
     # The number PICKED is in the summary because "0 copied" on its own
     # is unreadable: it cannot be told from a selection that never
     # arrived, and that ambiguity has cost a run already.
     total_picked = sum(len(e) for _i, _d, e in picked.values())
     attempted    = sum(len(w) for _i, _d, w in to_copy)
-    summary = "{} picked, {} copied, {} already here".format(
-        total_picked, copied, skipped)
-    if attempted and not copied:
-        summary += " - {} were handed to Revit and none came back".format(
-            attempted)
-    if not copied:
+    summary = "{} picked, {} copied, {} rebuilt, {} already here".format(
+        total_picked, copied, built, skipped)
+    if attempted and not copied and not built:
+        summary += (" - {} were handed to Revit, none copied and none "
+                    "could be rebuilt".format(attempted))
+    if not copied and not built:
         note(notes, "-", summary)
     else:
         output.print_md("### {} - {}".format(TOOL_TITLE, summary))

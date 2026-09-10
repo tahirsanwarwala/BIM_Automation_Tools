@@ -1,27 +1,33 @@
 # -*- coding: utf-8 -*-
 """Rebuilding a linked fascia or gutter on a roof in the host model.
 
-A Fascia or a Gutter cannot be copied out of a link.  Revit says so
-plainly -- "Can't copy part of element" -- and it is right to.  The
-element is not geometry standing next to a roof; it is a profile swept
-along a list of REFERENCES to edges of its host roof, and those
-references point into the linked file.  There is nothing in this model
-for them to name, so there is nothing to copy.
+The tool tries Revit's own copy first.  This is what happens when that
+is refused: the sweep is built again from scratch, with
+doc.Create.NewFascia, on the edges of the roof already standing here.
 
-So it is rebuilt instead.  Read the linked sweep's segment references,
-turn each into the endpoints of an edge in host coordinates, find the
-host roof that corresponds to the linked one, find the edges of it that
-correspond to those endpoints, and create a new sweep on them.
+THE HARD PART IS DECIDING WHICH EDGES, and the obvious route is shut.
+A hosted sweep has AddSegment and RemoveSegment and NOTHING that reads
+back the segments it already holds, so it cannot be asked which edges
+it runs along.
 
-The roof is matched BEFORE its edges, rather than searching every edge
-of every roof for the linked curve.  Two reasons.  It cannot pick up a
-coincidentally identical edge on an unrelated roof below.  And it turns
-one useless failure -- "no edge found" -- into two useful ones: the
-roof is missing, or the roof is here and has changed.
+So it is asked where its GEOMETRY is instead, which comes to the same
+thing.  A fascia is a profile swept along its host's edge, so that edge
+lies ON the surface of the fascia's own solid.  Take the host roof's
+edges, push each into the link's coordinates, and measure how far it
+sits from the linked sweep's solid: the edges it was swept along
+measure essentially zero, and every other edge of the roof measures
+inches.  That is the whole trick.
 
-The arithmetic is next door in sweep_geom, which imports no Revit and
-is unit-tested.  This module is the Revit half and is verified by
-running the tool.
+TWO EDGES ALWAYS ANSWER, not one.  A fascia covers the end face of the
+roof, so the top and the bottom edge of that face BOTH lie on the
+fascia's solid.  Only one of them is the host.  Parallel edges lying
+over each other in plan are therefore collapsed to the HIGHEST, which
+is the eave edge a fascia hangs from.  It is a convention, not a
+certainty, and it is the one thing here most likely to want changing.
+
+The edges that survive are then chained end to end, so a sweep that
+turned a corner in the link comes back as ONE element that turns the
+same corner, not as one element per edge.
 
 The linked model is never modified.
 """
@@ -32,7 +38,6 @@ clr.AddReference("RevitAPI")
 from Autodesk.Revit.DB import (
     BuiltInCategory,
     CopyPasteOptions,
-    Edge,
     ElementId,
     ElementTransformUtils,
     FilteredElementCollector,
@@ -42,7 +47,6 @@ from Autodesk.Revit.DB import (
     Solid,
     Transform,
     ViewDetailLevel,
-    XYZ,
 )
 
 # Fascia, Gutter and their types live in the Architecture namespace, and
@@ -59,16 +63,29 @@ except ImportError:
 from System.Collections.Generic import List
 from pyrevit import script
 
-from BG import link_copy, sweep_geom
+from BG import sweep_geom
 
 logger = script.get_logger()
 
 FASCIA = "Fascia"
 GUTTER = "Gutter"
 
+# How close a roof edge must lie to the sweep's own solid to count as
+# an edge it was swept along.  A quarter of an inch: the edge is ON the
+# solid, so the real number is zero and this is only absorbing the cost
+# of pushing points through the link transform and of Revit's own
+# tessellation.  Every OTHER edge of a roof is inches away, so there is
+# a wide gap either side of this and nothing delicate about the choice.
+NEAR = 0.25 / 12.0
+
+# How far apart two parallel edges may be in plan and still be treated
+# as the same run seen twice -- the top and bottom of a roof's end
+# face.  Six inches covers any roof thickness worth having a fascia on.
+PLAN_TOL = 6.0 / 12.0
+
 
 # ===========================================================================
-# READING THE LINK
+# WHAT KIND OF SWEEP
 # ===========================================================================
 
 def sweep_kind(elem):
@@ -85,319 +102,274 @@ def xyz_tuple(p):
     return (p.X, p.Y, p.Z)
 
 
-class Segment(object):
-    """One run of a sweep: the roof it stands on, and the edge it follows.
-
-    The endpoints are already in HOST coordinates -- the link transform
-    was applied when this was read -- so nothing downstream has to
-    remember whether it is holding link or host numbers.
-    """
-
-    def __init__(self, roof, p, q):
-        self.roof = roof
-        self.p = p
-        self.q = q
-        self.key = sweep_geom.edge_key(p, q, sweep_geom.EDGE_TOL)
-
-
-def _roof_of(reference, link_doc):
-    """The linked element a segment reference is hosted on, or None."""
-    try:
-        return link_doc.GetElement(reference.ElementId)
-    except Exception:
-        return None
-
-
-def _is_roof(elem):
-    try:
-        cat = elem.Category
-    except Exception:
-        return False
-    if cat is None:
-        return False
-    return link_copy.eid_value(cat.Id) == int(BuiltInCategory.OST_Roofs)
-
-
-def _category_name(elem):
-    """An element's category name, for saying what a host actually is."""
-    try:
-        cat = elem.Category
-        return cat.Name if cat is not None else "no category"
-    except Exception:
-        return "unreadable category"
-
-
-def segment_ids_of(sweep):
-    """The sweep's segment ids.  Returns (ids, reason).
-
-    Separated out, and its failure RETURNED rather than logged, because
-    this is the one call that decides whether the tool sees anything at
-    all.  When it comes back empty the user has to be told which of the
-    two happened -- it threw, or the sweep really has no segments --
-    and a debug line nobody reads cannot tell them.
-    """
-    try:
-        ids = list(sweep.GetSegmentIds())
-    except Exception as ex:
-        members = []
-        try:
-            members = sorted(n for n in dir(sweep) if "Segment" in n)
-        except Exception:
-            pass
-        return [], ("GetSegmentIds() failed: {}: {}{}".format(
-            type(ex).__name__, ex,
-            "  [segment members on this element: {}]".format(
-                ", ".join(members) if members else "none found")))
-
-    if not ids:
-        return [], "GetSegmentIds() returned nothing - the sweep reports no segments"
-
-    return ids, None
-
-
-def segment_edges(sweep, transform):
-    """Every segment of *sweep*, as host-coordinate edges.
-
-    Returns (segments, problems).  *problems* is a list of plain
-    sentences, one per segment that could not be turned into a roof
-    edge, saying WHICH of the several ways it failed -- hosted on
-    something that is not a roof, a reference that would not resolve to
-    an edge, geometry that would not read.  They are collected rather
-    than raised, because one odd segment must not cost the user the
-    other six -- and they are distinguished rather than counted,
-    because "it is not on a roof" and "I could not read it" send the
-    user to two completely different places.
-    """
-    link_doc = sweep.Document
-    segments = []
-    problems = []
-
-    segment_ids, reason = segment_ids_of(sweep)
-    if reason:
-        return [], [reason]
-
-    for segment_id in segment_ids:
-        try:
-            reference = sweep.GetSegmentReference(segment_id)
-        except Exception as ex:
-            problems.append(
-                "segment {}: GetSegmentReference() failed: {}: {}".format(
-                    segment_id, type(ex).__name__, ex))
-            continue
-
-        roof = _roof_of(reference, link_doc)
-        if roof is None:
-            problems.append(
-                "segment {}: its host could not be found in the "
-                "link".format(segment_id))
-            continue
-
-        if not _is_roof(roof):
-            problems.append(
-                "segment {}: hosted on a {}, not a roof".format(
-                    segment_id, _category_name(roof)))
-            continue
-
-        try:
-            geometry = roof.GetGeometryObjectFromReference(reference)
-        except Exception as ex:
-            problems.append(
-                "segment {}: its edge would not resolve: {}: {}".format(
-                    segment_id, type(ex).__name__, ex))
-            continue
-
-        if not isinstance(geometry, Edge):
-            problems.append(
-                "segment {}: resolved to a {}, not an edge".format(
-                    segment_id, type(geometry).__name__))
-            continue
-
-        try:
-            curve = geometry.AsCurve()
-            p = transform.OfPoint(curve.GetEndPoint(0))
-            q = transform.OfPoint(curve.GetEndPoint(1))
-        except Exception as ex:
-            problems.append(
-                "segment {}: its edge would not read as a curve: "
-                "{}: {}".format(segment_id, type(ex).__name__, ex))
-            continue
-
-        segments.append(Segment(roof, xyz_tuple(p), xyz_tuple(q)))
-
-    return segments, problems
+def _type_class(kind):
+    return FasciaType if kind == FASCIA else GutterType
 
 
 # ===========================================================================
-# MATCHING THE HOST ROOF
+# GEOMETRY
 # ===========================================================================
 
-class HostRoof(object):
-    """A roof in this model, with what is needed to recognise it."""
-
-    def __init__(self, element, type_name, box):
-        self.element = element
-        self.type_name = type_name
-        self.box = box
-        self.centre = sweep_geom.centroid(list(box)) if box else None
-
-
-def _instance_type_name(elem):
-    """The name of an INSTANCE's type, or ""."""
-    return link_copy.type_key(elem)[1]
-
-
-def box_corners(bbox, transform=None):
-    """The eight corners of a bounding box, in host coordinates.
-
-    All eight, not just Min and Max: a link may be ROTATED, and a
-    rotated box's Min and Max do not transform into the new box's Min
-    and Max.  Taking every corner across and re-enclosing them does.
-    """
-    if bbox is None:
-        return []
-
-    lo, hi = bbox.Min, bbox.Max
-    corners = []
-    for x in (lo.X, hi.X):
-        for y in (lo.Y, hi.Y):
-            for z in (lo.Z, hi.Z):
-                p = XYZ(x, y, z)
-                if bbox.Transform is not None:
-                    p = bbox.Transform.OfPoint(p)
-                if transform is not None:
-                    p = transform.OfPoint(p)
-                corners.append(xyz_tuple(p))
-    return corners
-
-
-def linked_roof_box(roof, transform):
-    """The host-coordinate box around a linked roof, or None."""
-    try:
-        bbox = roof.get_BoundingBox(None)
-    except Exception:
-        return None
-    return sweep_geom.box_of(box_corners(bbox, transform))
-
-
-def host_roofs(doc):
-    """Every roof in the host model, ready to be matched against."""
-    found = []
-    for elem in (FilteredElementCollector(doc)
-                 .OfCategory(BuiltInCategory.OST_Roofs)
-                 .WhereElementIsNotElementType()):
-        try:
-            bbox = elem.get_BoundingBox(None)
-        except Exception:
-            continue
-        box = sweep_geom.box_of(box_corners(bbox))
-        if box is None:
-            continue
-        found.append(HostRoof(elem, _instance_type_name(elem), box))
-    return found
-
-
-def match_roof(linked_roof, transform, roofs):
-    """The host roof that IS the linked one, or None.
-
-    Same type name, and a bounding box agreeing corner for corner to an
-    inch.  A plain scan rather than an index: a model holds tens of
-    roofs, and a scan cannot suffer the grid-boundary problem a rounded
-    key would.
-    """
-    box = linked_roof_box(linked_roof, transform)
-    if box is None:
-        return None
-
-    wanted = _instance_type_name(linked_roof)
-    for roof in roofs:
-        if roof.type_name != wanted:
-            continue
-        if sweep_geom.boxes_match(roof.box, box, sweep_geom.ROOF_TOL):
-            return roof
-    return None
-
-
-def roof_label(elem, box=None):
-    """A roof named for a report row: its id, and where it stands."""
-    name = "roof {}".format(link_copy.eid_value(elem.Id))
-    centre = sweep_geom.centroid(list(box)) if box else None
-    if centre is None:
-        return name
-    return "{} at ({:.1f}, {:.1f}, {:.1f})".format(
-        name, centre[0], centre[1], centre[2])
-
-
-# ===========================================================================
-# MATCHING THE HOST ROOF'S EDGES
-# ===========================================================================
-
-def _solids(geometry):
+def _walk_solids(geometry):
     """Every solid in a GeometryElement, instances walked into."""
     for obj in geometry:
         if isinstance(obj, Solid):
-            if obj.Edges.Size > 0:
+            if obj.Faces.Size > 0:
                 yield obj
         elif isinstance(obj, GeometryInstance):
-            for inner in _solids(obj.GetInstanceGeometry()):
+            for inner in _walk_solids(obj.GetInstanceGeometry()):
                 yield inner
 
 
-def edge_index(roof):
-    """{edge_key: Reference} for every edge of a host roof.
+def _geometry_options(references):
+    options = Options()
+    options.ComputeReferences = references
+    options.IncludeNonVisibleObjects = False
+    options.DetailLevel = ViewDetailLevel.Fine
+    return options
+
+
+def sweep_solids(sweep):
+    """The linked sweep's own solids, in the LINK's coordinates.
+
+    Left in link coordinates deliberately.  Moving a solid means
+    rebuilding it; moving the handful of points we want to measure
+    against it is one multiplication each.  So the roof's edges come to
+    the solid rather than the other way about.
+    """
+    try:
+        geometry = sweep.get_Geometry(_geometry_options(False))
+    except Exception as ex:
+        logger.debug("no geometry on {}: {}".format(sweep.Id, ex))
+        return []
+    if geometry is None:
+        return []
+    return list(_walk_solids(geometry))
+
+
+def distance_to_solids(point, solids):
+    """How far *point* lies from the nearest face of *solids*, or None."""
+    best = None
+    for solid in solids:
+        for face in solid.Faces:
+            try:
+                hit = face.Project(point)
+            except Exception:
+                hit = None
+            if hit is None:
+                continue
+            try:
+                distance = hit.Distance
+            except Exception:
+                continue
+            if best is None or distance < best:
+                best = distance
+    return best
+
+
+def host_roofs(doc):
+    """Every roof in the host model."""
+    return list(FilteredElementCollector(doc)
+                .OfCategory(BuiltInCategory.OST_Roofs)
+                .WhereElementIsNotElementType())
+
+
+def roof_edges(roof):
+    """[(Reference, curve)] for every edge of a host roof.
 
     ComputeReferences is the whole point of the options: without it
     Edge.Reference is null and there is nothing to host a sweep on.
-
-    Built once per roof per run.  The alternative is regenerating a
-    roof's geometry for every sweep standing on it.
     """
-    options = Options()
-    options.ComputeReferences = True
-    options.IncludeNonVisibleObjects = False
-    options.DetailLevel = ViewDetailLevel.Fine
-
-    index = {}
+    found = []
     try:
-        geometry = roof.get_Geometry(options)
+        geometry = roof.get_Geometry(_geometry_options(True))
     except Exception as ex:
-        logger.debug("no geometry for {}: {}".format(roof.Id, ex))
-        return index
-
+        logger.debug("no geometry for roof {}: {}".format(roof.Id, ex))
+        return found
     if geometry is None:
-        return index
+        return found
 
-    for solid in _solids(geometry):
+    for solid in _walk_solids(geometry):
         for edge in solid.Edges:
             reference = edge.Reference
             if reference is None:
                 # Revit does not produce a reference for every edge even
                 # with ComputeReferences on.  Nothing can be hosted on
-                # one that has none, so it simply is not in the index.
+                # one that has none, so it is not a candidate.
                 continue
             try:
                 curve = edge.AsCurve()
-                p = xyz_tuple(curve.GetEndPoint(0))
-                q = xyz_tuple(curve.GetEndPoint(1))
             except Exception:
                 continue
-            index.setdefault(
-                sweep_geom.edge_key(p, q, sweep_geom.EDGE_TOL), reference)
+            if curve is None:
+                continue
+            found.append((reference, curve))
+    return found
 
-    return index
 
+# ===========================================================================
+# WHICH EDGES THE SWEEP RUNS ALONG
+# ===========================================================================
 
-def lookup_edge(index, segment):
-    """The host Reference for a segment's edge, or None.
+def _samples(curve):
+    """Three points along a curve, avoiding its very ends.
 
-    Every cell the edge could have been filed under is tried, so a pair
-    of points straddling a grid boundary still finds its edge.
+    The ends are avoided because that is where a mitred sweep stops
+    short of the edge it is hosted on, and a sample there can measure
+    an inch out on an edge that is otherwise exactly right.
     """
-    for key in sweep_geom.edge_key_candidates(
-            segment.p, segment.q, sweep_geom.EDGE_TOL):
-        reference = index.get(key)
-        if reference is not None:
-            return reference
-    return None
+    points = []
+    for t in (0.15, 0.5, 0.85):
+        try:
+            points.append(curve.Evaluate(t, True))
+        except Exception:
+            continue
+    return points
+
+
+def edge_lies_on_sweep(curve, solids, inverse):
+    """True when this host edge is one the sweep was swept along.
+
+    Every sample along the edge has to sit on the sweep's solid.  All
+    three, not the average: a roof edge that merely crosses the sweep
+    somewhere touches it at one point, and only an edge the sweep
+    RUNS ALONG touches it the whole way.
+    """
+    points = _samples(curve)
+    if len(points) < 3:
+        return False
+
+    for point in points:
+        distance = distance_to_solids(inverse.OfPoint(point), solids)
+        if distance is None or distance > NEAR:
+            return False
+    return True
+
+
+def _plan_key(curve):
+    """Where an edge lies in PLAN, ignoring height.
+
+    Two edges with the same plan key are the top and bottom of one
+    face, seen twice.
+    """
+    try:
+        a = curve.GetEndPoint(0)
+        b = curve.GetEndPoint(1)
+    except Exception:
+        return None
+    lo = (min(a.X, b.X), min(a.Y, b.Y))
+    hi = (max(a.X, b.X), max(a.Y, b.Y))
+    return (int(round(lo[0] / PLAN_TOL)), int(round(lo[1] / PLAN_TOL)),
+            int(round(hi[0] / PLAN_TOL)), int(round(hi[1] / PLAN_TOL)))
+
+
+def _height(curve):
+    try:
+        return max(curve.GetEndPoint(0).Z, curve.GetEndPoint(1).Z)
+    except Exception:
+        return 0.0
+
+
+def keep_highest_of_each_run(matches):
+    """Collapse edges stacked over each other in plan to the top one.
+
+    A fascia covers a roof's end face, so the top AND bottom edge of
+    that face both lie on its solid, and building on both would put two
+    sweeps where the user has one.  The host is the upper one -- a
+    fascia hangs from the eave -- so that is the one kept.
+    """
+    best = {}
+    for reference, curve in matches:
+        key = _plan_key(curve)
+        if key is None:
+            continue
+        current = best.get(key)
+        if current is None or _height(curve) > _height(current[1]):
+            best[key] = (reference, curve)
+    return list(best.values())
+
+
+def edges_under_sweep(sweep, transform, roofs_with_edges):
+    """The host roof edges a linked sweep was swept along.
+
+    *roofs_with_edges* is [(roof, [(Reference, curve)])], read once for
+    the whole run rather than per sweep.
+    """
+    solids = sweep_solids(sweep)
+    if not solids:
+        return [], "its geometry could not be read, so there was nothing to match against"
+
+    try:
+        inverse = transform.Inverse
+    except Exception:
+        inverse = Transform.Identity
+
+    matches = []
+    for _roof, edges in roofs_with_edges:
+        for reference, curve in edges:
+            if edge_lies_on_sweep(curve, solids, inverse):
+                matches.append((reference, curve))
+
+    if not matches:
+        return [], ("no edge of any roof in this model lies along it - "
+                    "the roof it needs is missing, or is not in the same "
+                    "place as the link's")
+
+    return keep_highest_of_each_run(matches), None
+
+
+# ===========================================================================
+# CHAINING -- one sweep per continuous run
+# ===========================================================================
+
+def chain_edges(matches):
+    """Group edges into runs that join end to end.
+
+    A fascia that turned a corner in the link comes back as ONE element
+    that turns the same corner, rather than one per edge, because that
+    is what the user has in the link and what they will schedule.
+    """
+    nodes = {}
+    items = []
+    for index, (reference, curve) in enumerate(matches):
+        try:
+            a = sweep_geom.round_point(xyz_tuple(curve.GetEndPoint(0)),
+                                       sweep_geom.EDGE_TOL)
+            b = sweep_geom.round_point(xyz_tuple(curve.GetEndPoint(1)),
+                                       sweep_geom.EDGE_TOL)
+        except Exception:
+            continue
+        items.append((index, reference, a, b))
+        nodes.setdefault(a, []).append(index)
+        nodes.setdefault(b, []).append(index)
+
+    by_index = dict((i, (r, a, b)) for i, r, a, b in items)
+    seen = set()
+    chains = []
+
+    for index, _reference, _a, _b in items:
+        if index in seen:
+            continue
+
+        # Everything reachable from this edge through shared endpoints.
+        run = []
+        stack = [index]
+        while stack:
+            current = stack.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            reference, a, b = by_index[current]
+            run.append(reference)
+            for end in (a, b):
+                for other in nodes.get(end, ()):
+                    if other not in seen:
+                        stack.append(other)
+
+        if run:
+            chains.append(run)
+
+    return chains
 
 
 # ===========================================================================
@@ -410,8 +382,6 @@ def type_names(elem_type):
     NOT link_copy.type_key: that takes an INSTANCE and looks its type
     up.  Handed a type it asks the type for ITS type, gets nothing, and
     answers ("", "") -- which would make every type match every other.
-    The two agree on their answer for the same type, which is what lets
-    a type found here be compared with one keyed from an instance.
     """
     family = ""
     name = ""
@@ -431,27 +401,16 @@ def type_names(elem_type):
     return family or "", name or ""
 
 
-def _type_class(kind):
-    return FasciaType if kind == FASCIA else GutterType
-
-
-def _sweep_class(kind):
-    return Fascia if kind == FASCIA else Gutter
-
-
 def ensure_type(link_doc, doc, linked_sweep):
     """The host's copy of a linked sweep's type.  (type, copied, reason).
 
-    Matched on family AND type name together, which is the only thing
-    the two documents share -- the ids never match and never will.
+    MUST run with NO transaction open on *doc*.  Copying across
+    documents opens and commits one of its own and throws if the
+    destination already has one -- the mistake that made this tool
+    report "8 picked, 0 copied".
 
-    Where the host has no such type, the TYPE ELEMENT ALONE is copied
-    out of the link.  That works where copying the instance cannot: a
-    type holds a profile and some numbers, not references into the
-    link.  It is the instance, and only the instance, that is "part of
-    element".
-
-    MUST run inside a transaction on *doc* when a copy may happen.
+    A TYPE copies without complaint where the instance will not: it
+    holds a profile and some numbers, not references into the link.
     """
     kind = sweep_kind(linked_sweep)
     if kind is None:
@@ -488,54 +447,17 @@ def ensure_type(link_doc, doc, linked_sweep):
 
 
 # ===========================================================================
-# WHAT IS ALREADY HERE
-# ===========================================================================
-
-def existing_index(doc):
-    """{(family, type): set of edge_key} for the sweeps the host holds.
-
-    The edges are read off each existing sweep's OWN segment references,
-    which are host references, so no transform is involved -- and they
-    key exactly the way a candidate's matched edges will.
-    """
-    index = {}
-    for kind in (FASCIA, GUTTER):
-        for sweep in (FilteredElementCollector(doc)
-                      .OfClass(_sweep_class(kind))
-                      .WhereElementIsNotElementType()):
-            try:
-                key = link_copy.type_key(sweep)
-                segment_ids = list(sweep.GetSegmentIds())
-            except Exception:
-                continue
-
-            keys = index.setdefault(key, set())
-            for segment_id in segment_ids:
-                try:
-                    reference = sweep.GetSegmentReference(segment_id)
-                    host = doc.GetElement(reference.ElementId)
-                    edge = host.GetGeometryObjectFromReference(reference)
-                    curve = edge.AsCurve()
-                    keys.add(sweep_geom.edge_key(
-                        xyz_tuple(curve.GetEndPoint(0)),
-                        xyz_tuple(curve.GetEndPoint(1)),
-                        sweep_geom.EDGE_TOL))
-                except Exception:
-                    continue
-    return index
-
-
-# ===========================================================================
 # CREATING
 # ===========================================================================
 
 def create_sweep(doc, kind, sweep_type, references):
     """Make the sweep on *references*.  Returns (element, reason).
 
-    MUST run inside a transaction on *doc*.
+    MUST run INSIDE a transaction on *doc* -- unlike the copy, this is
+    an ordinary edit of this model and wants one like any other.
     """
     if not references:
-        return None, "no host edge matched any of its segments"
+        return None, "no host edge to build it on"
 
     array = ReferenceArray()
     for reference in references:
@@ -546,13 +468,12 @@ def create_sweep(doc, kind, sweep_type, references):
             return doc.Create.NewFascia(sweep_type, array), None
         return doc.Create.NewGutter(sweep_type, array), None
     except Exception as ex:
-        return None, "Revit refused to create it: {}".format(ex)
+        return None, "Revit refused to build it: {}".format(ex)
 
 
 def apply_offsets(new_sweep, linked_sweep):
     """Carry the whole-element offsets and angle across.
 
-    Per-segment overrides are deliberately not carried -- see the spec.
     Each is set on its own: one that will not take must not cost the
     other two.
     """
