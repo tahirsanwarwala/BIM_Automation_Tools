@@ -47,13 +47,13 @@ Out of scope, and each for a reason:
 
 ## Code structure
 
-### New: `lib/BG/roof_sweep.py`
+### New: `lib/BG/sweep_geom.py` — no Revit import
 
-The whole of the logic, split so that the geometry half can be tested
-without Revit. Functions take plain tuples of floats, not `XYZ`, and the
-button converts at the boundary — this is what lets `tests/` run.
-
-Pure, testable:
+The geometry, in TWO modules rather than one, because `tests/` runs in
+ordinary CPython: a module that calls `clr.AddReference` cannot be
+imported there at all. `lib/BG/__init__.py` already draws this line for
+the wall tools, and this follows it. Functions here take plain tuples of
+floats, never `XYZ`; the Revit-facing module converts at the boundary.
 
   * `edge_key(p, q, tol)` — one hashable key for an edge, built from its
     two endpoints. The endpoints are SORTED before rounding, so an edge
@@ -69,25 +69,31 @@ Pure, testable:
     scheme could silently fail to find an edge that is there.
   * `points_match(p, q, tol)` / `boxes_match(a, b, tol)` — the roof
     identity test's arithmetic.
-  * `centroid(points)` — footprint centre, for roof identity.
+  * `centroid(points)` — the middle of a set of points, used to name a
+    roof in a report row.
+  * `box_of(points)` — the axis-aligned box enclosing a set of points,
+    for comparing a transformed linked roof against a host one.
+  * `already_there(index, type_key, edge_keys)` — the re-run rule.
 
-Revit-facing:
+### New: `lib/BG/roof_sweep.py` — Revit-facing
 
   * `sweeps_in_selection(refs, doc)` — the picked linked sweeps, grouped
     by link instance.
   * `segment_edges(sweep, transform)` — for one linked sweep, a list of
     `(linked roof, edge curve endpoints in host coordinates)`, one per
     segment, plus the segments that could not be read.
-  * `host_roofs(doc)` — the host's roofs, indexed for identity matching.
-  * `match_roof(linked_roof, transform, index)` — the host roof
-    corresponding to a linked one, or `None`.
+  * `host_roofs(doc)` — the host's roofs with their type names and boxes.
+  * `match_roof(linked_roof, transform, roofs)` — the host roof
+    corresponding to a linked one, or `None`. A plain scan: a model
+    holds tens of roofs, not thousands, and a scan cannot suffer the
+    grid-boundary problem an index would.
   * `edge_index(roof)` — `{edge_key: Reference}` for a host roof, from
     `get_Geometry(Options(ComputeReferences=True))`.
   * `ensure_type(link_doc, doc, linked_sweep)` — the host's matching
     `FasciaType`/`GutterType`, copying it out of the link when the host
     has none.
-  * `existing_index(doc)` — `{(family, type, edge_key): element id}` for
-    the sweeps the host already holds, for the re-run rule.
+  * `existing_index(doc)` — `{(family, type): set of edge_key}` for the
+    sweeps the host already holds, for the re-run rule.
   * `create_sweep(doc, kind, sweep_type, references)` — the
     `NewFascia`/`NewGutter` call and its failure message.
 
@@ -100,7 +106,7 @@ unhandled failure into a `forms.alert`.
 
 `bundle.yaml` gains `CopyRoofSweeps` in the layout, after `CopyFromLink`.
 
-### New: `tests/test_roof_sweep.py`
+### New: `tests/test_sweep_geom.py`
 
 Unit tests over the pure functions, in the style of
 `tests/test_wall_miter.py` — plain `unittest`, `lib` put on `sys.path`,
@@ -138,8 +144,11 @@ The sweep's segments are grouped by the linked roof they stand on —
 normally one, but a sweep may run across two.
 
 A host roof matches a linked one when it has the same type name AND its
-footprint centroid and bounding box both agree within 1 inch, the linked
-roof's geometry having first been pushed through the link transform.
+bounding box agrees within 1 inch — corner for corner, both the low
+corner and the high one — with the box enclosing the linked roof's eight
+transformed corners. Comparing both corners already fixes the size and
+the position, so no separate centroid test is needed; the centroid is
+computed only to name the roof in a report row.
 
 Where no host roof matches, the user is asked to pick one, once, with a
 message naming the linked roof. The answer is REMEMBERED for the rest of
@@ -277,7 +286,7 @@ simply absent from the index, and the segment reports as unmatched.
 
 ## Testing
 
-Pure unit tests, `tests/test_roof_sweep.py`, no Revit:
+Pure unit tests, `tests/test_sweep_geom.py`, no Revit:
 
   * `edge_key` gives the same key for an edge read in either direction.
   * `edge_key` gives different keys for two edges a foot apart.
@@ -287,8 +296,11 @@ Pure unit tests, `tests/test_roof_sweep.py`, no Revit:
     case the candidates exist for.
   * an edge whose endpoints differ by more than the tolerance is NOT
     found by any of its candidates.
-  * `centroid` of a known footprint.
+  * `centroid` and `box_of` over a known set of points.
   * `boxes_match` accepts an inch of drift and refuses a foot.
+  * `already_there` is true for a shared edge and a matching type, false
+    for a shared edge with a different type, and false for a matching
+    type sharing no edge.
   * `points_match` at, just inside, and just outside the tolerance.
 
 Manual verification in Revit, on a model with a link and copied roofs:
