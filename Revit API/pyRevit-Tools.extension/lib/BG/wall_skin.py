@@ -209,6 +209,32 @@ def skin_centreline(loc_curve, orientation, dist_to_exterior, skin_width):
     return offset_sideways(loc_curve, orientation, skin_off)
 
 
+def dist_loc_to_interior(dist_to_exterior, total_width):
+    """Distance from the location curve to the wall's INTERIOR face.
+
+    Orientation points outwards, so the interior face is one whole wall
+    thickness back along it -- negative wherever the location curve sits
+    inside the wall, which is most of the time.
+    """
+    return dist_to_exterior - total_width
+
+
+def interior_skin_centreline(loc_curve, orientation, dist_to_interior,
+                             skin_width):
+    """Centreline for a skin wall in the source wall's INNERMOST finish.
+
+    The mirror of skin_centreline.  That one steps half a thickness IN
+    from the exterior face; this one steps half a thickness OUT from the
+    interior face, which is the same move in the other direction, so
+    both walls end up sitting in the layer they were cut from.
+
+    Returns None on the same terms: a curved wall whose finish would
+    have to be offset to or past its own centre has no concentric arc.
+    """
+    return offset_sideways(loc_curve, orientation,
+                           dist_to_interior + skin_width / 2.0)
+
+
 def _center_wall_on_curve(doc, wall, target_curve, orient):
     """Translate *wall* so its solid's mid-plane lands on *target_curve*.
 

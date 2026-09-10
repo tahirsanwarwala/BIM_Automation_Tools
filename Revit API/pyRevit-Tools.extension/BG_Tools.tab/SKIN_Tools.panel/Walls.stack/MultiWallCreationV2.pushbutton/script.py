@@ -15,6 +15,22 @@ Sweep To Wall makes one.
 Each wall becomes one or more skin walls, exactly as Split Walls makes
 them -- except that nobody picks a base and a top.
 
+WHICH FINISH, asked once at the start of the run: the exterior one, the
+interior one, or both.  A wall carries a finish on each side of its core
+-- layer 0 outside, the last layer inside -- and either can be built,
+from its own material at its own thickness, sitting exactly in the layer
+it was cut from.
+
+The two faces are built from ONE band list.  A stone course or a soffit
+that stops the outer finish stops the inner one at the same height, so
+the walls line up storey for storey however the wall is cut.
+
+They part company over openings, and only there.  Windows and
+rectangular openings belong to the EXTERIOR skin: it is cut for them and
+carries the curtain walls, and the interior wall is left solid.  So a
+run asking for the interior finish alone builds no curtain walls and
+cuts no holes -- there is nothing on that side to cut them in.
+
 A wall's height comes from the CAST STONE sweeps running on it:
 
   * its top is the bottom of the stone course above it,
@@ -82,6 +98,9 @@ __author__ = "Tahir Sanwarwala"
 __doc__    = (
     "Select any mix of walls, wall sweeps and roof soffits in a LINKED "
     "model -- drag a box or click, then click Finish.\n"
+    "You are asked once whether to build the exterior finish, the "
+    "interior finish or both.  Both are cut into the same bands; only "
+    "the exterior one is opened for windows.\n"
     "Each CAST STONE sweep becomes a wall in the host model; each wall "
     "becomes skin walls that stop at the stone sweeps running on it.  "
     "EIFS sweeps are ignored, picked or not.\n"
@@ -860,7 +879,8 @@ class WallJob(object):
 
     __slots__ = ("label", "wall_keys", "type_id", "cs", "source_doc",
                  "loc_curve", "orientation", "total_width", "loc_line",
-                 "loc_to_ext", "base_z", "top_z", "structural", "bands",
+                 "loc_to_ext", "loc_to_int", "base_z", "top_z",
+                 "structural", "bands",
                  "windows", "rect_openings", "link_inst", "direction",
                  "built_bands", "curved")
 
@@ -1193,7 +1213,54 @@ def _level_elevation(link_doc, level_id, link_tf):
     return link_tf.OfPoint(XYZ(0.0, 0.0, raw)).Z
 
 
-def plan_wall(link_inst, wall):
+FACE_EXTERIOR = "exterior"
+FACE_INTERIOR = "interior"
+
+# What each choice in the dialog means, and the order they are offered.
+FACE_CHOICES = (
+    ("Exterior finish only",        (FACE_EXTERIOR,)),
+    ("Interior finish only",        (FACE_INTERIOR,)),
+    ("Both exterior and interior",  (FACE_EXTERIOR, FACE_INTERIOR)),
+)
+
+
+def ask_faces():
+    """Which finish layers to build as walls.  None when cancelled.
+
+    Asked once for the whole run, before anything is measured, because
+    the answer decides which walls even qualify: a wall with no interior
+    finish is not worth reporting to somebody who only asked for the
+    exterior one.
+    """
+    labels = [label for label, _faces in FACE_CHOICES]
+    picked = forms.CommandSwitchWindow.show(
+        labels, message="Which finish layers should be built as walls?")
+    if not picked:
+        return None
+    for label, faces in FACE_CHOICES:
+        if picked == label:
+            return faces
+    return None
+
+
+def layer_index_for_face(cs, face):
+    """The layer *face* is built from, or None when there is not one.
+
+    The exterior finish is layer 0 and the interior finish is the last
+    layer -- and each is only a FINISH if it lies outside the core.  A
+    wall whose core starts at layer 0 has no exterior finish to peel
+    off, and one whose core runs to the last layer has no interior one.
+    """
+    try:
+        if face == FACE_EXTERIOR:
+            return 0 if cs.GetFirstCoreLayerIndex() >= 1 else None
+        last = cs.LayerCount - 1
+        return last if cs.GetLastCoreLayerIndex() <= last - 1 else None
+    except Exception:
+        return None
+
+
+def plan_wall(link_inst, wall, faces):
     """Measure one linked wall.  Returns (WallJob or None, notes)."""
     label = "wall id {} ({})".format(wall.Id.IntegerValue,
                                      get_element_name(wall.WallType))
@@ -1206,9 +1273,14 @@ def plan_wall(link_inst, wall):
         return None, [[label, "wall type has no compound structure"]]
     if cs.LayerCount < 2:
         return None, [[label, "fewer than 2 layers - nothing to split"]]
-    if cs.GetFirstCoreLayerIndex() < 1:
-        return None, [[label,
-                       "no exterior finish layer before the core boundary"]]
+    if not any(layer_index_for_face(cs, f) is not None for f in faces):
+        if faces == (FACE_EXTERIOR,):
+            why = "no exterior finish layer before the core boundary"
+        elif faces == (FACE_INTERIOR,):
+            why = "no interior finish layer after the core boundary"
+        else:
+            why = "no finish layer outside the core on either face"
+        return None, [[label, why]]
 
     link_doc = wall.Document
     link_tf  = link_inst.GetTotalTransform()
@@ -1245,12 +1317,13 @@ def plan_wall(link_inst, wall):
     # wall falls back to the compound structure's own arithmetic in
     # prepare_bands, which is exact whatever shape the wall is.
     loc_to_ext = None
+    loc_to_int = None
     if not curved:
         try:
             meas = wall_skin.measure_face_offsets(
                 wall, pt0, orientation, link_tf)
             if meas:
-                loc_to_ext = meas[0]
+                loc_to_ext, loc_to_int = meas[0], meas[1]
         except Exception as ex:
             logger.debug("Face measurement failed on {}: {}".format(
                 label, ex))
@@ -1313,6 +1386,7 @@ def plan_wall(link_inst, wall):
         BuiltInParameter.WALL_KEY_REF_PARAM).AsInteger()
         if wall.get_Parameter(BuiltInParameter.WALL_KEY_REF_PARAM) else 0)
     job.loc_to_ext  = loc_to_ext
+    job.loc_to_int  = loc_to_int
     job.base_z      = base_z
     job.top_z       = top_z
     job.structural  = structural
@@ -1416,6 +1490,7 @@ def merge_wall_jobs(wall_jobs):
         job.total_width = first.total_width
         job.loc_line    = first.loc_line
         job.loc_to_ext  = first.loc_to_ext
+        job.loc_to_int  = first.loc_to_int
         job.base_z      = first.base_z
         job.top_z       = first.top_z
         job.structural  = first.structural
@@ -1537,35 +1612,46 @@ def _material_of_layer(cs, layer_index, source_doc):
     return None
 
 
-def skin_plan_key(cs, source_doc):
-    """Key a wall by the SKIN type it needs, so each is resolved once.
+def skin_plan_key(cs, source_doc, layer):
+    """Key a wall by the SKIN type one of its layers needs.
 
     Walls whose finishes share a Mark share a wall type; a finish with
     no Mark falls back to its material name, so those are still only
     asked about once each.
+
+    The key is the material and the thickness, never which face the
+    layer sat on -- so a wall lined inside and out in the same finish is
+    asked about once and both faces are built from one type, which is
+    what a single material means.
     """
-    source_mat = _material_of_layer(cs, 0, source_doc)
+    source_mat = _material_of_layer(cs, layer, source_doc)
     mark       = wall_materials.material_mark(source_mat)
     if not mark:
         mark = "name:{}".format(
             wall_materials.element_name(source_mat) or "Unknown")
-    return wall_materials.type_match_key(mark, cs.GetLayerWidth(0))
+    return wall_materials.type_match_key(mark, cs.GetLayerWidth(layer))
 
 
-def collect_skin_plans(wall_jobs):
+def collect_skin_plans(wall_jobs, faces):
     """Resolve the SKIN wall type once per Mark across the selection.
 
     Returns {skin_plan_key: plan}.  Called before the transaction opens
-    so the dialogs do not appear mid-transaction.
+    so the dialogs do not appear mid-transaction -- and it walks every
+    wanted face, so the interior finishes are asked about in the same
+    breath as the exterior ones rather than half way through the run.
     """
     plans = {}
     for job in wall_jobs:
-        key = skin_plan_key(job.cs, job.source_doc)
-        if key in plans:
-            continue
-        plans[key] = wall_materials.plan_skin_wall_type(
-            doc, _material_of_layer(job.cs, 0, job.source_doc),
-            job.source_doc, job.cs.GetLayerWidth(0), TOOL_TITLE)
+        for face in faces:
+            layer = layer_index_for_face(job.cs, face)
+            if layer is None:
+                continue
+            key = skin_plan_key(job.cs, job.source_doc, layer)
+            if key in plans:
+                continue
+            plans[key] = wall_materials.plan_skin_wall_type(
+                doc, _material_of_layer(job.cs, layer, job.source_doc),
+                job.source_doc, job.cs.GetLayerWidth(layer), TOOL_TITLE)
     return plans
 
 
@@ -2149,7 +2235,7 @@ def build_sweep_walls(sweep_jobs, levels, notes, existing):
     return skipped[0]
 
 
-def resolve_skin_type(plan, job, executed, key):
+def resolve_skin_type(plan, job, executed, key, layer):
     """Carry out one skin-type plan, once per plan key.
 
     The memo is only to save repeating the work: reusing a type that is
@@ -2158,12 +2244,12 @@ def resolve_skin_type(plan, job, executed, key):
     """
     if key not in executed:
         executed[key] = wall_materials.execute_skin_wall_type_plan(
-            doc, plan, _material_of_layer(job.cs, 0, job.source_doc),
+            doc, plan, _material_of_layer(job.cs, layer, job.source_doc),
             job.source_doc)
     return executed[key]
 
 
-def prepare_bands(wall_jobs, skin_plans, notes):
+def prepare_bands(wall_jobs, skin_plans, notes, faces):
     """Work out a centreline and a type for every band, building nothing.
 
     Creation is deferred so that bands sharing an elevation can have
@@ -2173,7 +2259,13 @@ def prepare_bands(wall_jobs, skin_plans, notes):
     in plan at the wall's openings was tried and taken back out: only
     the sweeps break at openings.
 
-    Returns [{"job", "band", "curve", "original", "type"}], where
+    One pass per wanted FACE.  Both faces get the identical band list --
+    a sweep or a soffit that stops the outer finish stops the inner one
+    at the same height -- so the only thing that differs between them is
+    which layer the type comes from and which side of the wall the
+    centreline lands on.
+
+    Returns [{"job", "band", "curve", "original", "type", "face"}], where
     "original" is the source wall's own centreline, which is what
     mitre_prepared judges adjacency on.
     """
@@ -2184,63 +2276,92 @@ def prepare_bands(wall_jobs, skin_plans, notes):
         if not job.bands:
             continue
 
-        try:
-            key  = skin_plan_key(job.cs, job.source_doc)
-            plan = skin_plans.get(key)
-            if plan is None or plan.get("action") == "skip":
+        first_core = job.cs.GetFirstCoreLayerIndex()
+        last_core  = job.cs.GetLastCoreLayerIndex()
+        skin_w, gap_w, core_w, _int_w, _ext = \
+            wall_skin.layer_group_widths(job.cs, first_core, last_core)
+
+        # Distance to the EXTERIOR face, measured off the solid where it
+        # could be and inferred from the compound structure where it
+        # could not.  Both faces are found from it, so it is worked out
+        # once per wall rather than once per face.
+        if job.loc_to_ext is not None:
+            d_ext = job.loc_to_ext
+        else:
+            d_ext = wall_skin.dist_loc_to_exterior(
+                job.loc_line, job.total_width, skin_w, gap_w, core_w)
+
+        for face in faces:
+            try:
+                layer = layer_index_for_face(job.cs, face)
+                if layer is None:
+                    # Only worth saying when the wall has the other face
+                    # and is being built anyway; a wall with neither
+                    # never became a job at all.
+                    note(notes, job.label,
+                         "no {} finish layer outside the core - that face "
+                         "was not built".format(face))
+                    continue
+
+                key  = skin_plan_key(job.cs, job.source_doc, layer)
+                plan = skin_plans.get(key)
+                if plan is None or plan.get("action") == "skip":
+                    note(notes, job.label,
+                         plan.get("reason", "no wall type resolved")
+                         if plan else "no wall type resolved")
+                    continue
+
+                skin_type = resolve_skin_type(plan, job, executed, key, layer)
+
+                if skin_type is None:
+                    note(notes, job.label, "no wall type resolved")
+                    continue
+
+                face_w = job.cs.GetLayerWidth(layer)
+
+                if face == FACE_EXTERIOR:
+                    curve = wall_skin.skin_centreline(
+                        job.loc_curve, job.orientation, d_ext, face_w)
+                else:
+                    d_int = job.loc_to_int
+                    if d_int is None:
+                        d_int = wall_skin.dist_loc_to_interior(
+                            d_ext, job.total_width)
+                    curve = wall_skin.interior_skin_centreline(
+                        job.loc_curve, job.orientation, d_int, face_w)
+
+                if curve is None:
+                    note(notes, job.label,
+                         "its {} skin would have to be offset to or past "
+                         "the centre this wall curves on, and no arc does "
+                         "that".format(face))
+                    continue
+
+                # "original" is what mitre_prepared judges adjacency on,
+                # and it is a straight segment.  A curved wall has none
+                # -- its chord is not where it runs -- so it is handed
+                # None and mitring passes it by.  Joining still happens,
+                # so Revit cleans whatever junction it can.
+                if job.curved:
+                    original = None
+                else:
+                    o0 = job.loc_curve.GetEndPoint(0)
+                    o1 = job.loc_curve.GetEndPoint(1)
+                    original = ((o0.X, o0.Y), (o1.X, o1.Y))
+
+                for band in job.bands:
+                    prepared.append({
+                        "job": job,
+                        "band": band,
+                        "curve": curve,
+                        "original": original,
+                        "type": skin_type,
+                        "face": face,
+                    })
+            except Exception as ex:
                 note(notes, job.label,
-                     plan.get("reason", "no wall type resolved")
-                     if plan else "no wall type resolved")
+                     "could not prepare {} bands: {}".format(face, ex))
                 continue
-
-            skin_type = resolve_skin_type(plan, job, executed, key)
-
-            if skin_type is None:
-                note(notes, job.label, "no wall type resolved")
-                continue
-
-            first_core = job.cs.GetFirstCoreLayerIndex()
-            last_core  = job.cs.GetLastCoreLayerIndex()
-            skin_w, gap_w, core_w, _int_w, _ext = \
-                wall_skin.layer_group_widths(job.cs, first_core, last_core)
-
-            if job.loc_to_ext is not None:
-                d = job.loc_to_ext
-            else:
-                d = wall_skin.dist_loc_to_exterior(
-                    job.loc_line, job.total_width, skin_w, gap_w, core_w)
-
-            curve = wall_skin.skin_centreline(
-                job.loc_curve, job.orientation, d, skin_w)
-            if curve is None:
-                note(notes, job.label,
-                     "its skin would have to be offset to or past the "
-                     "centre this wall curves on, and no arc does that")
-                continue
-
-            # "original" is what mitre_prepared judges adjacency on, and
-            # it is a straight segment.  A curved wall has none -- its
-            # chord is not where it runs -- so it is handed None and
-            # mitring passes it by.  Joining still happens, so Revit
-            # cleans whatever junction it can.
-            if job.curved:
-                original = None
-            else:
-                o0 = job.loc_curve.GetEndPoint(0)
-                o1 = job.loc_curve.GetEndPoint(1)
-                original = ((o0.X, o0.Y), (o1.X, o1.Y))
-
-            for band in job.bands:
-                prepared.append({
-                    "job": job,
-                    "band": band,
-                    "curve": curve,
-                    "original": original,
-                    "type": skin_type,
-                })
-        except Exception as ex:
-            note(notes, job.label, "could not prepare bands: {}".format(ex))
-            continue
 
     return prepared
 
@@ -2263,9 +2384,13 @@ def mitre_prepared(prepared, notes):
              for item in prepared]
     ids   = wall_bands.group_indices(spans)
 
+    # Grouped by face as well as elevation.  An exterior band and an
+    # interior band at one elevation are two walls a whole thickness
+    # apart, not two halves of a corner, and mitring one against the
+    # other would drag both off the layers they were cut from.
     groups = {}
     for item, key in zip(prepared, ids):
-        groups.setdefault(key, []).append(item)
+        groups.setdefault((key, item["face"]), []).append(item)
 
     for key, items in groups.items():
         for item in items:
@@ -2303,7 +2428,7 @@ def mitre_prepared(prepared, notes):
                 item["curve"] = Line.CreateBound(XYZ(x0, y0, z0),
                                                  XYZ(x1, y1, z1))
         except Exception as ex:
-            note(notes, "elevation group {}".format(key),
+            note(notes, "{} elevation group {}".format(key[1], key[0]),
                  "could not mitre corners for this band - left unmitred: "
                  "{}".format(ex))
             continue
@@ -2320,6 +2445,13 @@ def build_bands(prepared, notes, existing):
     job.built_bands in its place, so the windows and openings that
     belong to that band are still hosted and still cut -- they are what
     the band was for, and the wall being older does not change that.
+
+    Only the EXTERIOR bands go into job.built_bands, and that is what
+    leaves the interior finish solid: built_bands is the list the window
+    curtain walls and the rectangular openings are cut against, so a
+    wall that never joins it is never cut.  The interior wall is still
+    built, joined and mitred like any other -- it just has nothing
+    punched through it.
     """
     no_level = {}
     skipped  = 0
@@ -2333,8 +2465,9 @@ def build_bands(prepared, notes, existing):
             band["base_z"], band["top_z"])
         if standing is not None:
             item["wall"] = standing
-            job.built_bands.append(
-                (band["base_z"], band["top_z"], standing))
+            if item["face"] == FACE_EXTERIOR:
+                job.built_bands.append(
+                    (band["base_z"], band["top_z"], standing))
             skipped += 1
             continue
 
@@ -2351,7 +2484,9 @@ def build_bands(prepared, notes, existing):
             set_location_line(wall, LOC_LINE_FINISH_FACE_EXTERIOR)
             apply_constraints(wall, band)
             item["wall"] = wall
-            job.built_bands.append((band["base_z"], band["top_z"], wall))
+            if item["face"] == FACE_EXTERIOR:
+                job.built_bands.append(
+                    (band["base_z"], band["top_z"], wall))
             wall_exists.register(
                 existing, item["type"].Id.IntegerValue, item["curve"],
                 band["base_z"], band["top_z"], wall)
@@ -2359,9 +2494,9 @@ def build_bands(prepared, notes, existing):
                 no_level[job.label] = no_level.get(job.label, 0) + 1
         except Exception as ex:
             note(notes, job.label,
-                 "band {} to {} failed: {}".format(
-                     feet_text(band["base_z"]), feet_text(band["top_z"]),
-                     ex))
+                 "{} band {} to {} failed: {}".format(
+                     item["face"], feet_text(band["base_z"]),
+                     feet_text(band["top_z"]), ex))
 
     by_group = {}
     for item in prepared:
@@ -2596,6 +2731,15 @@ def main():
     if not wall_picks and not sweep_picks and not soffit_picks:
         return          # cancelled: create nothing, report nothing
 
+    # Asked before anything is measured, because the answer decides
+    # which walls qualify at all.  Sweeps and soffits are unaffected --
+    # they are not finishes and have no face to choose.
+    faces = (FACE_EXTERIOR,)
+    if wall_picks:
+        faces = ask_faces()
+        if faces is None:
+            return      # cancelled at the face dialog: build nothing
+
     notes       = []
     sweep_jobs  = []
     wall_jobs   = []
@@ -2614,7 +2758,7 @@ def main():
 
     for link_inst, wall in wall_picks:
         try:
-            job, job_notes = plan_wall(link_inst, wall)
+            job, job_notes = plan_wall(link_inst, wall, faces)
         except Exception as ex:
             note(notes, "wall id {}".format(wall.Id.IntegerValue),
                  "could not measure this wall: {}".format(ex))
@@ -2647,7 +2791,7 @@ def main():
 
     # Every dialog happens here, before the transaction opens.
     sweep_jobs = resolve_sweep_types(sweep_jobs, notes)
-    skin_plans = collect_skin_plans(wall_jobs)
+    skin_plans = collect_skin_plans(wall_jobs, faces)
     window_plans = plan_windows(wall_jobs, notes)
 
     # Before banding: the bands are cut at the sweeps' own elevations,
@@ -2682,7 +2826,7 @@ def main():
         sweeps_skipped = build_sweep_walls(
             sweep_jobs, levels, notes, existing)
 
-        prepared = prepare_bands(wall_jobs, skin_plans, notes)
+        prepared = prepare_bands(wall_jobs, skin_plans, notes, faces)
         mitre_prepared(prepared, notes)
         bands_skipped = build_bands(prepared, notes, existing)
 
