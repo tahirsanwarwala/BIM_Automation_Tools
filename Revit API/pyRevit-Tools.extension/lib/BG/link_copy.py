@@ -49,6 +49,19 @@ logger = script.get_logger()
 TOL = 1.0 / 12.0
 
 
+def eid_value(element_id):
+    """An ElementId as a plain number, whichever Revit version this is.
+
+    2024 and later expose Value; earlier ones only IntegerValue.
+    """
+    for attr in ("Value", "IntegerValue"):
+        try:
+            return getattr(element_id, attr)
+        except Exception:
+            continue
+    return element_id
+
+
 def link_instances(doc):
     """Every loaded link in *doc*, as (RevitLinkInstance, Document)."""
     found = []

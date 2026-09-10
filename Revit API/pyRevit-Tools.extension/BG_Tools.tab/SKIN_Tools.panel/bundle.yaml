@@ -3,4 +3,5 @@ layout:
   - Walls
   - Windows
   - CopyFromLink
+  - CopyRoofSweeps
   - SplitWallHorizontal
