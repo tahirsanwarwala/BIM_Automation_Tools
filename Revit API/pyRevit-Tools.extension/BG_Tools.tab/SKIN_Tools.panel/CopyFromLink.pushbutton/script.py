@@ -1,15 +1,22 @@
 # -*- coding: utf-8 -*-
 """Copy elements out of a linked model into the host, in place.
 
-Pick a category, then pick the elements of it you want in a LINKED
-model -- drag a box or click, then Finish -- and each one is copied
-into the host model where it already stands.
+Pick a category, then the types within it you want, then pick the
+elements themselves in a LINKED model -- drag a box or click, then
+Finish -- and each one is copied into the host model where it already
+stands.
 
-The category comes first, and it is read off what the links actually
-hold rather than off Revit's own list, so it names only what there is
-something to copy.  Picking it first is also what makes the selection
-easy: the filter refuses everything else while you drag, so a box over
-a facade can only pick up what you asked for.
+The category and the type list are both read off what the links
+actually hold rather than off Revit's own tables, so they name only what
+there is something to copy: a type loaded into the link but never placed
+is not something anybody wants to be asked about.
+
+Narrowing before selecting is what makes the selection easy.  The filter
+refuses everything else while you drag, so a box thrown over a facade
+picks up the two bollard types you asked for and leaves the railings,
+the planters and the light fittings standing.  Types are matched by NAME
+-- the same way an element is judged already-here -- so one pick covers
+every link at once.
 
 WHAT IS ALREADY HERE IS LEFT ALONE.  A model part way through being
 brought over by hand has some of the link's elements standing in the
@@ -34,12 +41,16 @@ The linked model is never modified.
 __title__  = "Copy\nFrom Link"
 __author__ = "Tahir Sanwarwala"
 __doc__    = (
-    "Pick a category, then pick elements of it in a LINKED model and "
-    "click Finish.  Each one is copied into this model in place.\n"
+    "Pick a category, then the types you want within it, then pick "
+    "elements in a LINKED model and click Finish.  Each one is copied "
+    "into this model in place.\n"
+    "Only the chosen types can be picked, so a box over a facade "
+    "catches what you asked for and nothing else.\n"
     "Anything the host already holds -- same family and type, within "
     "an inch of the same place -- is left alone, so a model part way "
     "through being copied by hand does not end up with doubles.\n"
-    "The category list is read off what the links actually hold.\n"
+    "The category and type lists are read off what the links actually "
+    "hold, so a type that is loaded but never placed is not offered.\n"
     "The linked model is left untouched."
 )
 
@@ -101,31 +112,57 @@ def link_name(link_inst):
 
 
 def label_for(elem, key):
-    """A row label naming the element and what it is."""
-    family, type_name = key
-    return "{} ({}: {})".format(eid_value(elem.Id),
-                                family or "?", type_name or "?")
+    """A row label naming the element and what it is.
+
+    Through link_copy.type_label, so a type reads the same way in the
+    report as it did in the list it was chosen from.
+    """
+    return "{} ({})".format(eid_value(elem.Id), link_copy.type_label(key))
 
 
 # ===========================================================================
 # SELECTION
 # ===========================================================================
 
-class LinkedCategoryFilter(ISelectionFilter):
-    """Allow linked elements of one category, and nothing else.
+class LinkedTypeFilter(ISelectionFilter):
+    """Allow linked elements of one category and chosen types, else nothing.
 
     For linked elements Revit calls AllowElement() on the
     RevitLinkInstance and AllowReference() on each candidate reference
     within it, so the real test has to live in AllowReference.
+
+    Answers are remembered per element.  AllowReference runs on every
+    mouse move over a candidate, and deciding a type means fetching the
+    element's type out of the link and reading two names off it -- cheap
+    once, and not cheap several times a second while somebody drags a
+    box across a facade.  What an element IS cannot change while a
+    selection is open, so the memo cannot go stale.
     """
 
-    def __init__(self, category_id):
+    def __init__(self, category_id, type_keys):
         self.category_id = category_id
+        self.type_keys = type_keys
+        self._decided = {}
 
     def AllowElement(self, elem):
         return isinstance(elem, RevitLinkInstance)
 
     def AllowReference(self, ref, point):
+        try:
+            memo = (eid_value(ref.ElementId), eid_value(ref.LinkedElementId))
+        except Exception:
+            memo = None
+
+        if memo is not None and memo in self._decided:
+            return self._decided[memo]
+
+        answer = self._allows(ref)
+        if memo is not None:
+            self._decided[memo] = answer
+        return answer
+
+    def _allows(self, ref):
+        """The real test: right category, and one of the chosen types."""
         try:
             link_inst = doc.GetElement(ref.ElementId)
             if not isinstance(link_inst, RevitLinkInstance):
@@ -134,8 +171,12 @@ class LinkedCategoryFilter(ISelectionFilter):
             if link_doc is None:
                 return False
             elem = link_doc.GetElement(ref.LinkedElementId)
-            cat = elem.Category if elem is not None else None
-            return cat is not None and cat.Id == self.category_id
+            if elem is None:
+                return False
+            cat = elem.Category
+            if cat is None or cat.Id != self.category_id:
+                return False
+            return link_copy.type_key(elem) in self.type_keys
         except Exception:
             return False
 
@@ -145,12 +186,26 @@ def prompt_category(names):
     return forms.SelectFromList.show(
         sorted(names),
         title="{}  |  Which category are you copying?".format(TOOL_TITLE),
-        button_name="Pick elements of this category",
+        button_name="Choose types in this category",
         multiselect=False)
 
 
-def pick_elements(category_id, category_name):
-    """Select linked elements of one category, then Finish.
+def prompt_types(labels, category_name):
+    """Ask which types within the category.  Returns a list, or None.
+
+    Always asked, even where the category holds a single type.  A
+    dialog that appears for two types and vanishes for one is a dialog
+    nobody can predict, and the one-row case costs a click.
+    """
+    return forms.SelectFromList.show(
+        sorted(labels),
+        title="{}  |  Which {} types?".format(TOOL_TITLE, category_name),
+        button_name="Pick elements of these types",
+        multiselect=True)
+
+
+def pick_elements(category_id, type_keys, prompt):
+    """Select linked elements of the chosen types, then Finish.
 
     PickObjects rather than a loop of PickObject: it is what gives the
     selection Revit's own behaviour -- a rubber-band box as well as
@@ -165,8 +220,8 @@ def pick_elements(category_id, category_name):
     """
     try:
         refs = uidoc.Selection.PickObjects(
-            ObjectType.LinkedElement, LinkedCategoryFilter(category_id),
-            "Select the {} to copy, then click Finish".format(category_name))
+            ObjectType.LinkedElement,
+            LinkedTypeFilter(category_id, type_keys), prompt)
     except OperationCanceledException:
         return {}
     except Exception as ex:
@@ -211,7 +266,28 @@ def main():
         return          # cancelled: copy nothing, report nothing
 
     category_id = categories[name]
-    picked = pick_elements(category_id, name)
+
+    types = link_copy.types_in_links(links, category_id)
+    if not types:
+        report([["-", "the links hold no {} to copy".format(name)]])
+        return
+
+    chosen = prompt_types(types.keys(), name)
+    if not chosen:
+        return          # cancelled: copy nothing, report nothing
+
+    type_keys = set(types[label] for label in chosen)
+
+    # Say in the prompt how far the selection has been narrowed, so a
+    # click that does nothing reads as "not one of my types" rather than
+    # as the tool ignoring it.
+    if len(chosen) == len(types):
+        prompt = "Select the {} to copy, then click Finish".format(name)
+    else:
+        prompt = ("Select the {} of the {} chosen type(s) to copy, then "
+                  "click Finish".format(name, len(chosen)))
+
+    picked = pick_elements(category_id, type_keys, prompt)
     if not picked:
         return          # cancelled, or nothing picked
 

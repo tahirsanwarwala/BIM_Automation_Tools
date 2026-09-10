@@ -95,6 +95,45 @@ def categories_in_links(links):
     return found
 
 
+def type_label(key):
+    """A (family, type) pair as one line of text, for a list to pick from.
+
+    Both halves always appear, with a ? standing in for one that could
+    not be read, so two different pairs can never print the same line --
+    a family called "Bollard" with no type name and a type called
+    "Bollard" with no family are told apart rather than folded into one
+    row that means both.
+    """
+    family, type_name = key
+    return "{}: {}".format(family or "?", type_name or "?")
+
+
+def types_in_links(links, category_id):
+    """{label: (family, type)} for one category across all the links.
+
+    Read off the elements themselves, the same way categories_in_links
+    reads the categories: what matters is what is actually standing in
+    there to copy, not what types the link's project browser could
+    offer.  A type loaded but never placed is not something anybody
+    wants to be asked about.
+
+    Types are keyed on their NAMES, so the same type in two links is
+    one row and one choice -- which is the same reason type_key uses
+    names, and means a pick covers every link at once.
+    """
+    found = {}
+    for _inst, link_doc in links:
+        for elem in (FilteredElementCollector(link_doc)
+                     .OfCategoryId(category_id)
+                     .WhereElementIsNotElementType()):
+            try:
+                key = type_key(elem)
+            except Exception:
+                continue
+            found.setdefault(type_label(key), key)
+    return found
+
+
 def type_key(elem):
     """(family name, type name) for an element, as best as can be read.
 
