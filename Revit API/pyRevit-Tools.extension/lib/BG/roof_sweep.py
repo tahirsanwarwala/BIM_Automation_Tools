@@ -118,57 +118,113 @@ def _is_roof(elem):
     return link_copy.eid_value(cat.Id) == int(BuiltInCategory.OST_Roofs)
 
 
+def _category_name(elem):
+    """An element's category name, for saying what a host actually is."""
+    try:
+        cat = elem.Category
+        return cat.Name if cat is not None else "no category"
+    except Exception:
+        return "unreadable category"
+
+
+def segment_ids_of(sweep):
+    """The sweep's segment ids.  Returns (ids, reason).
+
+    Separated out, and its failure RETURNED rather than logged, because
+    this is the one call that decides whether the tool sees anything at
+    all.  When it comes back empty the user has to be told which of the
+    two happened -- it threw, or the sweep really has no segments --
+    and a debug line nobody reads cannot tell them.
+    """
+    try:
+        ids = list(sweep.GetSegmentIds())
+    except Exception as ex:
+        members = []
+        try:
+            members = sorted(n for n in dir(sweep) if "Segment" in n)
+        except Exception:
+            pass
+        return [], ("GetSegmentIds() failed: {}: {}{}".format(
+            type(ex).__name__, ex,
+            "  [segment members on this element: {}]".format(
+                ", ".join(members) if members else "none found")))
+
+    if not ids:
+        return [], "GetSegmentIds() returned nothing - the sweep reports no segments"
+
+    return ids, None
+
+
 def segment_edges(sweep, transform):
     """Every segment of *sweep*, as host-coordinate edges.
 
-    Returns (segments, unread).  *unread* counts the segments that could
-    not be turned into a roof edge -- hosted on a soffit or a model line
-    rather than a roof, or geometry Revit would not resolve.  They are
-    counted rather than raised, because one odd segment must not cost
-    the user the other six.
+    Returns (segments, problems).  *problems* is a list of plain
+    sentences, one per segment that could not be turned into a roof
+    edge, saying WHICH of the several ways it failed -- hosted on
+    something that is not a roof, a reference that would not resolve to
+    an edge, geometry that would not read.  They are collected rather
+    than raised, because one odd segment must not cost the user the
+    other six -- and they are distinguished rather than counted,
+    because "it is not on a roof" and "I could not read it" send the
+    user to two completely different places.
     """
     link_doc = sweep.Document
     segments = []
-    unread = 0
+    problems = []
 
-    try:
-        segment_ids = list(sweep.GetSegmentIds())
-    except Exception as ex:
-        logger.debug("no segments on {}: {}".format(sweep.Id, ex))
-        return [], 0
+    segment_ids, reason = segment_ids_of(sweep)
+    if reason:
+        return [], [reason]
 
     for segment_id in segment_ids:
         try:
             reference = sweep.GetSegmentReference(segment_id)
-        except Exception:
-            unread += 1
+        except Exception as ex:
+            problems.append(
+                "segment {}: GetSegmentReference() failed: {}: {}".format(
+                    segment_id, type(ex).__name__, ex))
             continue
 
         roof = _roof_of(reference, link_doc)
-        if roof is None or not _is_roof(roof):
-            unread += 1
+        if roof is None:
+            problems.append(
+                "segment {}: its host could not be found in the "
+                "link".format(segment_id))
+            continue
+
+        if not _is_roof(roof):
+            problems.append(
+                "segment {}: hosted on a {}, not a roof".format(
+                    segment_id, _category_name(roof)))
             continue
 
         try:
             geometry = roof.GetGeometryObjectFromReference(reference)
-        except Exception:
-            geometry = None
+        except Exception as ex:
+            problems.append(
+                "segment {}: its edge would not resolve: {}: {}".format(
+                    segment_id, type(ex).__name__, ex))
+            continue
 
         if not isinstance(geometry, Edge):
-            unread += 1
+            problems.append(
+                "segment {}: resolved to a {}, not an edge".format(
+                    segment_id, type(geometry).__name__))
             continue
 
         try:
             curve = geometry.AsCurve()
             p = transform.OfPoint(curve.GetEndPoint(0))
             q = transform.OfPoint(curve.GetEndPoint(1))
-        except Exception:
-            unread += 1
+        except Exception as ex:
+            problems.append(
+                "segment {}: its edge would not read as a curve: "
+                "{}: {}".format(segment_id, type(ex).__name__, ex))
             continue
 
         segments.append(Segment(roof, xyz_tuple(p), xyz_tuple(q)))
 
-    return segments, unread
+    return segments, problems
 
 
 # ===========================================================================

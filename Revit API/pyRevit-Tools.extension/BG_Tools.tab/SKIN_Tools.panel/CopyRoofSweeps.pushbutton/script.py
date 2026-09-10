@@ -78,8 +78,9 @@ def report(notes):
     if not notes:
         return
     output.print_md("### {} - {} note(s)".format(TOOL_TITLE, len(notes)))
-    output.print_table([["Element", "Note"]] + notes,
-                       columns=["Element", "Note"])
+    # The header goes in columns= and NOWHERE else.  Passing it as a
+    # row as well prints it twice, once as a heading and once as data.
+    output.print_table(notes, columns=["Element", "Note"])
 
 
 def label_for(elem):
@@ -201,18 +202,21 @@ class Plan(object):
 
 def plan_one(sweep, transform, roofs, chosen, indexes, notes):
     """Work out which host edges a sweep wants.  Returns a Plan or None."""
-    segments, unread = roof_sweep.segment_edges(sweep, transform)
-    total = len(segments) + unread
+    segments, problems = roof_sweep.segment_edges(sweep, transform)
+    total = len(segments) + len(problems)
 
-    if unread:
-        note(notes, label_for(sweep),
-             "{} of its {} segments are not hosted on a roof, and were "
-             "left out".format(unread, total))
+    # Every problem printed as its own row, in its own words.  An
+    # earlier version counted them all as "not hosted on a roof",
+    # which named a cause it had not established -- and when the read
+    # failed before any segment was even looked at, that sentence was
+    # simply untrue.
+    for problem in problems:
+        note(notes, label_for(sweep), problem)
 
     if not segments:
         note(notes, label_for(sweep),
-             "none of its segments are hosted on a roof, so there was "
-             "nothing to rebuild")
+             "nothing could be rebuilt from it - see the row(s) above "
+             "for why")
         return None
 
     references = []
