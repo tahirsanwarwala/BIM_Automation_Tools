@@ -173,14 +173,6 @@ def locate(elem, transform):
     return geometry_centre(elem, transform)
 
 
-def link_name(link_inst):
-    """The link's own name, for a row that is about the link itself."""
-    try:
-        return link_inst.Name
-    except Exception:
-        return "link {}".format(link_copy.eid_value(link_inst.Id))
-
-
 # ===========================================================================
 # SELECTION
 # ===========================================================================
@@ -328,26 +320,35 @@ def main():
     #
     # Wrapping this in a transaction is what made the tool report
     # "8 picked, 0 copied": every call threw before it started.
+    # ONE AT A TIME, not one call for the batch.
+    #
+    # Revit's answer to a batch is "Copying one or more elements
+    # failed", which names neither which nor how many -- and it fails
+    # the whole call, so a single awkward sweep takes the other seven
+    # down with it.  Copied singly, each one succeeds or fails on its
+    # own and says which it was.  The cost is one API call per element,
+    # which for a selection this size is nothing.
     for link_inst, link_doc, wanted in to_copy:
-        if not wanted:
-            continue
+        for elem_id in wanted:
+            elem  = link_doc.GetElement(elem_id)
+            label = (label_for(elem, link_copy.type_key(elem))
+                     if elem is not None
+                     else "{}".format(link_copy.eid_value(elem_id)))
 
-        new_ids, reason = link_copy.copy_elements(
-            link_inst, link_doc, doc, wanted)
+            new_ids, reason = link_copy.copy_elements(
+                link_inst, link_doc, doc, [elem_id])
 
-        if reason:
-            note(notes, link_name(link_inst),
-                 "could not copy {} element(s): {}".format(
-                     len(wanted), reason))
-            continue
+            if reason:
+                note(notes, label, "not copied: {}".format(reason))
+                continue
 
-        if not new_ids:
-            note(notes, link_name(link_inst),
-                 "Revit accepted {} element(s) and returned none - they "
-                 "were refused without an error".format(len(wanted)))
-            continue
+            if not new_ids:
+                note(notes, label,
+                     "Revit accepted it and returned nothing - refused "
+                     "without an error")
+                continue
 
-        copied += len(new_ids)
+            copied += len(new_ids)
 
     # The number PICKED is in the summary because "0 copied" on its own
     # is unreadable: it cannot be told from a selection that never
