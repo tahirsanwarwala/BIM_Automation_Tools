@@ -52,7 +52,8 @@ clr.AddReference("RevitAPI")
 clr.AddReference("RevitAPIUI")
 
 from Autodesk.Revit.DB import (
-    BuiltInCategory, Category, RevitLinkInstance, Transaction)
+    BuiltInCategory, Category, Options, RevitLinkInstance, Transaction,
+    ViewDetailLevel, XYZ)
 from Autodesk.Revit.Exceptions import OperationCanceledException
 from Autodesk.Revit.UI.Selection import ISelectionFilter, ObjectType
 from pyrevit import revit, forms, script
@@ -106,6 +107,61 @@ def label_for(elem, key):
     family, type_name = key
     return "{} ({}: {})".format(link_copy.eid_value(elem.Id),
                                 family or "?", type_name or "?")
+
+
+def geometry_centre(elem, transform):
+    """The middle of an element's own geometry, in host coordinates.
+
+    A hosted sweep has no location point and no location curve -- it is
+    a solid swept along its host's edges -- so link_copy.element_point
+    falls through to the bounding box, and for some of them that comes
+    back empty too.  This asks the geometry itself, which a sweep
+    always has because being geometry is all it is.
+    """
+    try:
+        options = Options()
+        options.ComputeReferences = False
+        options.IncludeNonVisibleObjects = False
+        options.DetailLevel = ViewDetailLevel.Medium
+        geometry = elem.get_Geometry(options)
+    except Exception:
+        return None
+
+    if geometry is None:
+        return None
+
+    lo = None
+    hi = None
+    for obj in geometry:
+        try:
+            bbox = obj.GetBoundingBox()
+        except Exception:
+            continue
+        if bbox is None:
+            continue
+        for corner in (bbox.Min, bbox.Max):
+            p = corner
+            if bbox.Transform is not None:
+                p = bbox.Transform.OfPoint(p)
+            lo = p if lo is None else XYZ(min(lo.X, p.X), min(lo.Y, p.Y),
+                                          min(lo.Z, p.Z))
+            hi = p if hi is None else XYZ(max(hi.X, p.X), max(hi.Y, p.Y),
+                                          max(hi.Z, p.Z))
+
+    if lo is None or hi is None:
+        return None
+
+    centre = XYZ((lo.X + hi.X) / 2.0, (lo.Y + hi.Y) / 2.0,
+                 (lo.Z + hi.Z) / 2.0)
+    return transform.OfPoint(centre) if transform else centre
+
+
+def locate(elem, transform):
+    """Where an element stands, by whatever means will answer."""
+    point = link_copy.element_point(elem, transform)
+    if point is not None:
+        return point
+    return geometry_centre(elem, transform)
 
 
 def link_name(link_inst):
@@ -225,12 +281,20 @@ def main():
         wanted = []
         for elem in elements:
             key   = link_copy.type_key(elem)
-            point = link_copy.element_point(elem, transform)
+            point = locate(elem, transform)
 
+            # An element that cannot be located is COPIED ANYWAY, and
+            # only the duplicate check is given up on.  Not knowing
+            # whether something is already here is no reason to refuse
+            # to bring it over -- the user asked for it, and a double
+            # they can delete beats a silent nothing.  Copying was
+            # refused here once, and the tool did nothing at all.
             if point is None:
                 note(notes, label_for(elem, key),
-                     "could not be located, so it was left out - there "
-                     "is no way to tell whether it is already here")
+                     "could not be located, so it was copied without "
+                     "checking whether one is already here - look for "
+                     "a duplicate")
+                wanted.append(elem.Id)
                 continue
 
             if link_copy.already_there(index, key, point):
@@ -273,7 +337,16 @@ def main():
             t.RollBack()
         raise
 
-    summary = "{} copied, {} already here".format(copied, skipped)
+    # The number PICKED is in the summary because "0 copied" on its own
+    # is unreadable: it cannot be told from a selection that never
+    # arrived, and that ambiguity has cost a run already.
+    total_picked = sum(len(e) for _i, _d, e in picked.values())
+    attempted    = sum(len(w) for _i, _d, w in to_copy)
+    summary = "{} picked, {} copied, {} already here".format(
+        total_picked, copied, skipped)
+    if attempted and not copied:
+        summary += " - {} were handed to Revit and none came back".format(
+            attempted)
     if not copied:
         note(notes, "-", summary)
     else:
