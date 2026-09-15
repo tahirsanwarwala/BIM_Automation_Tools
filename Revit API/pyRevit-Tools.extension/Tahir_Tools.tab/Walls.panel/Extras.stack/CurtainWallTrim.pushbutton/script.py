@@ -21,23 +21,16 @@ concentric arc trimmed to the new jambs, and anything else is pushed
 out along its own normals.  A wall that has never been sketched is a
 plain rectangle from its length and constraints.
 
-Mullions come from a type of the band's own: 'Window Trim v2', made the
-first time the tool runs by duplicating 'Window Trim' and setting its
-two vertical borders and its head border to the 'Window Trim' mullion.
-That roundabout route is the only one there is.  CurtainGridLine.
-AddMullions is the API's sole way to make a mullion, so a mullion can
-only ever sit on a grid line, and a band's outer edges are wall
-boundary - asking Revit to put a grid line there does not fail, it takes
-Revit down.  Border parameters reach those edges, and putting them on a
-separate type keeps them off the trim walls already in the model, which
-carry mullions placed by hand and must not gain a second set.
+Mullions are left to you.  CurtainGridLine.AddMullions is the API's
+sole way to make a mullion, so a mullion can only ever sit on a grid
+line, and a band's outer edges are wall boundary - asking Revit to put
+a grid line there does not fail, it takes Revit down.  The type's
+Border parameters do reach those edges, but they reach them on every
+other wall of the type as well, and the trim walls already in the model
+carry mullions placed by hand that must not gain a second set.  So the
+band comes out bare and its three outer mullions stay a manual step.
 
-The switch to that type is the LAST thing done to a band, because
-clearing the curtain grid deletes every mullion on the wall - do it in
-the other order and the borders are made and immediately thrown away.
-
-'Window Trim' itself is never modified, an existing 'Window Trim v2' is
-reused exactly as it stands, and the source wall is never touched.
+The type is never modified and the source wall is never touched.
 Picking loops until Esc.
 """
 
@@ -48,10 +41,9 @@ __doc__    = (
     "around it: offset outwards on both jambs and over the head, flush "
     "at the sill, with the source wall's outline cut out of it.\n"
     "The offset is asked for once per run and defaults to 6\".\n"
-    "Sketched and arched heads are followed.  Mullions come from a "
-    "'Window Trim v2' type the tool makes once, with its two jamb "
-    "borders and head border set; plain 'Window Trim' is left alone, so "
-    "trim walls already mullioned by hand are untouched.\n"
+    "Sketched and arched heads are followed.  Mullions are not placed: "
+    "the API cannot host one on a wall's border edge, so the three "
+    "outer mullions stay a manual step.\n"
     "Repeats until Esc.  The source wall and the type are left alone."
 )
 
@@ -68,7 +60,6 @@ from Autodesk.Revit.DB import (
     ElementId,
     FilteredElementCollector,
     Line,
-    MullionType,
     Sketch,
     Transaction,
     Wall,
@@ -87,22 +78,7 @@ uidoc  = revit.uidoc
 logger = script.get_logger()
 output = script.get_output()
 
-TRIM_TYPE_NAME    = "Window Trim"
-MULLION_TYPE_NAME = "Window Trim"
-BORDERED_SUFFIX   = " v2"   # the fallback type: 'Window Trim v2'
-
-# The three borders the trim wants a mullion on: both jambs and the head.
-#
-# Revit numbers the two borders in each direction from the start of that
-# direction, so Border 2 horizontal is expected to be the head and Border
-# 1 the sill - but that is the one thing here I have not been able to
-# confirm.  IF THE MULLION COMES OUT ALONG THE SILL INSTEAD OF OVER THE
-# HEAD, swap the two names on the HORIZ line below and re-run.  Nothing
-# else needs touching.
-BORDER_VERT_PARAMS  = ["AUTO_MULLION_BORDER1_VERT",
-                       "AUTO_MULLION_BORDER2_VERT"]
-BORDER_HORIZ_PARAM  = "AUTO_MULLION_BORDER2_HORIZ"   # swap with BORDER1
-BORDER_HORIZ_UNUSED = "AUTO_MULLION_BORDER1_HORIZ"   # the sill: left clear
+TRIM_TYPE_NAME  = "Window Trim"
 
 DEFAULT_OFFSET  = 0.5     # feet (6")
 MIN_EXTENT      = 0.02    # feet, below this an extent is junk
@@ -270,16 +246,13 @@ class TrimPlan(object):
                  "inner_left", "inner_right", "inner_base", "inner_head",
                  "outer_left", "outer_right", "outer_head",
                  "head_kind", "sketched",
-                 "new_wall_id", "grid_removed", "mullion_route",
-                 "mullions_made", "notes")
+                 "new_wall_id", "grid_removed", "notes")
 
     def __init__(self):
         self.head_kind        = "flat"
         self.sketched         = False
         self.new_wall_id      = None
         self.grid_removed     = []
-        self.mullion_route    = "-"
-        self.mullions_made    = 0
         self.notes            = []
 
     @property
@@ -781,103 +754,6 @@ def create_band(plan, wall_type):
 
 
 # ===============================================================================
-# THE BORDERED TYPE
-# ===============================================================================
-
-def find_mullion_type():
-    """Return the MullionType called 'Window Trim', or None."""
-    wanted = MULLION_TYPE_NAME.strip().lower()
-    for mt in FilteredElementCollector(doc).OfClass(MullionType):
-        if get_element_name(mt).strip().lower() == wanted:
-            return mt
-    return None
-
-
-def set_border_param(wall_type, bip_name, value_id):
-    """Point one border mullion parameter at *value_id*.  True when set."""
-    bip = getattr(BuiltInParameter, bip_name, None)
-    if bip is None:
-        return False
-    try:
-        p = wall_type.get_Parameter(bip)
-    except Exception:
-        return False
-    if p is None or p.IsReadOnly:
-        return False
-    try:
-        return p.Set(value_id)
-    except Exception as ex:
-        logger.debug("Could not set {}: {}".format(bip_name, ex))
-        return False
-
-
-def bordered_type(base_type):
-    """Return the 'Window Trim v2' type, making it if need be.
-
-    The bands go on their own type so the mullions can come from its
-    border settings without touching plain 'Window Trim' - every trim
-    wall already in the model stays exactly as it is, mullioned by hand
-    and undisturbed.  An existing v2 is reused as it stands rather than
-    re-set each run, so any adjustment made to it by hand survives.
-
-    Returns (type, note).  The note is None when all three borders took.
-    """
-    name = TRIM_TYPE_NAME + BORDERED_SUFFIX
-
-    existing = type_named(name)
-    if existing is not None:
-        return existing, None
-
-    mullion = find_mullion_type()
-    if mullion is None:
-        return None, ("no mullion type called '{}'; the band has no "
-                      "mullions".format(MULLION_TYPE_NAME))
-
-    try:
-        new_type = base_type.Duplicate(name)
-    except Exception as ex:
-        return None, "could not create '{}' ({})".format(name, ex)
-
-    failed = []
-    for bip_name in BORDER_VERT_PARAMS + [BORDER_HORIZ_PARAM]:
-        if not set_border_param(new_type, bip_name, mullion.Id):
-            failed.append(bip_name)
-
-    # The sill is left clear deliberately: the band is open at its base
-    # and a mullion there would run along the two short returns.
-    set_border_param(new_type, BORDER_HORIZ_UNUSED, ElementId.InvalidElementId)
-
-    note = None
-    if failed:
-        note = "created '{}' but could not set: {}".format(
-            name, ", ".join(failed))
-    return new_type, note
-
-
-def apply_bordered_type(plan, wall, band_type):
-    """Move the band onto the bordered type and count what it gained."""
-    try:
-        wall.ChangeTypeId(band_type.Id)
-        doc.Regenerate()
-    except Exception as ex:
-        plan.notes.append("could not switch to '{}' ({})"
-                          .format(get_element_name(band_type), ex))
-        return
-
-    plan.mullion_route = get_element_name(band_type)
-    try:
-        grid = wall.CurtainGrid
-        plan.mullions_made = len(list(grid.GetMullionIds())) if grid else 0
-    except Exception:
-        plan.mullions_made = 0
-
-    if plan.mullions_made == 0:
-        plan.notes.append(
-            "the bordered type produced no mullions; check that '{}' has "
-            "its border mullions set".format(get_element_name(band_type)))
-
-
-# ===============================================================================
 # REPORTING
 # ===============================================================================
 
@@ -907,7 +783,6 @@ def report_measurements(plans):
             feet_text(plan.inner_base),
             feet_text(plan.base_offset),
             " + ".join(str(n) for n in plan.grid_removed) or "0",
-            "{} ({})".format(plan.mullions_made, plan.mullion_route),
             plan.new_wall_id if plan.new_wall_id is not None else "-",
         ])
     output.print_md("### Curtain Wall Trim - measurements")
@@ -916,7 +791,7 @@ def report_measurements(plans):
         columns=["Source Id", "Source Type", "Sketched", "Head",
                  "Inner width", "Outer width", "Band height",
                  "Base elev", "Base offset", "Grid removed",
-                 "Mullions", "New wall Id"])
+                 "New wall Id"])
 
 
 # ===============================================================================
@@ -1025,33 +900,6 @@ def main():
         except Exception:
             if cleanup.HasStarted() and not cleanup.HasEnded():
                 cleanup.RollBack()
-            raise
-
-    if built:
-        # The bordered type goes on LAST.  strip_curtain_grid deletes every
-        # mullion it finds, so switching type any earlier would hand Revit
-        # the border mullions and then throw them straight back away.
-        mullions = Transaction(doc, "Put the band on its bordered type")
-        mullions.Start()
-        try:
-            opts = mullions.GetFailureHandlingOptions()
-            opts.SetFailuresPreprocessor(wall_sketch.SketchFailureSwallower())
-            mullions.SetFailureHandlingOptions(opts)
-        except Exception as ex:
-            logger.debug("Could not set failure handling: {}".format(ex))
-        try:
-            band_type, note = bordered_type(wall_type)
-            if band_type is None:
-                rows.append(["-", TRIM_TYPE_NAME, note])
-            else:
-                if note:
-                    rows.append(["-", TRIM_TYPE_NAME, note])
-                for plan, wall in built:
-                    apply_bordered_type(plan, wall, band_type)
-            mullions.Commit()
-        except Exception:
-            if mullions.HasStarted() and not mullions.HasEnded():
-                mullions.RollBack()
             raise
 
     for plan, _wall in built:
