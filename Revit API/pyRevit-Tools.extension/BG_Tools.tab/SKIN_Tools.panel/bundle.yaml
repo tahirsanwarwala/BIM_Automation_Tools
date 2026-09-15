@@ -4,4 +4,5 @@ layout:
   - Windows
   - CopyFromLink
   - CopyRoofSweeps
+  - FindDuplicates
   - SplitWallHorizontal
