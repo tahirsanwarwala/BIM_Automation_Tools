@@ -20,6 +20,9 @@ from Autodesk.Revit.DB import (
     BuiltInParameter,
     Element,
     ElementId,
+    FailureProcessingResult,
+    FailureSeverity,
+    IFailuresPreprocessor,
     Level,
     StorageType,
     SubTransaction,
@@ -95,6 +98,30 @@ SKIP_BIPS = set(
     v for v in (bip_int(n) for n in SKIP_BIP_NAMES) if v is not None
 )
 
+# The same parameters again, under the names Revit shows them by.
+#
+# Asking a Definition for its BuiltInParameter can THROW rather than
+# return INVALID, and the copy below falls back to matching on name
+# when it does.  Without this list that fallback would quietly copy
+# the very parameters the list above exists to keep out -- writing a
+# source wall's Top Constraint onto a band that sits above it, which
+# is a wall whose top is below its base and an error Revit will not
+# let anyone ignore.
+SKIP_PARAM_NAMES = frozenset((
+    "Base Constraint",
+    "Base Offset",
+    "Top Constraint",
+    "Top Offset",
+    "Unconnected Height",
+    "Base is Attached",
+    "Top is Attached",
+    "Location Line",
+    "Family",
+    "Type",
+    "Family and Type",
+    "Mark",
+))
+
 
 # ===========================================================================
 # SMALL REVIT HELPERS
@@ -117,7 +144,14 @@ def eid(value):
 
 
 def is_valid(element_id):
-    """True when *element_id* points at a real element."""
+    """True when *element_id* points at a real element.
+
+    NOT a test of whether an id is meaningful in general: built-in
+    categories and other built-in ids are NEGATIVE, and this reads every
+    one of them as nothing.  Use it on ids that name an element in the
+    model -- a level, a group, a sketch, an owner view -- and ask a
+    category whether it is None instead.
+    """
     val = eid(element_id)
     return val is not None and val > 0
 
@@ -488,6 +522,8 @@ def copy_instance_params(src, dst):
 
             if member_int is not None and member_int in SKIP_BIPS:
                 continue
+            if definition.Name in SKIP_PARAM_NAMES:
+                continue
 
             dp = None
             if member is not None:
@@ -564,6 +600,197 @@ def create_band_wall(doc, src, band):
     return new_wall
 
 
+class RollBackOnError(IFailuresPreprocessor):
+    """Turn a Revit error into a rolled-back transaction and a message.
+
+    Revit does not always raise where it disagrees.  A wall whose top
+    passes below its base during an edit is QUEUED as a failure and
+    posted when the transaction commits -- after the tool has read the
+    finished wall back and found every constraint correct.  Left alone
+    that surfaces as a modal "cannot be ignored" dialog whose only
+    button is Cancel, and cancelling discards the whole run, not the
+    one wall that caused it.
+
+    Handed to a transaction covering a SINGLE wall, this rolls that
+    wall back instead and hands the reason to the caller, so the run
+    continues and the report can say what really happened.
+
+    Warnings are deleted rather than shown: overlapping walls and
+    duplicate marks are the normal noise of editing a model in bulk,
+    and a tool that stops on each one cannot run over a selection.
+    """
+
+    def __init__(self):
+        self.messages = []
+
+    def PreprocessFailures(self, accessor):
+        result = FailureProcessingResult.Continue
+
+        for failure in accessor.GetFailureMessages():
+            try:
+                severity = failure.GetSeverity()
+            except Exception:
+                continue
+
+            if severity == FailureSeverity.Warning:
+                try:
+                    accessor.DeleteWarning(failure)
+                except Exception:
+                    pass
+                continue
+
+            try:
+                text = failure.GetDescriptionText()
+            except Exception:
+                text = "Revit rejected the change"
+            if text and text not in self.messages:
+                self.messages.append(text)
+            result = FailureProcessingResult.ProceedWithRollBack
+
+        return result
+
+
+def guard(transaction, handler):
+    """Put *handler* in charge of *transaction*'s failures.
+
+    Call between Start() and any edit.  SetClearAfterRollback keeps a
+    rolled-back wall's failures from being re-posted against the next
+    one.
+    """
+    options = transaction.GetFailureHandlingOptions()
+    options = options.SetFailuresPreprocessor(handler)
+    options = options.SetClearAfterRollback(True)
+    transaction.SetFailureHandlingOptions(options)
+    return transaction
+
+
+# Built-in parameters that name the level an element is measured FROM,
+# tried in this order.  Every one is a BASE: nothing here reads a top
+# constraint, because an element's BG_LEVEL is the storey it belongs to,
+# and for anything spanning two levels that is the lower one.
+#
+# Names, not members, because the enum differs between releases and a
+# missing one must cost nothing -- bip() returns None and pval() takes
+# None as "no such parameter".
+LEVEL_BIP_NAMES = (
+    "WALL_BASE_CONSTRAINT",                # walls
+    "FAMILY_BASE_LEVEL_PARAM",             # two-level families
+    "FAMILY_LEVEL_PARAM",                  # most family instances
+    "SCHEDULE_LEVEL_PARAM",                # framing, "Reference Level"
+    "INSTANCE_REFERENCE_LEVEL_PARAM",
+    "INSTANCE_SCHEDULE_ONLY_LEVEL_PARAM",
+    "RBS_START_LEVEL_PARAM",               # MEP curves
+    "ROOF_BASE_LEVEL_PARAM",               # roofs
+    "STAIRS_BASE_LEVEL_PARAM",             # stairs
+    "MULTISTORY_STAIRS_REF_LEVEL_PARAM",
+    "ROOM_LEVEL_ID",                       # rooms
+    "LEVEL_PARAM",                         # generic
+    "GROUP_LEVEL",                         # groups
+)
+
+# A last resort, matched on the parameter's own name.  Deliberately a
+# short exact list rather than anything containing "level": "Top
+# Constraint" and "Upper Limit" both resolve to a Level too, and either
+# would put the wrong storey in BG_LEVEL.
+LEVEL_PARAM_NAMES = (
+    "base level",
+    "base constraint",
+    "level",
+    "reference level",
+    "schedule level",
+    "work plane",
+)
+
+
+def base_level_id(doc, elem):
+    """The id of the level *elem* sits on, or None.
+
+    Asked in order of authority: the element's own LevelId, which is
+    what Revit itself calls its level; then the built-in parameters
+    above; then a short list of parameter names.  Anything that does not
+    resolve to a Level is not an answer.
+    """
+    def as_level(value):
+        if not is_valid(value):
+            return None
+        return value if isinstance(doc.GetElement(value), Level) else None
+
+    try:
+        found = as_level(elem.LevelId)
+        if found is not None:
+            return found
+    except Exception:
+        pass
+
+    for name in LEVEL_BIP_NAMES:
+        found = as_level(pval(elem, bip(name)))
+        if found is not None:
+            return found
+
+    try:
+        for p in elem.Parameters:
+            try:
+                if p.StorageType != StorageType.ElementId:
+                    continue
+                if p.Definition.Name.strip().lower() not in LEVEL_PARAM_NAMES:
+                    continue
+                found = as_level(p.AsElementId())
+                if found is not None:
+                    return found
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    return None
+
+
+# What set_bg_level did.  Strings rather than booleans because the
+# caller reports three of these differently: written and already are
+# both fine, missing is not this tool's business, and the rest are worth
+# a row.
+BG_WRITTEN  = "written"
+BG_ALREADY  = "already"
+BG_NO_LEVEL = "no level"
+BG_MISSING  = "missing"
+BG_READONLY = "read-only"
+BG_NOT_TEXT = "not text"
+BG_REFUSED  = "refused"
+
+BG_OK = (BG_WRITTEN, BG_ALREADY)
+
+
+def set_bg_level(doc, elem, level_id):
+    """Write a level's name into *elem*'s BG_LEVEL, and say what happened.
+
+    Returns one of the BG_* constants above.  Nothing else about the
+    element is touched.
+    """
+    level = doc.GetElement(level_id) if is_valid(level_id) else None
+    if level is None:
+        return BG_NO_LEVEL
+
+    p = find_parameter(elem, BG_LEVEL_PARAM)
+    if p is None:
+        return BG_MISSING
+    if p.IsReadOnly:
+        return BG_READONLY
+    if p.StorageType != StorageType.String:
+        return BG_NOT_TEXT
+
+    wanted = name_of(level)
+    try:
+        if p.AsString() == wanted:
+            return BG_ALREADY
+    except Exception:
+        pass
+
+    try:
+        return BG_WRITTEN if p.Set(wanted) else BG_REFUSED
+    except Exception:
+        return BG_REFUSED
+
+
 def apply_bg_level(doc, wall, band):
     """Write the name of *wall*'s Base Constraint level into BG_LEVEL.
 
@@ -575,14 +802,4 @@ def apply_bg_level(doc, wall, band):
     The wall's constraints are correct either way, so a caller reports
     it rather than treating the wall as failed.
     """
-    level = doc.GetElement(band["base_level_id"])
-    if level is None:
-        return False
-
-    p = find_parameter(wall, BG_LEVEL_PARAM)
-    if p is None or p.IsReadOnly:
-        return False
-    try:
-        return bool(p.Set(name_of(level)))
-    except Exception:
-        return False
+    return set_bg_level(doc, wall, band["base_level_id"]) in BG_OK
