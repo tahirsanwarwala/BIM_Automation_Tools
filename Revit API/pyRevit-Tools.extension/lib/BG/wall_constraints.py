@@ -217,6 +217,93 @@ def plan_wall(base_z, top_z, levels, tol=TOL, allow_split=True,
     }
 
 
+def constraints_unconnected(base_z, top_z, levels, tol=TOL):
+    """Bind a span's BASE to its level and leave the top unconnected.
+
+    The same shape constraints_for returns, so a caller can apply either
+    without knowing which it has, but with ``top_level_id`` None and
+    ``top_offset`` zero -- an unconnected wall's top is its height, and
+    the height carries the whole span.
+
+    This is what a curtain wall gets.  Binding its top to a level would
+    re-lay the grid every time that level moved, and a curtain wall's
+    panels are placed against a height, not a storey.  The base is worth
+    binding all the same: that is what puts the wall on a storey and
+    what BG_LEVEL is read from.
+
+    Raises ValueError when there are no levels or the span is not
+    positive.
+    """
+    if not levels:
+        raise ValueError("The model has no levels to bind the wall to.")
+    if top_z - base_z <= tol:
+        raise ValueError(
+            "Top ({0:.4f}) is not above base ({1:.4f}).".format(top_z, base_z))
+
+    below = nearest_level_at_or_below(base_z, levels, tol)
+    if below is None:
+        # Nothing underneath: hang off the lowest level instead.
+        below = min(levels, key=lambda pair: pair[1])
+
+    base_lvl, base_elev = below
+    base_off = base_z - base_elev
+    if abs(base_off) <= tol:
+        base_off = 0.0
+
+    return {
+        "base_level_id": base_lvl,
+        "base_offset": base_off,
+        "top_level_id": None,
+        "top_offset": 0.0,
+        "height": top_z - base_z,
+        "base_z": base_z,
+        "top_z": top_z,
+    }
+
+
+def plan_unconnected(base_z, top_z, levels, tol=TOL, allow_round=True):
+    """Work out everything that should happen to one curtain wall.
+
+    The same shape plan_wall returns, and read the same way, with two
+    differences that both follow from the top staying unconnected:
+
+      * There is always exactly ONE band.  A wall is cut at a level so
+        that each piece can hang from the level above it; a wall with no
+        top level has nothing to gain from being cut, and cutting a
+        curtain wall would cost it every grid line, mullion and panel
+        that was placed by hand.
+      * ``needs_split`` is therefore False and ``interior`` empty even
+        when the span does pass levels.  Nothing is being left undone,
+        so there is nothing for a caller to report.
+
+    Both ends are still rounded to the nearest inch unless *allow_round*
+    is False, and an end already on a level is still left alone -- the
+    base so its offset stays a clean zero, the top so a curtain wall
+    reaching a storey exactly keeps reaching it.
+
+    Raises ValueError when rounding leaves nothing to build.
+    """
+    if allow_round:
+        base_z, base_rounded = snap_end(base_z, levels, tol)
+        top_z, top_rounded = snap_end(top_z, levels, tol)
+    else:
+        base_rounded = top_rounded = False
+
+    if top_z - base_z <= tol:
+        raise ValueError(
+            "Rounding to the nearest inch leaves no height "
+            "(base {0:.4f}, top {1:.4f}).".format(base_z, top_z))
+
+    return {
+        "base_z": base_z,
+        "top_z": top_z,
+        "rounded": base_rounded or top_rounded,
+        "needs_split": False,
+        "interior": [],
+        "bands": [constraints_unconnected(base_z, top_z, levels, tol)],
+    }
+
+
 def constraints_changed(current, target, tol=TOL):
     """Compare a wall's current constraints against a planned band.
 

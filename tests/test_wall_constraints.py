@@ -389,3 +389,152 @@ class TestCoincidentLevels(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPlanUnconnected(unittest.TestCase):
+    """A curtain wall: base bound to its level, top left unconnected."""
+
+    def test_one_band_only(self):
+        plan = wc.plan_unconnected(3.0, 9.0, LEVELS)
+        self.assertEqual(len(plan["bands"]), 1)
+
+    def test_base_binds_to_the_level_below_with_a_positive_offset(self):
+        band = wc.plan_unconnected(3.0, 9.0, LEVELS)["bands"][0]
+        self.assertEqual(band["base_level_id"], "L1")
+        self.assertAlmostEqual(band["base_offset"], 3.0)
+
+    def test_top_is_left_unconnected(self):
+        band = wc.plan_unconnected(3.0, 9.0, LEVELS)["bands"][0]
+        self.assertIsNone(band["top_level_id"])
+        self.assertAlmostEqual(band["top_offset"], 0.0)
+
+    def test_height_carries_the_whole_span(self):
+        band = wc.plan_unconnected(3.0, 9.0, LEVELS)["bands"][0]
+        self.assertAlmostEqual(band["height"], 6.0)
+
+    def test_base_on_a_level_gets_a_zero_offset(self):
+        band = wc.plan_unconnected(10.0, 17.0, LEVELS)["bands"][0]
+        self.assertEqual(band["base_level_id"], "L2")
+        self.assertAlmostEqual(band["base_offset"], 0.0)
+
+    def test_sub_tolerance_offset_is_snapped_to_zero(self):
+        band = wc.plan_unconnected(10.0 + 0.001, 17.0, LEVELS)["bands"][0]
+        self.assertAlmostEqual(band["base_offset"], 0.0)
+
+    def test_a_crossed_level_is_never_a_split(self):
+        # The top is not level-bound, so crossing a level is not something
+        # this plan can or should do anything about.
+        plan = wc.plan_unconnected(5.0, 25.0, LEVELS)
+        self.assertFalse(plan["needs_split"])
+        self.assertEqual(plan["interior"], [])
+        self.assertEqual(len(plan["bands"]), 1)
+
+    def test_the_span_is_never_rebased_onto_a_higher_level(self):
+        band = wc.plan_unconnected(5.0, 25.0, LEVELS)["bands"][0]
+        self.assertEqual(band["base_level_id"], "L1")
+        self.assertAlmostEqual(band["base_offset"], 5.0)
+        self.assertAlmostEqual(band["height"], 20.0)
+
+    def test_base_below_every_level_hangs_off_the_lowest(self):
+        band = wc.plan_unconnected(-4.0, 5.0, LEVELS)["bands"][0]
+        self.assertEqual(band["base_level_id"], "L1")
+        self.assertAlmostEqual(band["base_offset"], -4.0)
+
+    def test_a_top_above_every_level_needs_no_level_at_all(self):
+        band = wc.plan_unconnected(31.0, 44.0, LEVELS)["bands"][0]
+        self.assertEqual(band["base_level_id"], "L4")
+        self.assertAlmostEqual(band["base_offset"], 1.0)
+        self.assertIsNone(band["top_level_id"])
+        self.assertAlmostEqual(band["height"], 13.0)
+
+    def test_both_ends_are_rounded_to_the_nearest_inch(self):
+        plan = wc.plan_unconnected(3.0 + 0.4 * IN, 9.0 + 0.6 * IN, LEVELS)
+        self.assertTrue(plan["rounded"])
+        self.assertAlmostEqual(plan["base_z"], 3.0)
+        self.assertAlmostEqual(plan["top_z"], 9.0 + 1 * IN)
+
+    def test_rounding_can_be_switched_off(self):
+        z = 9.0 + 0.4 * IN
+        plan = wc.plan_unconnected(3.0, z, LEVELS, allow_round=False)
+        self.assertFalse(plan["rounded"])
+        self.assertAlmostEqual(plan["top_z"], z)
+
+    def test_a_level_coincident_base_is_never_rounded(self):
+        z = 10.0 + 0.5 * IN
+        band = wc.plan_unconnected(z, 20.0, ODD_LEVELS)["bands"][0]
+        self.assertEqual(band["base_level_id"], "L2")
+        self.assertAlmostEqual(band["base_offset"], 0.0)
+
+    def test_absolute_extent_is_preserved(self):
+        # The whole point: different parameters, same wall.
+        plan = wc.plan_unconnected(23.0, 27.0, LEVELS, allow_round=False)
+        band = plan["bands"][0]
+        base_elev = dict(LEVELS)[band["base_level_id"]]
+        self.assertAlmostEqual(base_elev + band["base_offset"], 23.0)
+        self.assertAlmostEqual(
+            base_elev + band["base_offset"] + band["height"], 27.0)
+
+    def test_no_levels_at_all_is_an_error(self):
+        with self.assertRaises(ValueError):
+            wc.plan_unconnected(0.0, 10.0, [])
+
+    def test_inverted_span_is_an_error(self):
+        with self.assertRaises(ValueError):
+            wc.plan_unconnected(10.0, 10.0, LEVELS)
+
+    def test_rounding_that_collapses_the_wall_is_an_error(self):
+        with self.assertRaises(ValueError):
+            wc.plan_unconnected(3.0, 3.0 + 0.2 * IN, LEVELS)
+
+class TestRoundingIsUnconditional(unittest.TestCase):
+    """Both plans round by default, however far the end has to move.
+
+    Wall Limits once refused to round a sketched wall whose end sat more
+    than 1/16" off a whole inch, on the grounds that the outline travels
+    with it.  That restriction is gone: the script no longer passes
+    allow_round at all, so these defaults ARE the rule, and a change to
+    either of them silently stops the tool rounding.
+    """
+
+    def test_plan_wall_rounds_by_default(self):
+        plan = wc.plan_wall(3.0 + 0.4 * IN, 9.0 + 0.6 * IN, LEVELS)
+        self.assertTrue(plan["rounded"])
+        self.assertAlmostEqual(plan["base_z"], 3.0)
+        self.assertAlmostEqual(plan["top_z"], 9.0 + 1 * IN)
+
+    def test_plan_unconnected_rounds_by_default(self):
+        plan = wc.plan_unconnected(3.0 + 0.4 * IN, 9.0 + 0.6 * IN, LEVELS)
+        self.assertTrue(plan["rounded"])
+        self.assertAlmostEqual(plan["base_z"], 3.0)
+        self.assertAlmostEqual(plan["top_z"], 9.0 + 1 * IN)
+
+    def test_a_move_far_past_a_sixteenth_is_still_rounded(self):
+        # 7/16" each way -- the old rule refused anything over 1/16".
+        seven_sixteenths = 7.0 / 16.0 * IN
+        for plan in (wc.plan_wall(3.0 + seven_sixteenths,
+                                  9.0 - seven_sixteenths, LEVELS),
+                     wc.plan_unconnected(3.0 + seven_sixteenths,
+                                         9.0 - seven_sixteenths, LEVELS)):
+            self.assertTrue(plan["rounded"])
+            self.assertAlmostEqual(plan["base_z"], 3.0)
+            self.assertAlmostEqual(plan["top_z"], 9.0)
+
+    def test_the_largest_possible_move_is_half_an_inch(self):
+        # Nothing is ever moved further than this, in either plan.
+        for offset in (0.49, -0.49):
+            plan = wc.plan_wall(3.0 + offset * IN, 9.0 + offset * IN, LEVELS)
+            self.assertAlmostEqual(plan["base_z"], 3.0)
+            self.assertAlmostEqual(plan["top_z"], 9.0)
+
+    def test_rounding_is_still_refusable_by_a_caller(self):
+        # The switch stays; only Wall Limits has stopped using it.
+        z = 9.0 + 0.4 * IN
+        self.assertFalse(
+            wc.plan_wall(3.0, z, LEVELS, allow_round=False)["rounded"])
+        self.assertFalse(
+            wc.plan_unconnected(3.0, z, LEVELS, allow_round=False)["rounded"])
+
+
+
+if __name__ == "__main__":
+    unittest.main()

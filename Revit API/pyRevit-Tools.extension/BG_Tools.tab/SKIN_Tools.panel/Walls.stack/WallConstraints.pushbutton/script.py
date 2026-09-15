@@ -17,32 +17,64 @@ it creates):
   * Ends that are not on a level are rounded to the nearest whole inch.
     Ends that ARE on a level stay exactly where they are.
 
-A wall whose elevation profile is sketched is treated more carefully,
-because moving an end carries the outline with it.  It is never split --
-Revit will not carry an outline across a split at all, so the upper band
-would come out with its openings missing.  It IS rounded, but only while
-the move stays within 1/16", the same distance this tool already treats
-as one elevation; a move that small is not worth refusing and not worth
-mentioning.  An end further off a whole inch than that is a real shift
-in the sketch, so the wall is left exactly where it is.
+Rounding is unconditional.  Every wall's ends go to the nearest whole
+inch however far they have to travel to get there -- basic and curtain,
+sketched outline or not.  A sketched outline does move with the end it
+was drawn against, and that is accepted rather than avoided: an end off
+a whole inch is a defect wherever it came from, and up to half an inch
+of outline following it is a smaller problem than a seam that will not
+meet its neighbour.
 
-Which is not the same as finished, so such a wall comes back as To
-Check.  To Check is about what the sketch PREVENTED, never about the
-sketch: a wall rounded within tolerance and crossing no level had
-nothing prevented, and says nothing at all.  A wall left unrounded has
-ends that will not meet a rounded neighbour, and that seam is exactly
-what To Check is asking to be looked at.
+A wall whose elevation profile is sketched is still never SPLIT.  Revit
+will not carry an edited outline across a split at all, so the upper
+band would come out with its openings missing.  That is the one thing
+this tool leaves for a human, and the only thing it asks to be looked
+at: a sketched wall crossing a level comes back as To Check, saying
+which levels went uncut.  A sketched wall crossing none is as finished
+as any other and says nothing.
 
 Apart from that inch rounding, walls do not move: every offset is
 computed so the wall keeps the absolute elevations it already had.
+
+A CURTAIN wall follows the same rule at the base and none of it at the
+top.  Its base is bound to the level at or below it exactly as any
+other wall's is, and its BG_LEVEL is written from that level, because
+that is what puts it on a storey.  Its top is left as an unconnected
+height instead of being bound to a level: a curtain wall's grid,
+mullions and panels are laid out against a height, and re-hanging the
+top on a storey would re-lay them every time that storey moved.  For
+the same reason it is never cut at a level -- a split curtain wall
+loses every grid line, mullion and panel that was placed by hand.
 
 Each wall's Base Constraint level is written into its BG_LEVEL
 parameter afterwards, the same as Multi Wall Creation does for the
 walls it builds.
 
-Walls whose top or base is attached to another element are left alone:
-their parameters describe an extent their geometry does not follow, and
-the API cannot re-create an attachment on a wall this tool would make.
+ANY OTHER MODEL ELEMENT in the selection gets that BG_LEVEL and nothing
+else.  No constraint of it is read, rewritten or checked -- the element
+is looked at only for the level it already sits on, and the name of
+that level is written into its BG_LEVEL.  The level is whichever Revit
+itself calls the element's, falling back to the built-in parameters
+that name a BASE level and then to a short list of parameter names; see
+wall_bind.base_level_id.  An element with no BG_LEVEL parameter, or
+none that Revit associates with a level, is passed over in silence:
+there was never anything to write, and a selection that swept up a
+category which does not carry the parameter is not a mistake to be told
+about.
+
+Walls whose top or base is attached to another element have their
+CONSTRAINTS left alone: their parameters describe an extent their
+geometry does not follow, and the API cannot re-create an attachment on
+a wall this tool would make.  So do stacked walls, grouped walls, and
+any wall whose extent cannot be read.
+
+Every one of them still gets its BG_LEVEL, written from the Base
+Constraint the wall already has.  Declining to touch a wall's
+constraints is no reason to leave the parameter empty: it records only
+the storey the wall sits on, which is as true of a wall hanging off a
+roof as of any other, and the schedules read it either way.  A wall
+this tool has looked at comes away with its BG_LEVEL whatever else it
+was or was not allowed to do.
 
 The arithmetic lives in BG.wall_constraints and is unit-tested; this
 script only reads Revit, applies the plan, and reports.
@@ -51,21 +83,28 @@ script only reads Revit, applies the plan, and reports.
 __title__  = "Wall\nLimits"
 __author__ = "Tahir Sanwarwala"
 __doc__    = (
-    "Select walls (or pre-select them, then run).\n"
+    "Select elements (or pre-select them, then run).\n"
+    "Any element that is not a wall has only its BG_LEVEL written,\n"
+    "from the level it already sits on.  Nothing else about it is\n"
+    "touched, and one without the parameter is passed over quietly.\n"
+    "Walls get the full check:\n"
     "Each wall's Base/Top Constraint and offsets are rewritten so the\n"
     "base sits on the level at or below it and the top hangs from the\n"
     "level at or above it, without moving the wall.\n"
     "Walls that cross a level are split into one wall per storey; the\n"
     "original wall is kept as the lowest band.\n"
-    "Ends that are not on a level are rounded to the nearest inch.\n"
-    "Walls with a sketched profile are never split, and are rounded\n"
-    "only while the end moves 1/16\" or less - further would shift the\n"
-    "outline.  They are listed as To Check when that leaves an end off\n"
-    "a whole inch, or a level uncut.\n"
+    "Ends that are not on a level are rounded to the nearest inch,\n"
+    "however far they have to move to get there.\n"
+    "Walls with a sketched profile are rounded too, but are never\n"
+    "split: Revit will not carry the outline across a split.  One that\n"
+    "crosses a level is listed as To Check so you can cut it by hand.\n"
     "The Base Constraint level is written into BG_LEVEL.\n"
-    "Stacked walls, walls attached to a roof or floor, grouped walls\n"
-    "and linked walls are reported but never touched.  Curtain walls\n"
-    "are passed over in silence: they have no constraints to fix."
+    "A curtain wall has its base bound and its BG_LEVEL written the\n"
+    "same way, but keeps an unconnected height and is never cut.\n"
+    "Stacked walls, walls attached to a roof or floor and grouped\n"
+    "walls keep their constraints untouched, and are reported - but\n"
+    "they still get BG_LEVEL from the Base Constraint they already\n"
+    "have.  Linked walls cannot be selected at all."
 )
 
 import traceback
@@ -76,9 +115,12 @@ clr.AddReference("RevitAPIUI")
 
 from Autodesk.Revit.DB import (
     BuiltInParameter,
+    ElementType,
     FilteredElementCollector,
     Level,
     Transaction,
+    TransactionGroup,
+    TransactionStatus,
     Wall,
     WallKind,
 )
@@ -114,18 +156,16 @@ find_parameter = wall_bind.find_parameter
 # Kinds this tool refuses, in its own words.  wall_bind holds no
 # opinion about which kinds a caller can handle.
 BARRED_KINDS = {
-    WallKind.Curtain: "curtain wall (no base/top constraints to put right)",
     WallKind.Stacked: "stacked wall (sub-walls carry their own constraints)",
     WallKind.Unknown: "unsupported wall kind",
 }
 
-# Refusals not worth a row.  Every other refusal is: the user picked the
-# wall and the tool would not touch it, which is worth saying.  A curtain
-# wall is different in kind -- it has no base and top constraints for
-# this tool to be right or wrong about, so one swept up in a selection is
-# not a mistake to be told about.  Matched on the opening words of the
-# reason above.
-SILENT_SKIP_REASONS = ("curtain wall",)
+# Refusals not worth a row.  Every refusal this tool makes now is worth
+# saying: the user picked the wall and the tool would not touch it.  The
+# tuple is kept because the reasons above are a per-tool decision and
+# the next one added may well be quiet.  Matched on the opening words of
+# a reason.
+SILENT_SKIP_REASONS = ()
 
 
 def blocking_reason(wall):
@@ -158,6 +198,35 @@ def apply_bg_level(wall, band):
     return wall_bind.apply_bg_level(doc, wall, band)
 
 
+# Said wherever BG_LEVEL would not take.  One wording, because the three
+# causes are one thing to do about it.
+BG_UNWRITTEN = ("{0} could not be written - parameter missing, read-only, "
+                "or not a text parameter".format(BG_LEVEL_PARAM))
+
+
+def base_constraint_level_id(wall):
+    """A wall's Base Constraint level id, or its host level if unset.
+
+    Read off the wall rather than from a plan, because this is for walls
+    there is no plan for.
+    """
+    level_id = _pval(wall, BuiltInParameter.WALL_BASE_CONSTRAINT)
+    if _is_valid(level_id):
+        return level_id
+    try:
+        return wall.LevelId
+    except Exception:
+        return None
+
+
+def bg_level_from_wall(wall):
+    """Give a wall BG_LEVEL from its own Base Constraint, changing nothing
+    else.  True when the parameter now holds the level's name.
+    """
+    return wall_bind.set_bg_level(
+        doc, wall, base_constraint_level_id(wall)) in wall_bind.BG_OK
+
+
 def _level_name(level_id):
     if not _is_valid(level_id):
         return "Unconnected"
@@ -177,40 +246,98 @@ def collect_levels():
 # SELECTION
 # ===============================================================================
 
-class WallFilter(ISelectionFilter):
-    """Any wall in the host model.  Types we cannot process are allowed
-    through here on purpose so they can be listed in the report rather
-    than silently vanishing from the selection.
+class ModelElementFilter(ISelectionFilter):
+    """Any model element in the host model.
+
+    Walls this tool cannot process are allowed through on purpose, so
+    they can be listed in the report rather than silently vanishing from
+    the selection.  Everything else is allowed because everything else
+    may still have a BG_LEVEL to fill in.  Linked elements are refused:
+    they are read-only, and there is nothing to be done with one.
     """
 
     def AllowElement(self, elem):
-        return isinstance(elem, Wall)
+        return is_model_element(elem)
 
     def AllowReference(self, ref, point):
         return False
 
 
-def get_walls():
-    """Walls from the current selection, or picked interactively."""
-    selected = [doc.GetElement(eid) for eid in uidoc.Selection.GetElementIds()]
-    walls = [e for e in selected if isinstance(e, Wall)]
-    if walls:
-        return walls
+def is_model_element(elem):
+    """True when *elem* is an element instance this tool could write to.
 
+    Element types, and anything owned by a view -- tags, dimensions,
+    detail lines -- have no storey to record.
+
+    Never raises.  Revit calls this from inside a selection filter, and
+    an exception there does not skip the one element: it makes the whole
+    pick refuse everything, silently.
+    """
+    if elem is None or isinstance(elem, ElementType):
+        return False
+
+    # Category is only asked whether it EXISTS.  Not is_valid(): the ids
+    # of built-in categories are negative, so is_valid -- which means
+    # "points at a real element" -- reads every one of them as nothing,
+    # and every element in the model as unpickable.
     try:
-        refs = uidoc.Selection.PickObjects(
-            ObjectType.Element, WallFilter(),
-            "Select the walls to check, then click Finish")
+        if elem.Category is None:
+            return False
     except Exception:
-        return []
+        return False
 
-    return [doc.GetElement(r.ElementId) for r in refs
-            if isinstance(doc.GetElement(r.ElementId), Wall)]
+    # OwnerViewId is a real, positive id only on a view-specific element.
+    try:
+        if _is_valid(elem.OwnerViewId):
+            return False
+    except Exception:
+        pass
+
+    return True
+
+
+def get_selection():
+    """Model elements from the current selection, or picked interactively.
+
+    Returns (walls, others).  A wall gets its constraints checked; every
+    other element gets BG_LEVEL and nothing else.
+    """
+    picked = [doc.GetElement(eid)
+              for eid in uidoc.Selection.GetElementIds()]
+    elements = [e for e in picked if is_model_element(e)]
+
+    if not elements:
+        try:
+            refs = uidoc.Selection.PickObjects(
+                ObjectType.Element, ModelElementFilter(),
+                "Select the elements to check, then click Finish")
+        except Exception:
+            return [], []
+        elements = [doc.GetElement(r.ElementId) for r in refs]
+        elements = [e for e in elements if is_model_element(e)]
+
+    walls  = [e for e in elements if isinstance(e, Wall)]
+    others = [e for e in elements if not isinstance(e, Wall)]
+    return walls, others
 
 
 # ===============================================================================
 # READING A WALL
 # ===============================================================================
+
+def is_curtain(wall):
+    """True when this wall's panels are laid out by a curtain grid.
+
+    A curtain wall gets its base bound to a level like any other wall,
+    and its BG_LEVEL written from it, but its top is left unconnected
+    and it is never cut at a level.  See wall_constraints.plan_unconnected
+    for why.
+    """
+    try:
+        return wall.WallType.Kind == WallKind.Curtain
+    except Exception:
+        return False
+
 
 def is_profile_edited(wall):
     """True when the wall's elevation profile has been sketched."""
@@ -274,10 +401,20 @@ class Result(object):
 
 
 def describe(base_lvl_id, base_off, top_lvl_id, top_off):
-    """Human-readable 'Base @ offset -> Top @ offset'."""
-    return "{0} @ {1} | {2} @ {3}".format(
-        _level_name(base_lvl_id), _feet_to_text(base_off),
-        _level_name(top_lvl_id), _feet_to_text(top_off))
+    """Human-readable 'Base @ offset | Top @ offset'.
+
+    An unconnected top is printed on its own.  It has no level to be
+    offset from, and "Unconnected @ 0'-0"" reads like a wall of no
+    height -- which is the one thing it never means.
+
+    Exactly one "|" either way: the report splits these cells on it.
+    """
+    base = "{0} @ {1}".format(_level_name(base_lvl_id),
+                              _feet_to_text(base_off))
+    if not _is_valid(top_lvl_id):
+        return "{0} | Unconnected".format(base)
+    return "{0} | {1} @ {2}".format(
+        base, _level_name(top_lvl_id), _feet_to_text(top_off))
 
 
 def _process_wall(wall, levels):
@@ -291,15 +428,23 @@ def _process_wall(wall, levels):
 
     reason = blocking_reason(wall)
     if reason:
-        # Most refusals are worth saying out loud: the user picked the
-        # wall and the tool would not touch it.  A curtain wall is not
-        # like that -- it has no base and top constraints to put right
-        # in the first place, so there is nothing to report, only noise
-        # to make in a selection that swept one up.
+        # Every refusal is worth saying out loud: the user picked the
+        # wall and the tool would not touch it.  SILENT_SKIP_REASONS is
+        # empty today and the branch is kept for the next reason that
+        # is not worth a row.
         res.status = ("Not applicable"
                       if reason.startswith(SILENT_SKIP_REASONS)
                       else "Skipped")
         res.notes.append(reason)
+
+        # Refusing to touch a wall's CONSTRAINTS is not a reason to leave
+        # its BG_LEVEL empty.  The parameter only records the storey the
+        # wall already sits on, and that is just as true of a wall
+        # attached to a roof or living in a group as of any other -- the
+        # schedules read it either way.  Written from the wall's own Base
+        # Constraint, since there is no plan for one of these.
+        if not bg_level_from_wall(wall):
+            res.notes.append(BG_UNWRITTEN)
         return res
 
     try:
@@ -307,6 +452,8 @@ def _process_wall(wall, levels):
     except Exception as ex:
         res.status = "Skipped"
         res.notes.append(str(ex))
+        if not bg_level_from_wall(wall):
+            res.notes.append(BG_UNWRITTEN)
         return res
 
     res.before = describe(*current)
@@ -318,51 +465,41 @@ def _process_wall(wall, levels):
     # with its openings missing.
     allow_split = not profile_edited
 
-    # Rounding one is a matter of degree.  The end that moves carries the
-    # sketch with it, so the only question is how far -- and a move no
-    # bigger than the distance this tool already calls "the same
-    # elevation" is not a move worth refusing, nor worth telling anyone
-    # about.  Past that it is a real shift in the outline, and the wall
-    # is left exactly where it is for a human to deal with.
-    allow_round = True
-    if profile_edited:
-        base_snap, _ = wc.snap_end(base_z, levels)
-        top_snap, _  = wc.snap_end(top_z, levels)
-        drift = max(abs(base_snap - base_z), abs(top_snap - top_z))
-        # A hair of slack, for the same reason snap_span_to_levels needs
-        # it: an end exactly a sixteenth off a whole inch does not come
-        # out exactly a sixteenth away in binary, and the rule is that
-        # only a drift of MORE than a sixteenth is left for a human.
-        allow_round = drift <= TOL + 1e-9
+    # Rounding is not a decision.  Both plans round both ends to the
+    # nearest whole inch by default, however far the end has to move to
+    # get there -- basic and curtain, sketched outline or not.  A
+    # sketched outline does travel with the end it was drawn against,
+    # and that is accepted: an end off a whole inch is a defect wherever
+    # it came from, and up to half an inch of outline following it is a
+    # smaller problem than a seam that will not meet its neighbour.
+    curtain = is_curtain(wall)
 
     try:
-        plan = wc.plan_wall(base_z, top_z, levels,
-                            allow_split=allow_split, allow_round=allow_round)
+        if curtain:
+            # Base bound to its level, top left as a height, never cut.
+            plan = wc.plan_unconnected(base_z, top_z, levels)
+        else:
+            plan = wc.plan_wall(base_z, top_z, levels,
+                                allow_split=allow_split)
     except ValueError as ex:
         res.status = "Skipped"
         res.notes.append(str(ex))
+        if not bg_level_from_wall(wall):
+            res.notes.append(BG_UNWRITTEN)
         return res
 
-    if profile_edited:
-        # Being sketched is not itself worth reporting.  What is worth
-        # reporting is what the sketch PREVENTED, and on a wall that was
-        # rounded anyway and crosses no level, it prevented nothing --
-        # the wall is as finished as any other.
-        outstanding = []
-        if not allow_round:
-            outstanding.append(
-                'the ends are more than 1/16" off a whole inch, so they '
-                'were not rounded')
-        if plan["needs_split"]:
-            outstanding.append("the wall was not split at the {0} level(s) "
-                               "it crosses".format(len(plan["interior"])))
-
-        res.to_check = bool(outstanding)
-        if res.to_check:
-            res.notes.append(
-                "profile edited: {0}; doing that automatically would move "
-                "the sketched outline, so it is left for you".format(
-                    " and ".join(outstanding)))
+    if profile_edited and plan["needs_split"]:
+        # The one thing left for a human.  Being sketched is not itself
+        # worth reporting, and neither is being rounded -- both are
+        # handled now.  A level this tool could not cut is not: Revit
+        # will not carry a sketched outline across a split, so the upper
+        # band would come out with its openings missing, and the cut has
+        # to be made by hand.
+        res.to_check = True
+        res.notes.append(
+            "profile edited, so it was not split at the {0} level(s) it "
+            "crosses - Revit will not carry a sketched outline across a "
+            "split, so cut it by hand".format(len(plan["interior"])))
 
     # The original wall keeps the lowest band, so nothing hosted in it may
     # reach above that band -- Revit would delete such inserts outright.
@@ -400,9 +537,7 @@ def _process_wall(wall, levels):
         # filled, and a wall this tool has looked at should come away
         # with both.
         if not apply_bg_level(wall, bands[0]):
-            res.notes.append(
-                "{0} could not be written - parameter missing, "
-                "read-only, or not a text parameter".format(BG_LEVEL_PARAM))
+            res.notes.append(BG_UNWRITTEN)
         if plan["needs_split"]:
             res.status = "Needs split"
         return res
@@ -476,6 +611,17 @@ URGENT_STATUSES = ("Failed", "Partly failed", "Skipped")
 
 TO_CHECK = "To Check"
 
+# A wall that crosses a level and that Revit would not let this tool cut
+# there.  Not a failure to explain -- a wall to hand back.  The whole
+# wall is rolled back, constraints included, so what the user opens is
+# the wall they had, ready to be split by hand.
+NOT_SPLIT = "Not split"
+
+# The statuses _process_wall uses to say a cut was attempted.  After a
+# rollback they are the difference between a wall to hand back and a
+# wall that failed for some other reason worth printing in full.
+SPLIT_ATTEMPTED = ("Split into", "Partly failed")
+
 
 def process_wall(wall, levels):
     """Fix one wall, and flag it when work was left for a human.
@@ -494,12 +640,259 @@ def process_wall(wall, levels):
 
 
 # ===============================================================================
+# BG_LEVEL ON EVERYTHING ELSE
+# ===============================================================================
+
+# How each set_bg_level outcome reads in the report.
+ELEMENT_OUTCOMES = {
+    wall_bind.BG_WRITTEN:  "Level written",
+    wall_bind.BG_ALREADY:  "Already correct",
+    wall_bind.BG_MISSING:  "Not applicable",
+    wall_bind.BG_NO_LEVEL: "Not applicable",
+    wall_bind.BG_READONLY: "Failed",
+    wall_bind.BG_NOT_TEXT: "Failed",
+    wall_bind.BG_REFUSED:  "Failed",
+}
+
+# Nothing here is worth a row, or a count.  A level written is the tool
+# doing exactly what it was asked; an element without the parameter, or
+# without a level, is not a mistake to be told about -- the selection
+# swept up a category that does not carry BG_LEVEL and there was never
+# anything to write.  Only a failure gets printed.
+ELEMENT_QUIET_STATUSES = ("Level written", "Already correct",
+                          "Not applicable")
+
+ELEMENT_REASONS = {
+    wall_bind.BG_MISSING:  "no {0} parameter".format(BG_LEVEL_PARAM),
+    wall_bind.BG_NO_LEVEL: "not associated with a level",
+    wall_bind.BG_READONLY: "{0} is read-only".format(BG_LEVEL_PARAM),
+    wall_bind.BG_NOT_TEXT: "{0} is not a text parameter".format(
+        BG_LEVEL_PARAM),
+    wall_bind.BG_REFUSED:  "Revit refused the value",
+}
+
+
+class ElementResult(object):
+    """One row of the BG_LEVEL-only table."""
+
+    __slots__ = ("element_id", "category", "level", "was", "status", "notes")
+
+    def __init__(self, element_id):
+        self.element_id = element_id
+        self.category   = "?"
+        self.level      = ""
+        self.was        = ""
+        self.status     = ""
+        self.notes      = []
+
+    @property
+    def reportable(self):
+        """True only for a failure.
+
+        Matched on the status this row will PRINT, not on the outcome it
+        came from: the two are different vocabularies, and looking one
+        up in the other's table silently reported everything.
+        """
+        return self.status not in ELEMENT_QUIET_STATUSES
+
+
+def process_element(elem):
+    """Give one non-wall element its BG_LEVEL, and change nothing else.
+
+    Never raises: one element Revit will not take must not stop the rest
+    of a selection.
+    """
+    res = ElementResult(elem.Id)
+
+    try:
+        res.category = elem.Category.Name if elem.Category else "?"
+    except Exception:
+        pass
+
+    try:
+        existing = wall_bind.find_parameter(elem, BG_LEVEL_PARAM)
+        res.was = (existing.AsString() or "") if existing else ""
+    except Exception:
+        res.was = ""
+
+    try:
+        level_id = wall_bind.base_level_id(doc, elem)
+        res.level = _level_name(level_id) if level_id else ""
+        outcome = wall_bind.set_bg_level(doc, elem, level_id)
+    except Exception as ex:
+        res.status = "Failed"
+        res.notes.append(str(ex))
+        return res
+
+    res.status = ELEMENT_OUTCOMES.get(outcome, "Failed")
+    reason = ELEMENT_REASONS.get(outcome)
+    if reason and res.status == "Failed":
+        res.notes.append(reason)
+    return res
+
+
+def process_elements(elements):
+    """Write BG_LEVEL across every non-wall element, in one transaction.
+
+    One transaction for the lot, unlike the wall pass.  A wall's
+    constraints are rewritten in a sequence Revit can reject halfway
+    through, which is why each wall gets a transaction it can be rolled
+    back inside.  Writing one text parameter cannot invalidate a
+    geometry, so there is nothing here to contain per element -- and a
+    transaction per element over a whole floor's worth of them would
+    cost far more than it protects.
+    """
+    if not elements:
+        return []
+
+    handler = wall_bind.RollBackOnError()
+    t = Transaction(doc, "Wall Limits - BG_LEVEL")
+    t.Start()
+
+    try:
+        wall_bind.guard(t, handler)
+        results = [process_element(e) for e in elements]
+    except Exception as ex:
+        try:
+            t.RollBack()
+        except Exception:
+            pass
+        return [_element_failure(e, str(ex)) for e in elements]
+
+    try:
+        status = t.Commit()
+    except Exception as ex:
+        try:
+            t.RollBack()
+        except Exception:
+            pass
+        status = None
+        handler.messages.append(str(ex))
+
+    if status == TransactionStatus.Committed and not handler.messages:
+        return results
+
+    note = "; ".join(["Revit rejected the change and nothing was written"]
+                     + handler.messages)
+    return [_element_failure(e, note) for e in elements]
+
+
+def _element_failure(elem, note):
+    """A row for an element whose whole batch was rolled back."""
+    res = ElementResult(elem.Id)
+    try:
+        res.category = elem.Category.Name if elem.Category else "?"
+    except Exception:
+        pass
+    res.status = "Failed"
+    res.notes.append(note)
+    return res
+
+
+def not_split(wall_id, type_name, before):
+    """One row for a wall this tool crossed a level on and put back.
+
+    Its constraints are not reported as "before" and "after" because
+    there is no after: the wall is untouched, and saying otherwise
+    would send someone looking for a change that was rolled back.
+    """
+    res = Result(wall_id, type_name)
+    res.before = before
+    res.status = NOT_SPLIT
+    res.notes.append("crosses a level the tool could not cut there - "
+                     "left untouched, split it by hand")
+    return res
+
+
+def process_wall_safely(wall, levels):
+    """Fix one wall inside a transaction of its own, and never lie about it.
+
+    One wall, one transaction, for two reasons.
+
+    Revit posts some disagreements at COMMIT rather than raising where
+    they happen -- "the top of the Wall is lower than the base" is the
+    one this tool meets -- so a single transaction around the whole
+    selection meant one wall Revit would not take discarded every other
+    wall's work along with it, behind a dialog whose only button was
+    Cancel.  A transaction per wall makes the blast radius one wall.
+
+    And the report was written from what the tool INTENDED, then printed
+    after the commit, so a run that rolled back still claimed the walls
+    were split.  A rolled-back wall is rebuilt here as what it actually
+    is -- untouched, and why -- because the transaction's own status is
+    the only honest account of it.
+    """
+    try:
+        type_name = _name(wall.WallType)
+    except Exception:
+        type_name = "?"
+
+    handler = wall_bind.RollBackOnError()
+    t = Transaction(doc, "Wall Limits")
+    t.Start()
+
+    try:
+        wall_bind.guard(t, handler)
+        res = process_wall(wall, levels)
+    except Exception as ex:
+        try:
+            t.RollBack()
+        except Exception:
+            pass
+        res = Result(wall.Id, type_name)
+        res.status = "Failed"
+        res.notes.append(str(ex))
+        return res
+
+    # A wall that lost a band is worse off than one left alone: the
+    # original has already been shortened to make room for a band that
+    # does not exist, so the storeys above it are simply gone.  Hand the
+    # whole wall back instead, the same as a cut Revit refused outright.
+    if res.status == "Partly failed":
+        try:
+            t.RollBack()
+        except Exception:
+            pass
+        return not_split(wall.Id, type_name, res.before)
+
+    try:
+        status = t.Commit()
+    except Exception as ex:
+        try:
+            t.RollBack()
+        except Exception:
+            pass
+        status = None
+        handler.messages.append(str(ex))
+
+    if status == TransactionStatus.Committed and not handler.messages:
+        return res
+
+    # Rolled back: whatever res says happened, did not.
+    rolled = Result(wall.Id, type_name)
+    rolled.before = res.before
+
+    if res.status.startswith(SPLIT_ATTEMPTED):
+        # A cut Revit would not make.  Nothing here is worth quoting at
+        # the user: they cannot act on Revit's wording, only on the wall,
+        # and the wall is exactly as they left it.
+        return not_split(wall.Id, type_name, res.before)
+
+    rolled.status = "Failed"
+    rolled.notes.append("Revit rejected the change and the wall was left "
+                        "as it was")
+    for message in handler.messages:
+        rolled.notes.append(message)
+    return rolled
+
+
+# ===============================================================================
 # REPORT
 # ===============================================================================
 
 # Outcomes that need no telling: the wall was put right, it was already
 # right, or it was never this tool's business.  Every other status --
-# Skipped, To Check, Failed, Partly failed, Needs split, Split into N --
+# Skipped, To Check, Failed, Not split, Needs split, Split into N --
 # is either something to act on or a change to the model's element
 # count, and says so.
 QUIET_STATUSES = ("Fixed", "Already correct", "Not applicable")
@@ -518,8 +911,8 @@ def is_reportable(res):
     return any(n.startswith(CAVEAT_NOTES) for n in res.notes)
 
 
-def report(results):
-    """Print every wall whose outcome is not self-evident, or nothing.
+def report(results, elements):
+    """Print every outcome that is not self-evident, or nothing.
 
     Printing is what opens the output window, so staying quiet on a run
     with nothing to say is still the point.  A wall that was simply put
@@ -529,34 +922,57 @@ def report(results):
     look from the model exactly like the tool not working.
     """
     shown = [r for r in results if is_reportable(r)]
-    if not shown:
+    element_shown = [r for r in elements if r.reportable]
+
+    if not shown and not element_shown:
         return
 
-    counts = {}
-    for r in results:
-        counts[r.status] = counts.get(r.status, 0) + 1
+    output.print_md("## Wall Limits")
 
-    output.print_md("## Fix Wall Constraints - {0} of {1} wall(s) worth "
-                    "a look".format(len(shown), len(results)))
-    output.print_md(" | ".join(
-        "**{0}**: {1}".format(k, v) for k, v in sorted(counts.items())))
+    if results:
+        counts = {}
+        for r in results:
+            counts[r.status] = counts.get(r.status, 0) + 1
+        output.print_md("**{0} wall(s)**, {1} worth a look - {2}".format(
+            len(results), len(shown),
+            " | ".join("**{0}**: {1}".format(k, v)
+                       for k, v in sorted(counts.items()))))
 
-    rows = []
-    for r in shown:
-        rows.append([
-            output.linkify(r.wall_id),
-            r.type_name,
-            r.before,
-            r.after,
-            r.status,
-            "; ".join(r.notes),
-        ])
+    if element_shown:
+        # Only the failures are counted, let alone listed.  How many
+        # elements took BG_LEVEL, and how many never had it to take, is
+        # the tool working -- not news.
+        output.print_md(
+            "**{0} of {1} other element(s)** could not be given {2}".format(
+                len(element_shown), len(elements), BG_LEVEL_PARAM))
 
-    output.print_table(
-        table_data=rows,
-        columns=["Wall", "Type", "Before (base | top)",
-                 "After (base | top)", "Status", "Notes"],
-    )
+    if shown:
+        output.print_table(
+            table_data=[[
+                output.linkify(r.wall_id),
+                r.type_name,
+                r.before,
+                r.after,
+                r.status,
+                "; ".join(r.notes),
+            ] for r in shown],
+            columns=["Wall", "Type", "Before (base | top)",
+                     "After (base | top)", "Status", "Notes"],
+        )
+
+    if element_shown:
+        output.print_table(
+            table_data=[[
+                output.linkify(r.element_id),
+                r.category,
+                r.level,
+                r.was,
+                r.status,
+                "; ".join(r.notes),
+            ] for r in element_shown],
+            columns=["Element", "Category", "Level",
+                     "{0} was".format(BG_LEVEL_PARAM), "Status", "Notes"],
+        )
 
 
 # ===============================================================================
@@ -564,44 +980,43 @@ def report(results):
 # ===============================================================================
 
 def main():
-    walls = get_walls()
-    if not walls:
+    walls, others = get_selection()
+    if not walls and not others:
         return
 
     levels = collect_levels()
     if not levels:
-        forms.alert("This model has no levels, so wall constraints cannot "
-                    "be bound to anything.",
-                    title="Fix Wall Constraints")
+        forms.alert("This model has no levels, so nothing here can be "
+                    "bound to one.",
+                    title="Wall Limits")
         return
 
-    results = []
-    with Transaction(doc, "Fix Wall Constraints") as t:
-        t.Start()
+    group = TransactionGroup(doc, "Wall Limits")
+    group.Start()
+    try:
+        results = [process_wall_safely(wall, levels) for wall in walls]
+        element_results = process_elements(others)
+        group.Assimilate()
+    except Exception as ex:
         try:
-            for wall in walls:
-                results.append(process_wall(wall, levels))
-            t.Commit()
-        except Exception as ex:
-            try:
-                t.RollBack()
-            except Exception:
-                pass
-            output.print_md("**Fix Wall Constraints - transaction failed**")
-            output.print_code(traceback.format_exc())
-            forms.alert("Transaction failed:\n{0}".format(ex),
-                        title="Fix Wall Constraints - Error")
-            return
+            group.RollBack()
+        except Exception:
+            pass
+        output.print_md("**Wall Limits - run failed**")
+        output.print_code(traceback.format_exc())
+        forms.alert("Run failed:\n{0}".format(ex),
+                    title="Wall Limits - Error")
+        return
 
-    report(results)
+    report(results, element_results)
 
 
 try:
     main()
 except Exception as ex:
-    logger.error("Fix Wall Constraints failed: {0}".format(ex))
-    output.print_md("**Fix Wall Constraints - unexpected error**")
+    logger.error("Wall Limits failed: {0}".format(ex))
+    output.print_md("**Wall Limits - unexpected error**")
     output.print_code(traceback.format_exc())
     forms.alert("Unexpected error:\n{0}\n\nSee the output window for "
                 "details.".format(ex),
-                title="Fix Wall Constraints - Error")
+                title="Wall Limits - Error")
