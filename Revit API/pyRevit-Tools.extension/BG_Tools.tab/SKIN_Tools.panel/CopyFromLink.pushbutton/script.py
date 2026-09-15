@@ -35,6 +35,28 @@ The copy is Revit's own, so types, parameters and nested families all
 come with it -- the same as a Copy/Paste Aligned by hand, and just as
 willing to bring a family into this model that was not here before.
 
+ONE ELEMENT PER COPY CALL, AND THE REPORT READ BACK OFF THE MODEL.
+Both of those are scar tissue from the same bug.
+
+The selection used to be copied as one batch per link.  Revit's answer
+to a single awkward element in a batch is "Copying one or more elements
+failed" -- naming neither which nor how many -- and it throws AFTER
+copying some of them.  The tool caught that, wrote "could not copy 50
+element(s)", and committed the transaction regardless, so whatever
+Revit had already made was kept.  A report saying nothing happened,
+over a model that had just gained elements.  Revit said nothing either:
+its "identical instances in the same place" warning is raised for a
+copy/paste done by HAND and swallowed for one made through the API.
+
+So each element is now copied on its own and succeeds or fails on its
+own, and when the run finishes it COUNTS WHAT IS ACTUALLY STANDING at
+each place it claims to have settled, saying so wherever there is more
+than one.  A report written from return values cannot notice it was
+wrong; this one can.
+
+Anything already doubled from before this was fixed is found by Find
+Duplicates, which asks the same question of the host model alone.
+
 The linked model is never modified.
 """
 
@@ -51,6 +73,9 @@ __doc__    = (
     "through being copied by hand does not end up with doubles.\n"
     "The category and type lists are read off what the links actually "
     "hold, so a type that is loaded but never placed is not offered.\n"
+    "The report is read back off the model when the run finishes, and "
+    "names any place now holding more than one -- use Find Duplicates "
+    "to see and select every double in the model.\n"
     "The linked model is left untouched."
 )
 
@@ -101,14 +126,6 @@ def eid_value(element_id):
         except Exception:
             continue
     return element_id
-
-
-def link_name(link_inst):
-    """The link's own name, for a row that is about the link itself."""
-    try:
-        return link_inst.Name
-    except Exception:
-        return "link {}".format(eid_value(link_inst.Id))
 
 
 def label_for(elem, key):
@@ -229,6 +246,7 @@ def pick_elements(category_id, type_keys, prompt):
         return {}
 
     picked = {}
+    seen = set()
     for ref in refs or []:
         link_inst = doc.GetElement(ref.ElementId)
         link_doc  = link_inst.GetLinkDocument()
@@ -239,6 +257,18 @@ def pick_elements(category_id, type_keys, prompt):
             continue
 
         key = eid_value(link_inst.Id)
+
+        # ONE ROW PER ELEMENT, however many times it was picked.  A
+        # rubber-band box that catches an element twice -- or a click
+        # on something already in the box -- hands back two references
+        # to the same thing, and without this the second one is judged
+        # against the first and reported as already here, which is a
+        # false report about an element nobody copied twice.
+        once = (key, eid_value(ref.LinkedElementId))
+        if once in seen:
+            continue
+        seen.add(once)
+
         if key not in picked:
             picked[key] = (link_inst, link_doc, [])
         picked[key][2].append(elem)
@@ -297,63 +327,138 @@ def main():
     # than searched again for every element picked.
     index = link_copy.host_index(doc, category_id)
 
-    copied  = 0
     skipped = 0
-    to_copy = []
+    to_copy = []        # (link inst, link doc, element id, label, key, point)
+    standing = []       # (label, key, point) -- refused as already here
 
     for link_inst, link_doc, elements in picked.values():
         transform = link_inst.GetTotalTransform()
 
-        wanted = []
         for elem in elements:
             key   = link_copy.type_key(elem)
             point = link_copy.element_point(elem, transform)
+            label = label_for(elem, key)
 
             if point is None:
-                note(notes, label_for(elem, key),
+                note(notes, label,
                      "could not be located, so it was left out - there "
                      "is no way to tell whether it is already here")
                 continue
 
-            if link_copy.already_there(index, key, point):
+            here_already = link_copy.match_in(index, key, point)
+            if here_already is not None:
                 skipped += 1
+                standing.append((label, key, point))
+                note(notes, label,
+                     "not copied: already here as {}".format(here_already))
                 continue
 
-            wanted.append(elem.Id)
+            to_copy.append((link_inst, link_doc, elem.Id, label, key, point))
             # Added to the index straight away, so two picked elements
             # sitting on top of each other do not both come over.
-            index.setdefault(key, []).append(point)
+            link_copy.remember(index, key, point,
+                               "an element this run has just copied")
 
-        to_copy.append((link_inst, link_doc, wanted))
+    # ONE TRANSACTION, and ONE ELEMENT AT A TIME INSIDE IT.
+    #
+    # The transaction, because a cross-document copy writes to THIS
+    # document like any other edit: without one Revit answers "Attempt
+    # to modify the model outside of transaction" on every element.
+    #
+    # One at a time, because THAT is what went wrong.  Copied as a
+    # batch, Revit's answer to a single awkward element is "Copying one
+    # or more elements failed" -- which names neither which nor how
+    # many -- and it throws AFTER copying some of them.  The old code
+    # caught that, wrote "could not copy 50 element(s)", and then
+    # committed the transaction anyway, so the ones Revit had already
+    # made were kept.  A report saying nothing was copied, over a model
+    # that had just gained elements, with no warning from Revit because
+    # the "identical instances in the same place" warning is raised for
+    # a copy/paste done by hand and swallowed for one done through the
+    # API.  That is where the doubles came from.
+    #
+    # Copied singly, each element succeeds or fails on its own and the
+    # report can say which.
+    copied = 0
+    verify = list(standing)     # what the run claims it has dealt with
 
-    # One transaction for the whole run.  A copy across documents
-    # writes to this one like any other edit, and needs a transaction
-    # like any other edit.
+    # One handler for the whole run, so Revit's "Duplicate Types"
+    # dialog is answered rather than asked -- twenty elements used to
+    # mean twenty clicks -- and so the number of times it would have
+    # appeared can be said once, at the end.
+    types = link_copy.UseDestinationTypes()
+
     t = Transaction(doc, "Copy from link")
     t.Start()
     try:
-        for link_inst, link_doc, wanted in to_copy:
+        for link_inst, link_doc, elem_id, label, key, point in to_copy:
             new_ids, reason = link_copy.copy_elements(
-                link_inst, link_doc, doc, wanted)
+                link_inst, link_doc, doc, [elem_id], types)
 
-            if reason:
-                note(notes, link_name(link_inst),
-                     "could not copy {} element(s): {}".format(
-                         len(wanted), reason))
+            if not new_ids:
+                note(notes, label, "NOT COPIED: {}".format(
+                    reason or "Revit returned nothing"))
                 continue
 
-            copied += len(new_ids)
+            copied += 1
+            verify.append((label, key, point))
+
+            if len(new_ids) > 1:
+                # Revit brings an element's dependents with it.
+                # Unasked-for and unwarned-about, which is exactly how a
+                # model gets a second host wall standing inside the first.
+                note(notes, label,
+                     "copied, and Revit brought {} other element(s) over "
+                     "with it - worth a look".format(len(new_ids) - 1))
         t.Commit()
     except Exception:
         if t.HasStarted() and not t.HasEnded():
             t.RollBack()
         raise
 
+    # WHAT THE MODEL SAYS, not what the copy calls promised.  Read back
+    # after the transaction has committed and count what is actually
+    # standing at each place this run claims to have settled -- the ones
+    # it copied, and the ones it refused to copy because something was
+    # already there.  An element it could not copy at all is left out:
+    # it has already been reported as not copied, and saying a second
+    # time that it is not there is noise.
+    #
+    # A report written from return values cannot notice it was wrong.
+    # This one can, and the whole point of the read-back is that the
+    # tool no longer has to be believed.
+    doubled = []
+    if verify:
+        after = link_copy.host_index(doc, category_id)
+        for label, key, point in verify:
+            here = link_copy.matches_in(after, key, point)
+            if len(here) > 1:
+                doubled.append((label, here))
+                note(notes, label,
+                     "THERE ARE NOW {} OF THESE IN THE SAME PLACE: {} - "
+                     "use Find Duplicates".format(
+                         len(here), ", ".join(str(i) for i in here)))
+            elif not here:
+                note(notes, label,
+                     "this run says it settled this one, but nothing of "
+                     "its type stands there now - check it")
+
+    if types.fired:
+        note(notes, "-",
+             "{} copy(s) met a type whose name is already in this model "
+             "but whose definition differs; THIS MODEL'S type was used, "
+             "which is what the Duplicate Types dialog did when it was "
+             "clicked through".format(types.fired))
+
     summary = "{} copied, {} already here".format(copied, skipped)
-    if not copied:
-        note(notes, "-", summary)
-    else:
+    if doubled:
+        summary += ", {} place(s) now holding more than one".format(
+            len(doubled))
+
+    if copied and not doubled:
         output.print_md("### {} - {}".format(TOOL_TITLE, summary))
+    else:
+        note(notes, "-", summary)
 
     report(notes)
 

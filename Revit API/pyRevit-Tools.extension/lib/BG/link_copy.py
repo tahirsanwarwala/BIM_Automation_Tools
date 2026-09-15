@@ -31,9 +31,11 @@ clr.AddReference("RevitAPI")
 from Autodesk.Revit.DB import (
     CategoryType,
     CopyPasteOptions,
+    DuplicateTypeAction,
     ElementId,
     ElementTransformUtils,
     FilteredElementCollector,
+    IDuplicateTypeNamesHandler,
     LocationCurve,
     LocationPoint,
     RevitLinkInstance,
@@ -42,11 +44,27 @@ from Autodesk.Revit.DB import (
 from System.Collections.Generic import List
 from pyrevit import script
 
+from BG import dup_check
+
 logger = script.get_logger()
 
 # How far apart two elements may be, in feet, and still be the same one.
-# An inch: the copies already here were placed by hand.
-TOL = 1.0 / 12.0
+# An inch: the copies already here were placed by hand.  The number, and
+# the test that uses it, live in dup_check so that the tool which copies
+# and the tool which hunts for duplicates afterwards answer the same
+# question the same way -- otherwise neither can be used to check the
+# other.
+TOL = dup_check.TOL
+
+
+def _xyz(point):
+    """An XYZ as the plain (x, y, z) tuple dup_check works in."""
+    if point is None:
+        return None
+    try:
+        return (point.X, point.Y, point.Z)
+    except AttributeError:
+        return point
 
 
 def eid_value(element_id):
@@ -212,11 +230,17 @@ def element_point(elem, transform=None):
 
 
 def host_index(doc, category_id):
-    """{(family, type): [point]} for what the host already holds.
+    """{(family, type): [(point, host element id)]} for what the host holds.
 
     Built once for the whole category rather than searched per element,
     because the alternative is a collector pass for every element the
     user picked.
+
+    The ID is carried alongside the point so that a report which says
+    something is already here can NAME the thing it found.  A claim you
+    can click on and look at is a claim that can be checked; a bare
+    "already here" has to be taken on trust, and that is how this tool
+    came to be believed when it was wrong.
     """
     index = {}
     for elem in (FilteredElementCollector(doc)
@@ -225,29 +249,149 @@ def host_index(doc, category_id):
         point = element_point(elem)
         if point is None:
             continue
-        index.setdefault(type_key(elem), []).append(point)
+        remember(index, type_key(elem), point, eid_value(elem.Id))
     return index
+
+
+def remember(index, key, point, payload=None):
+    """Add one element to an index built by host_index.
+
+    Used to add an element the run has just copied, so that two picked
+    elements standing on top of each other do not both come over.
+    """
+    if point is None:
+        return
+    index.setdefault(key, []).append((_xyz(point), payload))
+
+
+def match_in(index, key, point, tol=TOL):
+    """What the host already holds at this place, of this type, or None.
+
+    Returns the id recorded by host_index, so the caller can say which
+    element it matched.  None means nothing is there -- and an element
+    with no point of its own is never matched, because not knowing
+    where something is is not the same as knowing it is already here.
+    """
+    return dup_check.find_match(index.get(key, ()), _xyz(point), tol)
+
+
+def matches_in(index, key, point, tol=TOL):
+    """Every host element of this type standing at this place.
+
+    For asking, after a copy, how many are there now.  One is what was
+    wanted; two is a duplicate, whether this run made it or found it.
+    """
+    return dup_check.all_matches(index.get(key, ()), _xyz(point), tol)
 
 
 def already_there(index, key, point, tol=TOL):
     """True when the host already holds this type at this place."""
-    if point is None:
-        return False
-    for other in index.get(key, ()):
-        if (abs(other.X - point.X) <= tol
-                and abs(other.Y - point.Y) <= tol
-                and abs(other.Z - point.Z) <= tol):
-            return True
-    return False
+    return match_in(index, key, point, tol) is not None
 
 
-def copy_elements(link_inst, link_doc, doc, element_ids):
+def categories_in_doc(doc):
+    """{category name: category id} for the MODEL categories in *doc*.
+
+    The host-model twin of categories_in_links, and read the same way --
+    off the elements standing there rather than off the document's
+    category table, so the list names only what there is something to
+    look at.
+    """
+    found = {}
+    for elem in (FilteredElementCollector(doc)
+                 .WhereElementIsNotElementType()):
+        try:
+            cat = elem.Category
+            if cat is None or cat.CategoryType != CategoryType.Model:
+                continue
+            name = cat.Name
+        except Exception:
+            continue
+        if name and name not in found:
+            found[name] = cat.Id
+    return found
+
+
+def duplicate_records(doc, category_id):
+    """[(element id, (family, type), point)] for one host category.
+
+    What dup_check.group_duplicates wants, read off the host model.
+    Elements that cannot be located are recorded with a point of None
+    and dropped by the grouping: an element whose place cannot be read
+    cannot be shown to be standing on top of another one.
+    """
+    records = []
+    for elem in (FilteredElementCollector(doc)
+                 .OfCategoryId(category_id)
+                 .WhereElementIsNotElementType()):
+        try:
+            records.append((eid_value(elem.Id), type_key(elem),
+                            _xyz(element_point(elem))))
+        except Exception as ex:
+            logger.debug("Skipped an element while scanning: {}".format(ex))
+    return records
+
+
+class UseDestinationTypes(IDuplicateTypeNamesHandler):
+    """Answer Revit's "Duplicate Types" dialog instead of showing it.
+
+    A type whose NAME is already in this model but whose definition
+    differs stops the copy dead with a dialog -- and the copy is now
+    made one element at a time, so a selection of twenty means twenty
+    dialogs, each wanting a click.  That is not a tool, that is a
+    chore.
+
+    THE ANSWER IS THE ONE THE DIALOG ALREADY GAVE.  Its text reads "The
+    Types from the project into which you are pasting will be used",
+    and OK is what everybody clicked, so UseDestinationTypes changes
+    nothing about the result -- this model's own type wins, exactly as
+    before.  What it changes is that nobody has to say so twenty times.
+
+    It is worth KNOWING it happened, though: it means the link's type
+    and this model's type of the same name are not the same thing, and
+    the copied element is now the local one.  So the count is kept and
+    the caller says so once at the end.
+    """
+
+    def __init__(self):
+        self.fired = 0
+
+    def OnDuplicateTypeNamesFound(self, args):
+        self.fired += 1
+        return DuplicateTypeAction.UseDestinationTypes
+
+
+def paste_options(handler=None):
+    """CopyPasteOptions that will not stop to ask about type names.
+
+    A Revit that will not take the handler is no reason to refuse the
+    copy: the options come back plain, and the dialog appears as it
+    always did.
+    """
+    options = CopyPasteOptions()
+    try:
+        options.SetDuplicateTypeNamesHandler(handler or UseDestinationTypes())
+    except Exception as ex:
+        logger.debug("Could not set the duplicate-type handler: {}".format(ex))
+    return options
+
+
+def copy_elements(link_inst, link_doc, doc, element_ids, handler=None):
     """Copy *element_ids* out of the link, in place.  Returns (ids, reason).
 
-    MUST run INSIDE a transaction on the destination document.  A copy
-    across documents writes to the destination like any other edit, and
+    MUST run INSIDE a transaction on the destination document.  Copying
+    out of a link writes to THIS document like any other edit, and
     without one Revit answers "Attempt to modify the model outside of
-    transaction".
+    transaction" on every element.
+
+    ONE ELEMENT PER CALL is what the caller should be handing over.
+    Given a batch, Revit's answer to one awkward element is "Copying
+    one or more elements failed" -- which names neither which nor how
+    many -- and it throws AFTER copying some of them, leaving those in
+    the caller's transaction to be committed.  A caller that reports
+    from the exception then says nothing was copied about a model that
+    has just gained elements.  That is how this tool made silent
+    duplicates for weeks.
 
     The link's own transform is what puts them in the same place --
     the link may be moved or rotated relative to the host, and copying
@@ -263,7 +407,7 @@ def copy_elements(link_inst, link_doc, doc, element_ids):
     try:
         copied = ElementTransformUtils.CopyElements(
             link_doc, ids, doc, link_inst.GetTotalTransform(),
-            CopyPasteOptions())
+            paste_options(handler))
     except Exception as ex:
         return [], "{}".format(ex)
 
