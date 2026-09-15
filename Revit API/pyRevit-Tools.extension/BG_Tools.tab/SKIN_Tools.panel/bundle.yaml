@@ -6,3 +6,4 @@ layout:
   - CopyRoofSweeps
   - FindDuplicates
   - SplitWallHorizontal
+  - SetElevation
