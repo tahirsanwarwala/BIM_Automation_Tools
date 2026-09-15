@@ -6,9 +6,10 @@ tools can be handed to someone else by copying it and the tab, and
 nothing else.
 
 Two halves, and the split is deliberate.  wall_bands, wall_constraints,
-wall_limits, wall_miter, wall_naming, plan_shapes and sweep_geom import
-nothing from Revit at all, so they are unit-tested in ordinary CPython
-outside it.  soffit, wall_chain, wall_materials, wall_sketch, wall_skin,
-window_cw, link_copy and roof_sweep do talk to the Revit API, and are
-verified by running the tools.
+wall_limits, wall_miter, wall_naming, plan_shapes, sweep_geom,
+dup_check, wall_overlap and param_push import nothing from Revit at
+all, so they are unit-tested in ordinary CPython outside it.  soffit,
+wall_chain, wall_materials, wall_sketch, wall_skin, window_cw,
+link_copy and roof_sweep do talk to the Revit API, and are verified by
+running the tools.
 """
