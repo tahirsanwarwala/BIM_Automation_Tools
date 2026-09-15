@@ -313,7 +313,7 @@ def main():
             wanted.append(elem.Id)
             # Added to the index straight away, so two picked elements
             # sitting on top of each other do not both come over.
-            index.setdefault(key, []).append(point)
+            link_copy.remember(index, key, point)
 
         to_copy.append((link_inst, link_doc, wanted))
 
