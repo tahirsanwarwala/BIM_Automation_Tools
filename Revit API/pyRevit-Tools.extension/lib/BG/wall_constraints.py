@@ -37,19 +37,32 @@ INCH = 1.0 / 12.0
 TOL = TOL_LEVEL_MATCH
 
 
-def round_to_inch(z):
-    """Round an elevation to the nearest whole inch.
+def round_to(z, increment=INCH):
+    """Round an elevation to the nearest multiple of *increment*.
 
     Rounds half away from zero so negative elevations behave the same
     way as positive ones -- Python's built-in round() would break the
     tie towards even and give -8" for -8.5" but 9" for 8.5".
+
+    The increment is an argument because BG_LEVEL hands the choice to
+    the user; it defaults to one inch, which is the house rule and what
+    every other caller means.
     """
-    inches = z / INCH
-    if inches >= 0:
-        snapped = int(inches + 0.5)
+    steps = z / increment
+    if steps >= 0:
+        snapped = int(steps + 0.5)
     else:
-        snapped = -int(-inches + 0.5)
-    return snapped * INCH
+        snapped = -int(-steps + 0.5)
+    return snapped * increment
+
+
+def round_to_inch(z):
+    """Round an elevation to the nearest whole inch.
+
+    The house rule, kept under its own name because that is what the
+    rule is called wherever it is discussed.
+    """
+    return round_to(z, INCH)
 
 
 def level_at(z, levels, tol=TOL):
@@ -64,18 +77,43 @@ def level_at(z, levels, tol=TOL):
     return best
 
 
-def snap_end(z, levels, tol=TOL):
-    """Round one end of a wall to the nearest inch.
+# How near a level an end has to be to count as exactly on it when
+# near-level ends are NOT being left alone.  Floating-point slack, not
+# a tolerance anybody chose.
+EXACTLY_ON = 1e-9
+
+
+def snap_end(z, levels, tol=TOL, increment=INCH, snap_to_levels=True):
+    """Round one end of a wall to the nearest *increment*.
 
     Returns ``(elevation, was_rounded)``.  An end that already sits on a
     level is returned untouched: the level defines that elevation, and
     nudging it would only manufacture a fractional offset.
+
+    *tol* -- how close to a level counts as on it -- and *increment*
+    are arguments because BG_LEVEL offers them; the defaults are the
+    house rule.
+
+    *snap_to_levels* is whether being NEAR a level is enough.  With it
+    off, an end near a level is rounded like any other, and *tol* stops
+    deciding anything here.  An end sitting EXACTLY on a level is still
+    left alone either way: a level is not obliged to fall on a whole
+    inch, and rounding a wall off a level it is already on would be a
+    rule inventing work for itself.
     """
-    if level_at(z, levels, tol) is not None:
+    reach = tol if snap_to_levels else EXACTLY_ON
+    if level_at(z, levels, reach) is not None:
         return z, False
 
-    snapped = round_to_inch(z)
-    return snapped, abs(snapped - z) > tol
+    # "Rounded" means the end MOVED, not that it moved noticeably.
+    # Comparing the move against the on-a-level tolerance hid every
+    # rounding smaller than it -- fine while the increment was always
+    # an inch and the tolerance a sixteenth, and wrong as soon as the
+    # user can ask for quarters: a real 1/20" move would report as no
+    # move at all.  Wall Limits already worked around this by measuring
+    # the movement itself; now it does not have to.
+    snapped = round_to(z, increment)
+    return snapped, abs(snapped - z) > 1e-9
 
 
 def interior_levels(base_z, top_z, levels, tol=TOL):
@@ -159,7 +197,7 @@ def constraints_for(base_z, top_z, levels, tol=TOL):
 
 
 def plan_wall(base_z, top_z, levels, tol=TOL, allow_split=True,
-              allow_round=True):
+              allow_round=True, increment=INCH, snap_to_levels=True):
     """Work out everything that should happen to one wall.
 
     *base_z* / *top_z* are the wall's current absolute extent.  Both
@@ -188,14 +226,16 @@ def plan_wall(base_z, top_z, levels, tol=TOL, allow_split=True,
     Raises ValueError when rounding leaves nothing to build.
     """
     if allow_round:
-        base_z, base_rounded = snap_end(base_z, levels, tol)
-        top_z, top_rounded = snap_end(top_z, levels, tol)
+        base_z, base_rounded = snap_end(base_z, levels, tol, increment,
+                                        snap_to_levels)
+        top_z, top_rounded = snap_end(top_z, levels, tol, increment,
+                                      snap_to_levels)
     else:
         base_rounded = top_rounded = False
 
     if top_z - base_z <= tol:
         raise ValueError(
-            "Rounding to the nearest inch leaves no height "
+            "Rounding leaves no height "
             "(base {0:.4f}, top {1:.4f}).".format(base_z, top_z))
 
     inside = interior_levels(base_z, top_z, levels, tol)
@@ -215,6 +255,68 @@ def plan_wall(base_z, top_z, levels, tol=TOL, allow_split=True,
         "interior": inside,
         "bands": bands,
     }
+
+
+def stop_under(base_z, top_z, undersides, tol=TOL, min_height=0.0):
+    """Pull a band's top down to the first floor slab it runs into.
+
+    *undersides* is the lowest underside of each slab standing over
+    this band, in host elevations; finding them needs Revit and is the
+    caller's job, and which one governs is this one's.
+
+    Returns ``(top_z, stopped_at, refused_at)``:
+
+      top_z       the top to use -- unchanged when no slab is in the way
+      stopped_at  the underside it was taken from, else None
+      refused_at  an underside that IS in the way but cannot be used
+                  without collapsing the band, else None
+
+    A slab within *tol* of either end is flush with it, not crossed by
+    it: at the base it is the floor the wall stands on, and at the top
+    the wall already stops there.
+
+    Only the LOWEST slab in the way is ever used -- that is the one the
+    wall runs into going up.  When it cannot be used the whole clamp is
+    refused rather than skipped past: a wall meeting a slab six inches
+    above its base is a wall for somebody to look at, and passing
+    through that slab to stop at the next one up would bury it in the
+    one thing this check exists to keep it out of.
+
+    The top this returns is deliberately NOT rounded by the caller.  A
+    soffit is an exact elevation, and rounding to it would either bury
+    the wall in the slab or leave a gap under it.
+    """
+    inside = sorted(z for z in undersides
+                    if z > base_z + tol and z < top_z - tol)
+    if not inside:
+        return top_z, None, None
+
+    lowest = inside[0]
+    if lowest - base_z > max(min_height, tol):
+        return lowest, lowest, None
+    return top_z, None, lowest
+
+
+def doors_above(door_tops, band_top_z, tol=TOL):
+    """How many doors reach above the band the original wall will keep.
+
+    A wall is split by shortening the original to the lowest band and
+    building the storeys above it as new walls.  A curtain wall's door
+    stands in a CELL of that original, so a door reaching above the
+    first band is destroyed by the cut -- and a new band, built fresh
+    from the wall type, comes out as plain glass with no door in it.
+    Counting them is what lets the caller refuse the cut instead.
+
+    *door_tops* is each door panel's highest elevation; a door
+    straddling the cut is therefore counted by its top, which is the
+    end that would be lost.  A door flush with the cut, or within *tol*
+    of it, sits inside the band and is not counted.
+
+    Kept here, with the rest of the split arithmetic, so the rule can
+    be tested without Revit: reading a panel's extent needs the API,
+    but deciding what the extent MEANS does not.
+    """
+    return len([z for z in door_tops if z > band_top_z + tol])
 
 
 def constraints_unconnected(base_z, top_z, levels, tol=TOL):
@@ -261,7 +363,8 @@ def constraints_unconnected(base_z, top_z, levels, tol=TOL):
     }
 
 
-def plan_unconnected(base_z, top_z, levels, tol=TOL, allow_round=True):
+def plan_unconnected(base_z, top_z, levels, tol=TOL, allow_round=True,
+                     increment=INCH, snap_to_levels=True):
     """Work out everything that should happen to one curtain wall.
 
     The same shape plan_wall returns, and read the same way, with two
@@ -284,14 +387,16 @@ def plan_unconnected(base_z, top_z, levels, tol=TOL, allow_round=True):
     Raises ValueError when rounding leaves nothing to build.
     """
     if allow_round:
-        base_z, base_rounded = snap_end(base_z, levels, tol)
-        top_z, top_rounded = snap_end(top_z, levels, tol)
+        base_z, base_rounded = snap_end(base_z, levels, tol, increment,
+                                        snap_to_levels)
+        top_z, top_rounded = snap_end(top_z, levels, tol, increment,
+                                      snap_to_levels)
     else:
         base_rounded = top_rounded = False
 
     if top_z - base_z <= tol:
         raise ValueError(
-            "Rounding to the nearest inch leaves no height "
+            "Rounding leaves no height "
             "(base {0:.4f}, top {1:.4f}).".format(base_z, top_z))
 
     return {

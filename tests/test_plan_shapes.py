@@ -172,5 +172,70 @@ class TestBboxRing(unittest.TestCase):
         self.assertIsNone(ps.bbox_ring([(1.0, 1.0), (1.0, 1.0)]))
 
 
+class TestCheapRejection(unittest.TestCase):
+    """The test you run before the expensive one.
+
+    segment_meets_outline walks every edge of a ring.  Running it for
+    every wall against every slab in a federated model is minutes of
+    work to answer a question a rectangle answers in four comparisons,
+    so a box round each ring comes first.
+
+    A box is a SUPERSET of the ring inside it, so rejecting on the box
+    can never drop a slab that really did cover the wall -- which is
+    the only property that makes this safe.
+    """
+
+    def test_a_box_round_a_ring(self):
+        ring = [(0.0, 0.0), (10.0, 0.0), (10.0, 4.0), (0.0, 4.0)]
+        self.assertEqual(ps.bounds_of(ring), (0.0, 0.0, 10.0, 4.0))
+
+    def test_a_box_round_nothing_is_nothing(self):
+        self.assertIsNone(ps.bounds_of([]))
+
+    def test_boxes_that_overlap_are_not_apart(self):
+        self.assertFalse(ps.boxes_apart((0.0, 0.0, 10.0, 10.0),
+                                        (5.0, 5.0, 15.0, 15.0)))
+
+    def test_boxes_side_by_side_are_apart(self):
+        self.assertTrue(ps.boxes_apart((0.0, 0.0, 10.0, 10.0),
+                                       (20.0, 0.0, 30.0, 10.0)))
+
+    def test_boxes_one_above_the_other_are_apart(self):
+        self.assertTrue(ps.boxes_apart((0.0, 0.0, 10.0, 10.0),
+                                       (0.0, 20.0, 10.0, 30.0)))
+
+    def test_boxes_just_touching_are_not_apart(self):
+        self.assertFalse(ps.boxes_apart((0.0, 0.0, 10.0, 10.0),
+                                        (10.0, 0.0, 20.0, 10.0)))
+
+    def test_a_margin_keeps_near_boxes_together(self):
+        # Half a wall's thickness of reach must not be rejected away.
+        self.assertTrue(ps.boxes_apart((0.0, 0.0, 10.0, 10.0),
+                                       (11.0, 0.0, 20.0, 10.0)))
+        self.assertFalse(ps.boxes_apart((0.0, 0.0, 10.0, 10.0),
+                                        (11.0, 0.0, 20.0, 10.0),
+                                        margin=2.0))
+
+    def test_nothing_is_apart_from_an_unknown_box(self):
+        # Not knowing where something is is never grounds to skip it.
+        self.assertFalse(ps.boxes_apart(None, (0.0, 0.0, 1.0, 1.0)))
+        self.assertFalse(ps.boxes_apart((0.0, 0.0, 1.0, 1.0), None))
+
+    def test_a_box_never_rejects_a_ring_it_contains(self):
+        # The property the whole optimisation rests on: anything the
+        # precise test would accept, the box test also accepts.
+        import random
+        random.seed(7)
+        ring = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
+        box = ps.bounds_of(ring)
+        for _ in range(300):
+            p0 = (random.uniform(-20, 30), random.uniform(-20, 30))
+            p1 = (p0[0] + random.uniform(-5, 5), p0[1] + random.uniform(-5, 5))
+            if ps.segment_meets_outline(p0, p1, ring, [], 0.5):
+                self.assertFalse(
+                    ps.boxes_apart(box, ps.bounds_of([p0, p1]), margin=0.5),
+                    "the box rejected a segment the ring accepted")
+
+
 if __name__ == "__main__":
     unittest.main()

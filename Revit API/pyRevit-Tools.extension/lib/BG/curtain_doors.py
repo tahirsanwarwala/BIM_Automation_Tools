@@ -56,6 +56,7 @@ from System.Collections.Generic import List
 from pyrevit import script
 
 from BG import window_cw
+from BG.curtain_split import is_door_panel as _is_door
 
 logger = script.get_logger()
 
@@ -91,18 +92,6 @@ class DoorPanel(object):
     def label(self):
         return "{}: {}".format(self.family_name or "?",
                                self.type_name or "?")
-
-
-def _is_door(elem):
-    """True when this panel is a door family rather than glass."""
-    if not isinstance(elem, FamilyInstance):
-        return False
-    try:
-        cat = elem.Category
-        return (cat is not None
-                and cat.Id == ElementId(BuiltInCategory.OST_Doors))
-    except Exception:
-        return False
 
 
 def _symbol_names(symbol):

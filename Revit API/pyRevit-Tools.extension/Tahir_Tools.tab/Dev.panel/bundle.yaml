@@ -1,7 +1,0 @@
-layout:
-  - MergeFloors
-  - SplitFloors
-  - ConduitAlignCheck
-  - ConduitAlignFix
-  - ConduitBendBuilder
-  - PushParamToNested

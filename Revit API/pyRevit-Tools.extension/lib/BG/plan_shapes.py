@@ -139,6 +139,34 @@ def segment_ring_distance(p0, p1, ring):
     return min(segment_distance(p0, p1, a, b) for a, b in ring_edges(ring))
 
 
+def bounds_of(points):
+    """(min_x, min_y, max_x, max_y) round some points, or None if none."""
+    if not points:
+        return None
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def boxes_apart(a, b, margin=0.0):
+    """True when two plan boxes cannot come within *margin* of each other.
+
+    The cheap test that comes before segment_meets_outline, which walks
+    every edge of a ring: asking a whole building's slabs the precise
+    question is minutes of work to answer what four comparisons answer.
+
+    A box is a SUPERSET of whatever is inside it, so a box that is
+    apart guarantees the contents are apart -- and that is the only
+    property that makes skipping the precise test safe.  An unknown box
+    is never apart from anything: not knowing where something is is no
+    grounds for skipping it.
+    """
+    if a is None or b is None:
+        return False
+    return (a[0] > b[2] + margin or a[2] < b[0] - margin
+            or a[1] > b[3] + margin or a[3] < b[1] - margin)
+
+
 def segment_meets_outline(p0, p1, outer, holes=None, reach=0.0, tol=TOL):
     """True when the segment lies on the outline, or within *reach* of it.
 

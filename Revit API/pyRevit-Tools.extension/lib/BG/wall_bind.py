@@ -760,17 +760,24 @@ BG_REFUSED  = "refused"
 BG_OK = (BG_WRITTEN, BG_ALREADY)
 
 
-def set_bg_level(doc, elem, level_id):
+def set_bg_level(doc, elem, level_id, param_name=None):
     """Write a level's name into *elem*'s BG_LEVEL, and say what happened.
 
     Returns one of the BG_* constants above.  Nothing else about the
     element is touched.
+
+    *param_name* is which text parameter to write, for a project whose
+    shared parameter is not called BG_LEVEL; it defaults to the one
+    this library is named after.  It is an argument rather than a
+    module constant because BG_LEVEL lets the user name it, and a
+    setting the writer ignores is worse than no setting at all.
     """
     level = doc.GetElement(level_id) if is_valid(level_id) else None
     if level is None:
         return BG_NO_LEVEL
 
-    p = find_parameter(elem, BG_LEVEL_PARAM)
+    param_name = param_name or BG_LEVEL_PARAM
+    p = find_parameter(elem, param_name)
     if p is None:
         return BG_MISSING
     if p.IsReadOnly:
@@ -791,15 +798,18 @@ def set_bg_level(doc, elem, level_id):
         return BG_REFUSED
 
 
-def apply_bg_level(doc, wall, band):
+def apply_bg_level(doc, wall, band, param_name=None):
     """Write the name of *wall*'s Base Constraint level into BG_LEVEL.
 
     The level comes from the BAND the wall was bound to rather than read
     back off the wall, so it says the same thing the constraint says
     even if Revit later re-hosts it.
 
+    *param_name* is passed through to set_bg_level; see there.
+
     Returns False when the parameter is missing, read-only or not text.
     The wall's constraints are correct either way, so a caller reports
     it rather than treating the wall as failed.
     """
-    return set_bg_level(doc, wall, band["base_level_id"]) in BG_OK
+    return set_bg_level(doc, wall, band["base_level_id"],
+                        param_name=param_name) in BG_OK

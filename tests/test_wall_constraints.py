@@ -536,5 +536,239 @@ class TestRoundingIsUnconditional(unittest.TestCase):
 
 
 
+class TestASettableIncrement(unittest.TestCase):
+    """BG_LEVEL lets the user choose how coarsely ends are rounded.
+
+    Wall Limits rounds to the nearest inch and always will; the
+    increment is an argument so a caller can say otherwise, and it
+    defaults to an inch so every existing caller is unaffected.
+    """
+
+    def test_a_quarter_inch_increment_rounds_to_a_quarter(self):
+        self.assertAlmostEqual(wc.round_to(8 * IN + 0.3 * IN, 0.25 * IN),
+                               8 * IN + 0.25 * IN)
+
+    def test_a_coarse_increment_rounds_further(self):
+        self.assertAlmostEqual(wc.round_to(8 * IN + 0.7 * IN, IN), 9 * IN)
+
+    def test_it_rounds_half_away_from_zero_below_datum_too(self):
+        self.assertAlmostEqual(wc.round_to(-(8 * IN + 0.5 * IN), IN),
+                               -9 * IN)
+
+    def test_rounding_to_an_inch_is_still_spelled_round_to_inch(self):
+        z = 8 * IN + 0.7 * IN
+        self.assertAlmostEqual(wc.round_to_inch(z), wc.round_to(z, IN))
+
+    def test_snap_end_takes_the_increment(self):
+        z = 3.0 + 0.3 * IN
+        out, rounded = wc.snap_end(z, LEVELS, increment=0.25 * IN)
+        self.assertAlmostEqual(out, 3.0 + 0.25 * IN)
+        self.assertTrue(rounded)
+
+    def test_snap_end_still_rounds_to_an_inch_when_not_told(self):
+        z = 3.0 + 0.3 * IN
+        self.assertAlmostEqual(wc.snap_end(z, LEVELS)[0], 3.0)
+
+    def test_plan_wall_takes_the_increment(self):
+        plan = wc.plan_wall(3.0 + 0.3 * IN, 9.0, LEVELS,
+                            increment=0.25 * IN)
+        self.assertAlmostEqual(plan["base_z"], 3.0 + 0.25 * IN)
+
+    def test_plan_unconnected_takes_the_increment(self):
+        plan = wc.plan_unconnected(3.0 + 0.3 * IN, 9.0, LEVELS,
+                                   increment=0.25 * IN)
+        self.assertAlmostEqual(plan["base_z"], 3.0 + 0.25 * IN)
+
+    def test_an_end_on_a_level_is_left_alone_whatever_the_increment(self):
+        out, rounded = wc.snap_end(10.0, LEVELS, increment=IN)
+        self.assertAlmostEqual(out, 10.0)
+        self.assertFalse(rounded)
+
+    def test_a_coarser_tolerance_leaves_more_ends_alone(self):
+        # 1/2" above a level.  At the default 1/16" tolerance that is
+        # off the level and gets rounded; at 1" it IS the level.
+        z = 10.0 + 0.5 * IN
+        self.assertTrue(wc.snap_end(z, LEVELS)[1])
+        self.assertFalse(wc.snap_end(z, LEVELS, tol=IN)[1])
+
+
+class TestDoorsInTheWayOfACut(unittest.TestCase):
+    """Whether a curtain wall's doors forbid the cut it crosses.
+
+    The original wall keeps the lowest band, so a door reaching above
+    that band would be destroyed by the split -- the same rule the
+    basic-wall path applies to hosted inserts, in the one form that can
+    be tested without Revit: the door tops, and where the first cut is.
+    """
+
+    def test_no_doors_never_block_a_cut(self):
+        self.assertEqual(wc.doors_above([], 10.0), 0)
+
+    def test_a_door_below_the_cut_does_not_block_it(self):
+        self.assertEqual(wc.doors_above([7.0], 10.0), 0)
+
+    def test_a_door_above_the_cut_blocks_it(self):
+        self.assertEqual(wc.doors_above([12.0], 10.0), 1)
+
+    def test_a_door_straddling_the_cut_blocks_it(self):
+        # Measured by its TOP: a door from 9 to 11 reaches above 10.
+        self.assertEqual(wc.doors_above([11.0], 10.0), 1)
+
+    def test_a_door_flush_with_the_cut_does_not_block_it(self):
+        self.assertEqual(wc.doors_above([10.0], 10.0), 0)
+
+    def test_a_door_a_hair_above_the_cut_does_not_block_it(self):
+        self.assertEqual(wc.doors_above([10.0 + 0.5 * wc.TOL], 10.0), 0)
+
+    def test_every_door_above_the_cut_is_counted(self):
+        self.assertEqual(wc.doors_above([7.0, 11.0, 14.0], 10.0), 2)
+
+
+class TestStoppingUnderAFloor(unittest.TestCase):
+    """Where a band stops when a floor slab is in its way.
+
+    The caller finds the slabs over a wall -- that needs Revit -- and
+    hands over their undersides.  Which one governs, and whether it can
+    be used at all, is arithmetic and lives here.
+
+    stop_under returns (new_top_z, stopped_at, refused_at): the top to
+    use, the underside it was taken from, and an underside that was
+    found but could not be used without collapsing the band.
+    """
+
+    def test_no_slab_leaves_the_top_alone(self):
+        top, stopped, refused = wc.stop_under(0.0, 10.0, [])
+        self.assertAlmostEqual(top, 10.0)
+        self.assertIsNone(stopped)
+        self.assertIsNone(refused)
+
+    def test_a_slab_above_the_top_leaves_it_alone(self):
+        top, stopped, refused = wc.stop_under(0.0, 10.0, [12.0])
+        self.assertAlmostEqual(top, 10.0)
+        self.assertIsNone(stopped)
+        self.assertIsNone(refused)
+
+    def test_a_slab_below_the_base_is_the_floor_it_stands_on(self):
+        top, stopped, refused = wc.stop_under(10.0, 20.0, [9.0])
+        self.assertAlmostEqual(top, 20.0)
+        self.assertIsNone(stopped)
+        self.assertIsNone(refused)
+
+    def test_a_slab_in_the_way_stops_the_band(self):
+        top, stopped, refused = wc.stop_under(0.0, 10.0, [9.0])
+        self.assertAlmostEqual(top, 9.0)
+        self.assertAlmostEqual(stopped, 9.0)
+        self.assertIsNone(refused)
+
+    def test_the_lowest_slab_in_the_way_wins(self):
+        # The first one the wall runs into going up.
+        top, stopped, _refused = wc.stop_under(0.0, 20.0, [15.0, 9.0, 12.0])
+        self.assertAlmostEqual(top, 9.0)
+        self.assertAlmostEqual(stopped, 9.0)
+
+    def test_a_slab_flush_with_the_top_changes_nothing(self):
+        top, stopped, refused = wc.stop_under(0.0, 10.0, [10.0])
+        self.assertAlmostEqual(top, 10.0)
+        self.assertIsNone(stopped)
+        self.assertIsNone(refused)
+
+    def test_a_slab_within_tolerance_of_the_top_changes_nothing(self):
+        top, stopped, _r = wc.stop_under(0.0, 10.0, [10.0 - 0.5 * wc.TOL])
+        self.assertAlmostEqual(top, 10.0)
+        self.assertIsNone(stopped)
+
+    def test_a_slab_flush_with_the_base_changes_nothing(self):
+        top, stopped, refused = wc.stop_under(10.0, 20.0, [10.0])
+        self.assertAlmostEqual(top, 20.0)
+        self.assertIsNone(stopped)
+        self.assertIsNone(refused)
+
+    def test_a_slab_within_tolerance_of_the_base_changes_nothing(self):
+        # As good as flush with it: the floor the wall stands on.
+        top, stopped, refused = wc.stop_under(10.0, 20.0,
+                                              [10.0 + 0.5 * wc.TOL])
+        self.assertAlmostEqual(top, 20.0)
+        self.assertIsNone(stopped)
+        self.assertIsNone(refused)
+
+    def test_a_band_shorter_than_the_minimum_is_refused(self):
+        top, stopped, refused = wc.stop_under(10.0, 20.0, [10.5],
+                                              min_height=1.0)
+        self.assertAlmostEqual(top, 20.0)
+        self.assertIsNone(stopped)
+        self.assertAlmostEqual(refused, 10.5)
+
+    def test_an_unusable_slab_refuses_rather_than_skipping_up(self):
+        # A wall running into a slab six inches up is a wall to look
+        # at, not one to pass through that slab and stop at the next.
+        top, stopped, refused = wc.stop_under(10.0, 20.0, [10.5, 15.0],
+                                              min_height=1.0)
+        self.assertAlmostEqual(top, 20.0)
+        self.assertIsNone(stopped)
+        self.assertAlmostEqual(refused, 10.5)
+
+    def test_a_refusal_names_the_slab_that_was_in_the_way(self):
+        # So the report can say which elevation it could not use.
+        _t, _s, refused = wc.stop_under(10.0, 20.0, [10.4], min_height=1.0)
+        self.assertAlmostEqual(refused, 10.4)
+
+
+class TestLeavingNearLevelEndsAlone(unittest.TestCase):
+    """Whether an end NEAR a level is left on it, or rounded like any other.
+
+    Leaving it alone is the house rule and the default.  It is a
+    separate question from how coarse "near" is, though, and until now
+    only the coarseness could be chosen: the behaviour itself was
+    unconditional.
+
+    ODD_LEVELS is used throughout because its L2 does not sit on a
+    whole inch.  On a level that does, rounding and snapping give the
+    same answer and the tests would pass whatever the code did.
+    """
+
+    # 0.2" below a level that is itself 0.5" above a whole foot.
+    NEAR = 10.0 + 0.7 * IN
+    INCH_TOL = IN
+
+    def test_a_near_end_is_left_alone_by_default(self):
+        out, rounded = wc.snap_end(self.NEAR, ODD_LEVELS, tol=self.INCH_TOL)
+        self.assertAlmostEqual(out, self.NEAR)
+        self.assertFalse(rounded)
+
+    def test_a_near_end_is_rounded_when_snapping_is_off(self):
+        out, rounded = wc.snap_end(self.NEAR, ODD_LEVELS, tol=self.INCH_TOL,
+                                   snap_to_levels=False)
+        self.assertAlmostEqual(out, 10.0 + IN)
+        self.assertTrue(rounded)
+
+    def test_an_end_exactly_on_a_level_stays_even_with_snapping_off(self):
+        # The level is at 10'-0 1/2", so rounding would shove the wall
+        # half an inch off a level it is sitting exactly on.
+        on_level = 10.0 + 0.5 * IN
+        out, rounded = wc.snap_end(on_level, ODD_LEVELS, tol=self.INCH_TOL,
+                                   snap_to_levels=False)
+        self.assertAlmostEqual(out, on_level)
+        self.assertFalse(rounded)
+
+    def test_plan_wall_takes_the_toggle(self):
+        plan = wc.plan_wall(self.NEAR, 20.0, ODD_LEVELS, tol=self.INCH_TOL,
+                            snap_to_levels=False)
+        self.assertAlmostEqual(plan["base_z"], 10.0 + IN)
+
+    def test_plan_wall_leaves_it_alone_by_default(self):
+        plan = wc.plan_wall(self.NEAR, 20.0, ODD_LEVELS, tol=self.INCH_TOL)
+        self.assertAlmostEqual(plan["base_z"], self.NEAR)
+
+    def test_plan_unconnected_takes_the_toggle(self):
+        plan = wc.plan_unconnected(self.NEAR, 20.0, ODD_LEVELS,
+                                   tol=self.INCH_TOL, snap_to_levels=False)
+        self.assertAlmostEqual(plan["base_z"], 10.0 + IN)
+
+    def test_the_toggle_does_nothing_when_nothing_is_rounded(self):
+        plan = wc.plan_wall(self.NEAR, 20.0, ODD_LEVELS, tol=self.INCH_TOL,
+                            allow_round=False, snap_to_levels=False)
+        self.assertAlmostEqual(plan["base_z"], self.NEAR)
+
+
 if __name__ == "__main__":
     unittest.main()

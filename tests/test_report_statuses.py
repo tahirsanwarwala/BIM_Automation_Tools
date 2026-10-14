@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""The Wall Limits report's status vocabularies must line up.
+"""The report's status vocabularies must line up, in both tools.
 
-The tool keeps two of them for the BG_LEVEL pass: the OUTCOMES that
+Wall Limits keeps two of them for the BG_LEVEL pass: the OUTCOMES that
 wall_bind.set_bg_level returns ("written", "missing", ...) and the
 STATUSES the report prints ("Level written", "Not applicable", ...).
 ELEMENT_OUTCOMES maps one to the other and ELEMENT_QUIET_STATUSES says
@@ -12,7 +12,13 @@ quiet statuses -- does not raise.  It silently reports every element,
 including the hundreds that were written exactly as asked, which is the
 one thing this report is supposed to stay quiet about.
 
-The script imports Revit, so the two collections are read out of its
+BG_LEVEL is Wall Limits with its decisions handed to the user, and it
+prints the same report from the same vocabularies, so every invariant
+here is asserted against BOTH scripts.  A fork that drifts in its
+wording drifts in what it keeps quiet about, which is the failure this
+guards.
+
+The scripts import Revit, so the collections are read out of their
 source rather than imported.
 """
 
@@ -22,16 +28,18 @@ import os
 import unittest
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_SCRIPT = os.path.join(
-    _ROOT, "Revit API", "pyRevit-Tools.extension", "BG_Tools.tab",
-    "SKIN_Tools.panel", "Walls.stack", "WallConstraints.pushbutton",
-    "script.py")
+_TAB = os.path.join(_ROOT, "Revit API", "pyRevit-Tools.extension",
+                    "Tahir_Tools.tab", "B&G.panel")
+
+WALL_LIMITS = os.path.join(_TAB, "Skin.stack",
+                           "FixWallConstraints.pushbutton", "script.py")
+BG_LEVEL = os.path.join(_TAB, "BG_LEVEL.pushbutton", "script.py")
 
 FAILED = "Failed"
 
 
-def _tree():
-    with io.open(_SCRIPT, encoding="utf-8") as handle:
+def _tree(script):
+    with io.open(script, encoding="utf-8") as handle:
         return ast.parse(handle.read())
 
 
@@ -55,9 +63,9 @@ def _literal_or_none(node):
         return None
 
 
-def _assigned(name):
+def _assigned(name, script):
     """The value of a module-level assignment, as a Python object."""
-    for node in _tree().body:
+    for node in _tree(script).body:
         if not isinstance(node, ast.Assign):
             continue
         for target in node.targets:
@@ -70,15 +78,70 @@ def _assigned(name):
                 if isinstance(value, ast.Call):
                     value = value.args[0]
                 return [ast.literal_eval(e) for e in value.elts]
-    raise AssertionError("{0} not found in the script".format(name))
+    raise AssertionError("{0} not found in {1}".format(
+        name, os.path.basename(os.path.dirname(script))))
 
 
-class TestElementStatusVocabularies(unittest.TestCase):
+def _function(name, script):
+    """The ast node of a top-level function in the script."""
+    for node in ast.walk(_tree(script)):
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return node
+    raise AssertionError("{0} not found in {1}".format(
+        name, os.path.basename(os.path.dirname(script))))
+
+
+SKIP_STATUSES = ("Skipped", "Not applicable")
+
+
+def _sets_a_skip_status(body):
+    """True when a statement list directly sets res.status to a skip."""
+    for statement in body:
+        if not isinstance(statement, ast.Assign):
+            continue
+        if not any(isinstance(t, ast.Attribute) and t.attr == "status"
+                   for t in statement.targets):
+            continue
+        # Either a plain string or the "quiet if ... else Skipped" form.
+        candidates = [statement.value]
+        if isinstance(statement.value, ast.IfExp):
+            candidates = [statement.value.body, statement.value.orelse]
+        for candidate in candidates:
+            try:
+                if ast.literal_eval(candidate) in SKIP_STATUSES:
+                    return True
+            except Exception:
+                continue
+    return False
+
+
+def _returns(body):
+    return any(isinstance(s, ast.Return) for s in body)
+
+
+def _calls(body, name):
+    for statement in body:
+        for node in ast.walk(statement):
+            if (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == name):
+                return True
+    return False
+
+
+# ===========================================================================
+# THE INVARIANTS, ONCE
+# ===========================================================================
+
+class ElementStatusVocabularies(object):
+    """Mixin: the BG_LEVEL pass's two vocabularies agree."""
+
+    SCRIPT = None
 
     def setUp(self):
-        self.outcomes = _assigned("ELEMENT_OUTCOMES")
-        self.quiet = _assigned("ELEMENT_QUIET_STATUSES")
-        self.reasons = _assigned("ELEMENT_REASONS")
+        self.outcomes = _assigned("ELEMENT_OUTCOMES", self.SCRIPT)
+        self.quiet = _assigned("ELEMENT_QUIET_STATUSES", self.SCRIPT)
+        self.reasons = _assigned("ELEMENT_REASONS", self.SCRIPT)
 
     def test_both_collections_are_present(self):
         self.assertTrue(self.outcomes)
@@ -143,10 +206,13 @@ class TestElementStatusVocabularies(unittest.TestCase):
             self.assertIn(key, self.reasons)
 
 
-class TestWallQuietStatuses(unittest.TestCase):
+class WallQuietStatuses(object):
+    """Mixin: the wall pass keeps quiet about exactly the right things."""
+
+    SCRIPT = None
 
     def setUp(self):
-        self.quiet = _assigned("QUIET_STATUSES")
+        self.quiet = _assigned("QUIET_STATUSES", self.SCRIPT)
 
     def test_the_wall_pass_stays_quiet_when_it_worked(self):
         for status in ("Fixed", "Already correct"):
@@ -158,55 +224,8 @@ class TestWallQuietStatuses(unittest.TestCase):
             self.assertNotIn(status, self.quiet)
 
 
-
-def _function(name):
-    """The ast node of a top-level function in the script."""
-    for node in ast.walk(_tree()):
-        if isinstance(node, ast.FunctionDef) and node.name == name:
-            return node
-    raise AssertionError("{0} not found in the script".format(name))
-
-
-SKIP_STATUSES = ("Skipped", "Not applicable")
-
-
-def _sets_a_skip_status(body):
-    """True when a statement list directly sets res.status to a skip."""
-    for statement in body:
-        if not isinstance(statement, ast.Assign):
-            continue
-        if not any(isinstance(t, ast.Attribute) and t.attr == "status"
-                   for t in statement.targets):
-            continue
-        # Either a plain string or the "quiet if ... else Skipped" form.
-        candidates = [statement.value]
-        if isinstance(statement.value, ast.IfExp):
-            candidates = [statement.value.body, statement.value.orelse]
-        for candidate in candidates:
-            try:
-                if ast.literal_eval(candidate) in SKIP_STATUSES:
-                    return True
-            except Exception:
-                continue
-    return False
-
-
-def _returns(body):
-    return any(isinstance(s, ast.Return) for s in body)
-
-
-def _calls(body, name):
-    for statement in body:
-        for node in ast.walk(statement):
-            if (isinstance(node, ast.Call)
-                    and isinstance(node.func, ast.Name)
-                    and node.func.id == name):
-                return True
-    return False
-
-
-class TestSkippedWallsStillGetBgLevel(unittest.TestCase):
-    """A wall the tool declines to change must still get BG_LEVEL.
+class SkippedWallsStillGetBgLevel(object):
+    """Mixin: a wall the tool declines to change still gets BG_LEVEL.
 
     Refusing to touch a wall's CONSTRAINTS is not a reason to leave the
     parameter empty -- it records only the storey the wall already sits
@@ -215,10 +234,11 @@ class TestSkippedWallsStillGetBgLevel(unittest.TestCase):
     guards: skipped walls skipping the parameter too.
     """
 
+    SCRIPT = None
     WRITER = "bg_level_from_wall"
 
     def setUp(self):
-        self.func = _function("_process_wall")
+        self.func = _function("_process_wall", self.SCRIPT)
         self.blocks = []
         for node in ast.walk(self.func):
             for field in ("body", "orelse", "finalbody"):
@@ -243,17 +263,49 @@ class TestSkippedWallsStillGetBgLevel(unittest.TestCase):
                 "BG_LEVEL"))
 
     def test_the_writer_reads_the_base_constraint(self):
-        writer = _function(self.WRITER)
+        writer = _function(self.WRITER, self.SCRIPT)
         self.assertTrue(
             _calls(writer.body, "base_constraint_level_id"),
             "{0} must take the level from the wall's own Base "
             "Constraint".format(self.WRITER))
 
     def test_the_base_constraint_reader_asks_for_that_parameter(self):
-        reader = _function("base_constraint_level_id")
+        reader = _function("base_constraint_level_id", self.SCRIPT)
         names = [n.attr for n in ast.walk(reader)
                  if isinstance(n, ast.Attribute)]
         self.assertIn("WALL_BASE_CONSTRAINT", names)
+
+
+# ===========================================================================
+# ...AGAINST EACH TOOL
+# ===========================================================================
+
+class TestWallLimitsElementStatuses(ElementStatusVocabularies,
+                                    unittest.TestCase):
+    SCRIPT = WALL_LIMITS
+
+
+class TestWallLimitsQuietStatuses(WallQuietStatuses, unittest.TestCase):
+    SCRIPT = WALL_LIMITS
+
+
+class TestWallLimitsSkipsStillWrite(SkippedWallsStillGetBgLevel,
+                                    unittest.TestCase):
+    SCRIPT = WALL_LIMITS
+
+
+class TestBgLevelElementStatuses(ElementStatusVocabularies,
+                                 unittest.TestCase):
+    SCRIPT = BG_LEVEL
+
+
+class TestBgLevelQuietStatuses(WallQuietStatuses, unittest.TestCase):
+    SCRIPT = BG_LEVEL
+
+
+class TestBgLevelSkipsStillWrite(SkippedWallsStillGetBgLevel,
+                                 unittest.TestCase):
+    SCRIPT = BG_LEVEL
 
 
 if __name__ == "__main__":
