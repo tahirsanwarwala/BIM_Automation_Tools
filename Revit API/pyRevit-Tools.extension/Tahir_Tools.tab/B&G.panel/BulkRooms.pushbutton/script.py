@@ -230,6 +230,7 @@ class BulkRoomsWindow(forms.WPFWindow):
         self.create_btn.IsEnabled = (idle and not walk.done
                                      and self._current_entry() is not None)
         self.close_btn.IsEnabled = idle
+        self.browse_btn.IsEnabled = idle
 
     def _after_action(self):
         self._busy = False
@@ -350,6 +351,14 @@ class BulkRoomsWindow(forms.WPFWindow):
             return
         combo = self.name_combo
         text = combo.Text or ""
+        # A pick from the list (arrow keys or mouse) rewrites the text to
+        # the chosen label.  Re-filtering on that would shrink the list
+        # to the one item mid-selection, so Down could never move past
+        # it: only refresh.
+        selected = combo.SelectedItem
+        if selected is not None and text == selected:
+            self.refresh()
+            return
         caret = None
         box = self._edit_box()
         if box is not None:
@@ -369,7 +378,9 @@ class BulkRoomsWindow(forms.WPFWindow):
             uidoc = UIDocument(self._doc)
             open_ids = [v.ViewId for v in uidoc.GetOpenUIViews()]
             return self._view.Id in open_ids
-        except Exception:
+        except Exception as ex:
+            logger.debug("Bulk Rooms: open views not readable: {0}"
+                         .format(ex))
             return False
 
     def _post(self, action, check_view=True):
