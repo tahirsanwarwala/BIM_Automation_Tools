@@ -7,10 +7,10 @@ nothing else.
 
 Two halves, and the split is deliberate.  wall_bands, wall_constraints,
 wall_limits, wall_miter, wall_naming, plan_shapes, sweep_geom,
-dup_check, wall_overlap, param_push, room_codes, room_plan and
-room_walk import nothing from Revit at all, so they are unit-tested in
-ordinary CPython outside it.  soffit, wall_chain, wall_materials,
-wall_sketch, wall_skin, window_cw, link_copy, roof_sweep and
-room_build do talk to the Revit API, and are verified by running the
-tools.
+dup_check, wall_overlap, param_push, mass_plan, room_codes, room_plan
+and room_walk import nothing from Revit at all, so they can be
+unit-tested in ordinary CPython outside it.  soffit, wall_chain,
+wall_materials, wall_sketch, wall_skin, window_cw, link_copy,
+roof_sweep, mass_build and room_build do talk to the Revit API, and
+are verified by running the tools.
 """
