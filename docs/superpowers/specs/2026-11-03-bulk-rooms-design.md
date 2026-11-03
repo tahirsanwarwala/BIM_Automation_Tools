@@ -56,7 +56,10 @@ other B&G code workbooks are assumed to share:
     `Healthcare - Emergency Services`), row 2 is the header (`Codes` /
     `B&G Input`), row 3 is blank, and data starts on row 4;
   * column A holds codes shaped `NN.NN.NNN`, and column B holds the B&G
-    name. Later columns are ignored;
+    name. Where the header row's column C reads `NeevIQ Team Input`
+    (Hospitality, Healthcare, Multifamily, Commercial Office), column C
+    is a second, NeevIQ name for the same code. Later columns, and a
+    column C under any other header, are ignored;
   * codes ending `.000` are the department row (`03.10.000 Emergency
     Services`). Codes ending `00` are group headings (`03.60.100
     Outpatient Clinic`). Every other code is a room under the nearest
@@ -71,45 +74,36 @@ other B&G code workbooks are assumed to share:
      A reads `Codes` (case-insensitive, trimmed) are skipped, which drops
      the title row. If a sheet has no such row, every row is read.
   3. A row is kept when column A, trimmed, matches `^\d{2}\.\d{2}\.\d{3}$`
-     **and** column B, trimmed, is not empty. That drops blank rows,
-     NOTE rows, and rows such as `02.30.210` on sheet 90, whose name is
-     only in column C.
-  4. Department rows and group heading rows are kept as ordinary
-     entries, since a room can be one of them.
+     **and** at least one of its names (column B, or a NeevIQ column C),
+     trimmed, is not empty. That drops blank rows and NOTE rows. A row
+     with only a NeevIQ name (`02.10.160 Refuge Area` in Hospitality) is
+     kept, as decided on 2026-11-03 (my call), and labelled by that name.
+  4. Department rows (codes ending `.000`) and group heading rows (codes
+     ending `00`) are entries like any other, and are shown in **bold**
+     in the name list, as the user decided on 2026-11-03. They also
+     supply the parent heading below.
   5. Cell text is read as shown, with XML entities decoded (`&amp;`
      becomes `&`). Rich-text shared strings are joined from their runs. A
      numeric cell in column A never matches a code.
 
 ### Labels in the name list
 
-Each entry is shown by its **name only**. The exception is when the same
-name appears more than once on the same sheet. The sample has several:
+Every entry is shown as its name followed by its code,
+`Exam Room (03.60.110)`, as the user decided on 2026-11-03. Typing a
+code in the name box therefore filters by code too.
 
-| Sheet | Name | Codes |
-|---|---|---|
-| 20 | Control Room | 03.20.250, 03.20.420 |
-| 30 | PACS / Server Room | 03.30.831, 03.30.840 |
-| 50 | NICU Family Room | 03.50.540, 03.50.600 |
-| 60 | Nurse Station | 03.60.140, 03.60.350 |
-| 60 | Waiting Area | 03.60.160, 03.60.360, 03.60.540 |
-| 80 | Conference Room | 03.80.120, 03.80.940 |
-| 90 | Escalator | 03.90.250, 03.90.714 |
+When a name repeats on one sheet, its parent heading is added before
+the code, as the user decided on 2026-11-03. A room's parent is the
+nearest group heading above it, or the department row if there is none;
+a group heading's parent is its department:
+`Waiting Area – Outpatient Clinic (03.60.160)`. Two repeats under the
+same heading are told apart by the code alone:
+`PACS / Server Room – Imaging Support (03.30.831)`.
 
-For a repeated name, the label becomes `<name> – <parent heading>`, as
-the user decided on 2026-11-03:
-
-  * an ordinary room's parent is the nearest group heading above it
-    (`Waiting Area – Outpatient Clinic`);
-  * a group heading's parent is the department row (`03.50.600 NICU
-    Family Room` becomes `NICU Family Room – Women & Children`, and
-    `03.50.540` becomes `NICU Family Room – NICU`).
-
-*My call:* if two labels are still identical after that (both `PACS /
-Server Room` rows sit under `Imaging Support`), the code is appended to
-each of them: `PACS / Server Room – Imaging Support (03.30.831)`.
-
-The label is only what the list shows. The room's **Name** is always the
-plain column-B text, and `BG_SPACE` is always the column-A code.
+The label is only what the list shows, built from the B&G name (or the
+NeevIQ name when there is no B&G one). The room's **Name** is the plain
+B&G or NeevIQ text, as chosen in the window, and `BG_SPACE` is always
+the column-A code.
 
 ### How it is read
 
@@ -158,7 +152,19 @@ Geometry on plain `(x, y)` tuples in view coordinates.
   * `reading_order(areas)`: sorted top-left to bottom-right. Areas are
     banded by the top edge of their bounding box, with a tolerance of
     about 1 ft so that rooms in a row sort together, then sorted
-    left-to-right within each band.
+    left-to-right within each band. It picks the first area and breaks
+    ties in `walk_order`.
+  * `walk_order(loops)`: the order the areas are visited in, as the user
+    asked on 2026-11-03, so that rooms sharing a wall come one after
+    another. Two areas share a wall when their boundaries run side by
+    side (within about 15°), no more than 2 ft apart, for at least 1 ft
+    (*my call*). Room boundaries stop at wall faces, so a wall's
+    thickness always lies between neighbours, while a corridor is wider
+    than 2 ft. The walk starts at the top-left area and moves to the
+    unvisited neighbour with the longest shared wall. At a dead end it
+    goes to the unvisited area nearest the current one among those next
+    to any area already visited, or to the nearest unvisited area if
+    there are none.
   * `filter_names(entries, text)`: entries whose label contains `text`,
     case-insensitive. Empty text returns everything.
 
@@ -223,7 +229,7 @@ and `view.UpDirection`.
   3. The rollback leaves the model untouched. The area is kept when
      `loop_inside_box` is true.
   4. *My call:* areas under 1 sq ft (slivers between walls) are dropped.
-  5. The kept areas are put in `reading_order`.
+  5. The kept areas are put in `walk_order`.
 
 The tool stops with a message, and nothing is created, if:
 
@@ -244,6 +250,8 @@ whole walk, and the user can still pan and zoom the view while it is up.
  Excel file: [ data - Administration Buildin.xlsx ] [Browse…]
  Sheet:      [ 80. Admin & Build Support         ▾]
  Name:       [ conf|                              ▾]   (type to filter)
+ Use:        (•) B&G      Conference Room
+             ( ) NeevIQ   Conference Room Small
                        [ Back ]  [ Skip ]  [ Create & Next ]  [ Close ]
 ```
 
@@ -254,8 +262,24 @@ whole walk, and the user can still pan and zoom the view while it is up.
   * **Sheet** lists the sheets from *Reading rules*. Changing it reloads
     **Name** and clears the name choice.
   * **Name** is an editable combo box. Typing filters the dropdown with
-    `filter_names` and opens it. **Create & Next** is enabled only when
-    the text exactly matches one entry's label in the current sheet.
+    `filter_names` and opens it. While the text is not blank, matches on
+    the other sheets follow the chosen sheet's, as the user asked on
+    2026-11-03. Each sheet with a match gets a `-----` separator row,
+    then its name as a title row in bold italic, then its matches.
+    Separator and title rows cannot be picked (`room_plan.search_rows`).
+    **Create & Next** is enabled only when the text exactly matches one
+    entry's label, looked up in the chosen sheet first and then in the
+    others. Picking another sheet's entry leaves the **Sheet** box as it
+    is. The room is recorded against the entry's own sheet, so **Back**
+    switches to that sheet to put the name back.
+  * **Use** has two radio buttons, **B&G** and **NeevIQ**, as the user
+    asked on 2026-11-03. Each shows the chosen entry's name from its
+    column. The one selected when **Create & Next** is pressed gives the
+    room's Name. The choice stays from area to area and is remembered
+    across runs. If the entry lacks the chosen name, its radio is
+    disabled and the other name is used. **NeevIQ** is disabled on a
+    sheet with no NeevIQ column. Where there is no name to show, the
+    text beside a radio is left blank.
   * The sheet stays as it was from area to area. The name is cleared for
     each new area, except when **Back** returns to an area that already
     had a choice (see below).
@@ -285,7 +309,8 @@ In one transaction named `Bulk Rooms – <name>`:
      every stored inner loop. If none matches, the area is recorded as
      an error ("no longer enclosed") and the walk moves on.
   2. `NewRoom(phase)` + `NewRoom(room, circuit)`.
-  3. `ROOM_NAME` is set to the plain name, and `BG_SPACE` to the code.
+  3. `ROOM_NAME` is set to the plain B&G or NeevIQ name (see *Use*),
+     and `BG_SPACE` to the code.
   4. Commit. On any failure the transaction rolls back, and the error is
      recorded against that area.
 

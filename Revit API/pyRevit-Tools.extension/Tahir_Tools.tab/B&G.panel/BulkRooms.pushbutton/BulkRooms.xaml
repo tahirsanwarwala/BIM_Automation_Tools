@@ -32,6 +32,7 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
         <!-- Position in the walk -->
@@ -65,13 +66,63 @@
         <ComboBox x:Name="name_combo" Grid.Row="4" Grid.Column="1"
                   Grid.ColumnSpan="2" Margin="0,8,0,0"
                   IsEditable="True" IsTextSearchEnabled="False"
-                  StaysOpenOnEdit="True" MaxDropDownHeight="300"/>
+                  StaysOpenOnEdit="True" MaxDropDownHeight="300"
+                  DisplayMemberPath="Item1" TextSearch.TextPath="Item1">
+            <!-- Items are (text, kind) pairs, kinds as room_plan.search_rows:
+                 1 heading (bold), 2 separator, 3 another sheet's title -->
+            <ComboBox.ItemContainerStyle>
+                <Style TargetType="ComboBoxItem">
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding Item2}" Value="1">
+                            <Setter Property="FontWeight" Value="Bold"/>
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding Item2}" Value="2">
+                            <Setter Property="IsEnabled" Value="False"/>
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding Item2}" Value="3">
+                            <Setter Property="IsEnabled" Value="False"/>
+                            <Setter Property="FontWeight" Value="Bold"/>
+                            <Setter Property="FontStyle" Value="Italic"/>
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </ComboBox.ItemContainerStyle>
+        </ComboBox>
         <TextBlock Grid.Row="5" Grid.Column="1" Grid.ColumnSpan="2"
                    Foreground="#666666" FontSize="11" Margin="0,2,0,0"
-                   Text="Type to filter the names of the chosen sheet."/>
+                   Text="Type to filter. Matches on other sheets are listed below the line."/>
+
+        <!-- Which of the code's names the room gets -->
+        <TextBlock Grid.Row="6" Grid.Column="0" Text="Use:"
+                   VerticalAlignment="Top" Margin="0,10,8,0"/>
+        <Grid Grid.Row="6" Grid.Column="1" Grid.ColumnSpan="2"
+              Margin="0,10,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+            <RadioButton x:Name="bg_radio" Grid.Row="0" Grid.Column="0"
+                         GroupName="name_source" Content="B&amp;G"
+                         IsChecked="True" MinWidth="70"
+                         VerticalContentAlignment="Center"/>
+            <TextBlock x:Name="bg_name_text" Grid.Row="0" Grid.Column="1"
+                       Foreground="#666666" TextTrimming="CharacterEllipsis"
+                       VerticalAlignment="Center"/>
+            <RadioButton x:Name="neev_radio" Grid.Row="1" Grid.Column="0"
+                         GroupName="name_source" Content="NeevIQ"
+                         MinWidth="70" Margin="0,4,0,0"
+                         VerticalContentAlignment="Center"/>
+            <TextBlock x:Name="neev_name_text" Grid.Row="1" Grid.Column="1"
+                       Foreground="#666666" TextTrimming="CharacterEllipsis"
+                       VerticalAlignment="Center" Margin="0,4,0,0"/>
+        </Grid>
 
         <!-- Actions -->
-        <StackPanel Grid.Row="6" Grid.ColumnSpan="3" Orientation="Horizontal"
+        <StackPanel Grid.Row="7" Grid.ColumnSpan="3" Orientation="Horizontal"
                     HorizontalAlignment="Right" Margin="0,14,0,0">
             <Button x:Name="back_btn" Content="Back" Style="{StaticResource action}"/>
             <Button x:Name="skip_btn" Content="Skip" Style="{StaticResource action}"/>

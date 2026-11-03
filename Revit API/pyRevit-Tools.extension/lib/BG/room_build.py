@@ -47,8 +47,8 @@ from BG.room_plan import (
     loop_bounds,
     loop_inside_box,
     point_in_loop,
-    reading_order,
     to_view_xy,
+    walk_order,
 )
 
 TEMP_TAG = "BulkRooms-temp"
@@ -119,13 +119,15 @@ def _segment_loop(segments):
 def scan_areas(doc, view, box):
     """Empty enclosed areas of the view inside box (view coordinates).
 
-    Returns (areas, problem): areas in reading order, and problem None
-    or a message naming BG_SPACE when that parameter is unusable (then
-    areas is empty).  Nothing in the model is changed.
+    Returns (areas, problem): areas in walk order (room_plan.walk_order:
+    each sharing a wall with the one before where it can), and problem
+    None or a message naming BG_SPACE when that parameter is unusable
+    (then areas is empty).  Nothing in the model is changed.
     """
     level, phase = _level_phase(doc, view)
     origin, right, up = view_frame(view)
     areas = []
+    view_loops = []     # each area's outer loop in view (x, y)
     problem = None
 
     t = Transaction(doc, u"Bulk Rooms – scan")
@@ -160,12 +162,13 @@ def scan_areas(doc, view, box):
                 inside = (loc.Point.X, loc.Point.Y)
                 areas.append(Area(outer, inners, inside,
                                   loop_bounds(view_outer)))
+                view_loops.append(view_outer)
     finally:
         _roll_back_if_open(t)
 
     if problem is not None:
         return [], problem
-    order = reading_order([a.bounds for a in areas])
+    order = walk_order(view_loops)
     return [areas[i] for i in order], None
 
 

@@ -6,7 +6,9 @@ lying wholly inside it is found and visited in reading order (top-left
 to bottom-right), outlined in magenta.  For each one a name is picked
 from a B&G room-code workbook -- sheet, then name, typed to filter --
 and Create & Next places a room there with ROOM_NAME set to the name
-and BG_SPACE to its code.  Skip moves on without creating; Back steps
+and BG_SPACE to its code.  Where the sheet also has a NeevIQ Team Input
+column, the B&G / NeevIQ choice says which of the code's two names the
+room gets.  Skip moves on without creating; Back steps
 to the previous area and, if a room was made there, deletes it and
 puts its sheet and name back in the window.
 
@@ -27,8 +29,8 @@ __doc__ = (
     "Drag a box around the rooms to create; each empty enclosed area "
     "inside it is outlined in turn.  Pick its name from a B&G room-code "
     "workbook (.xlsx) and press Create & Next, or Skip.  Back undoes "
-    "the previous area.  The room's Name is set to the B&G name and "
-    "BG_SPACE to its code."
+    "the previous area.  The room's Name is set to the B&G or the "
+    "NeevIQ name, as chosen, and BG_SPACE to its code."
 )
 __persistentengine__ = True
 
@@ -41,6 +43,7 @@ clr.AddReference("RevitAPI")
 clr.AddReference("RevitAPIUI")
 clr.AddReference("PresentationCore")
 clr.AddReference("PresentationFramework")
+clr.AddReference("WindowsBase")   # System.Windows.Input.Key
 
 from Autodesk.Revit.DB import BuiltInParameter, ElementId, ViewType
 from Autodesk.Revit.Exceptions import OperationCanceledException
@@ -51,6 +54,7 @@ from Autodesk.Revit.UI import (
     UIDocument,
 )
 from Autodesk.Revit.UI.Selection import PickBoxStyle
+from System import Int32, String, Tuple
 from System.Collections.Generic import List
 from System.IO import File, FileAccess, FileMode, FileShare, MemoryStream
 from System.Windows import Visibility
@@ -116,6 +120,22 @@ def remember_workbook(path):
         script.save_config()
     except Exception as ex:
         logger.debug("Could not save the workbook path: {0}".format(ex))
+
+
+def remembered_use_neev():
+    """True when NeevIQ names were chosen last time."""
+    try:
+        return bool(CONFIG.get_option("use_neeviq", False))
+    except Exception:
+        return False
+
+
+def remember_use_neev(use_neev):
+    try:
+        CONFIG.use_neeviq = bool(use_neev)
+        script.save_config()
+    except Exception as ex:
+        logger.debug("Could not save the name choice: {0}".format(ex))
 
 
 # ===============================================================================
@@ -199,15 +219,19 @@ class BulkRoomsWindow(forms.WPFWindow):
 
         self._sheets = []      # [(sheet name, [Entry])]
         self._entries = []     # entries of the chosen sheet
-        self._labels = []
+        self._search = []      # [(sheet name, [(label, is heading)])]
         self._filtering = False   # re-entry guard of the name filter
         self._quiet = False       # name set by code: do not open the list
+        self._use_neev = remembered_use_neev()   # the user's B&G/NeevIQ pick
+        self._showing = False     # radios set by code: not the user's pick
 
         self.browse_btn.Click += self._browse_click
         self.sheet_combo.SelectionChanged += self._sheet_changed
         self.name_combo.AddHandler(
             TextBoxBase.TextChangedEvent,
             TextChangedEventHandler(self._name_changed))
+        self.bg_radio.Checked += self._source_changed
+        self.neev_radio.Checked += self._source_changed
         self.back_btn.Click += self._back_click
         self.skip_btn.Click += self._skip_click
         self.create_btn.Click += self._create_click
@@ -222,9 +246,72 @@ class BulkRoomsWindow(forms.WPFWindow):
 
     # -- state on screen ------------------------------------------------
 
+    def _found(self):
+        """(sheet name, Entry) the name box names, or (None, None).
+
+        The chosen sheet is searched first, then the others in workbook
+        order, since the list also offers their matches.
+        """
+        text = self.name_combo.Text or ""
+        current = self.sheet_combo.SelectedIndex
+        order = [i for i in range(len(self._sheets)) if i != current]
+        if 0 <= current < len(self._sheets):
+            order.insert(0, current)
+        for i in order:
+            name, entries = self._sheets[i]
+            entry = room_codes.resolve_label(entries, text)
+            if entry is not None:
+                return name, entry
+        return None, None
+
     def _current_entry(self):
-        return room_codes.resolve_label(self._entries,
-                                        self.name_combo.Text or "")
+        return self._found()[1]
+
+    def _sheet_has_neev(self):
+        return any(e.neev for e in self._entries)
+
+    def _shows_neev(self, entry):
+        """Whether entry's NeevIQ name is the one used.
+
+        The user's pick, unless the entry lacks that name: then the
+        other one, the only name it has.
+        """
+        if entry is None:
+            return self._use_neev and self._sheet_has_neev()
+        if self._use_neev:
+            return entry.neev is not None
+        return entry.name is None
+
+    def chosen_name(self, entry):
+        """The name the room for entry gets."""
+        if self._shows_neev(entry):
+            return entry.neev
+        return entry.name
+
+    def _show_names(self, entry, idle):
+        has_neev = self._sheet_has_neev()
+        self.bg_name_text.Text = (entry and entry.name) or ""
+        self.neev_name_text.Text = (entry and entry.neev) or ""
+        self.bg_radio.IsEnabled = idle and (entry is None
+                                            or entry.name is not None)
+        if entry is None:
+            self.neev_radio.IsEnabled = idle and has_neev
+        else:
+            self.neev_radio.IsEnabled = idle and entry.neev is not None
+        neev = self._shows_neev(entry)
+        self._showing = True
+        try:
+            self.neev_radio.IsChecked = neev
+            self.bg_radio.IsChecked = not neev
+        finally:
+            self._showing = False
+
+    def _source_changed(self, sender, args):
+        if self._showing:
+            return
+        self._use_neev = bool(self.neev_radio.IsChecked)
+        remember_use_neev(self._use_neev)
+        self.refresh()
 
     def refresh(self):
         walk = self.walk
@@ -233,8 +320,10 @@ class BulkRoomsWindow(forms.WPFWindow):
         idle = not self._busy and not self._closed
         self.back_btn.IsEnabled = idle and walk.can_back
         self.skip_btn.IsEnabled = idle and not walk.done
+        entry = self._current_entry()
         self.create_btn.IsEnabled = (idle and not walk.done
-                                     and self._current_entry() is not None)
+                                     and entry is not None)
+        self._show_names(entry, idle)
         self.close_btn.IsEnabled = idle
         self.browse_btn.IsEnabled = idle
 
@@ -251,6 +340,8 @@ class BulkRoomsWindow(forms.WPFWindow):
 
     def _set_sheets(self, sheets):
         self._sheets = sheets
+        self._search = [(name, [(e.label, e.heading) for e in entries])
+                        for name, entries in sheets]
         self.sheet_combo.ItemsSource = List[str]([s for s, _ in sheets])
         if sheets:
             self.sheet_combo.SelectedIndex = 0
@@ -287,15 +378,8 @@ class BulkRoomsWindow(forms.WPFWindow):
 
     # -- sheet and name -------------------------------------------------
 
-    def _sheet_name(self):
-        i = self.sheet_combo.SelectedIndex
-        if 0 <= i < len(self._sheets):
-            return self._sheets[i][0]
-        return None
-
     def _set_entries(self, entries):
         self._entries = list(entries)
-        self._labels = [e.label for e in self._entries]
         self._set_name("")
 
     def _sheet_changed(self, sender, args):
@@ -338,11 +422,15 @@ class BulkRoomsWindow(forms.WPFWindow):
         combo = self.name_combo
         self._filtering = True
         try:
-            items = room_plan.filter_labels(self._labels, text)
-            combo.ItemsSource = List[str](items)
+            rows = room_plan.search_rows(
+                self._search, self.sheet_combo.SelectedIndex, text)
+            # (text, kind): the XAML shows Item1 and styles the row by
+            # Item2 -- headings bold, separator and sheet rows unpickable.
+            item = Tuple[String, Int32]
+            combo.ItemsSource = List[item]([item(t, k) for t, k in rows])
             if (combo.Text or "") != text:
                 combo.Text = text
-            if not self._quiet and items:
+            if not self._quiet and rows:
                 combo.IsDropDownOpen = True
             box = self._edit_box()
             if box is not None:
@@ -362,7 +450,7 @@ class BulkRoomsWindow(forms.WPFWindow):
         # to the one item mid-selection, so Down could never move past
         # it: only refresh.
         selected = combo.SelectedItem
-        if selected is not None and text == selected:
+        if selected is not None and text == selected.Item1:
             self.refresh()
             return
         caret = None
@@ -442,20 +530,20 @@ class BulkRoomsWindow(forms.WPFWindow):
     # -- Create & Next --------------------------------------------------
 
     def _create_click(self, sender, args):
-        entry = self._current_entry()
+        sheet, entry = self._found()
         if entry is None or self.walk.done or self._busy:
             return
-        sheet = self._sheet_name()
-        self._post(lambda: self._do_create(entry, sheet))
+        name = self.chosen_name(entry)
+        self._post(lambda: self._do_create(entry, name, sheet))
 
-    def _do_create(self, entry, sheet):
+    def _do_create(self, entry, name, sheet):
         if self.walk.done:
             return
         self._clear_outline()
         area = self._areas[self.walk.index]
         try:
             room_id = room_build.create_room(self._doc, self._view, area,
-                                             entry.name, entry.code)
+                                             name, entry.code)
         except room_build.RoomError as ex:
             self.walk.failed(str(ex))
         else:

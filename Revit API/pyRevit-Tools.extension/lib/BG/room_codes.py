@@ -7,11 +7,18 @@ same code runs in IronPython 2.7 and CPython 3.  Sheet files are never
 assumed to be sheetN in tab order: xl/workbook.xml names the sheets,
 xl/_rels/workbook.xml.rels says which part holds each one.
 
-WHY LABELS DIFFER FROM NAMES.  The pick list shows the B&G name alone,
-but some names repeat on one sheet ("Waiting Area" three times).  A
-repeat is told apart by its parent heading, and if that is still not
-enough the code is appended.  The label is only what the list shows;
-the room's Name is always the plain name and its code is the code.
+WHY LABELS DIFFER FROM NAMES.  The pick list shows each room's B&G
+name with its code after it, "Exam Room (03.60.110)".  Department and
+group heading rows (codes ending 00) are in the list too, flagged as
+headings so the window can show them in bold.  A name that repeats on one sheet ("Waiting Area" three times) also gets its
+parent heading, "Waiting Area – Outpatient Clinic (03.60.160)".  The
+label is only what the list shows; the room's Name is always the plain
+name and its code is the code.
+
+TWO NAMES PER CODE.  Where the header row's column C reads "NeevIQ Team
+Input", that column is a second name for the same code, offered in the
+window beside the B&G one.  A code with only a NeevIQ name still makes
+an entry, labelled by that name.  Any other column C is ignored.
 
 Deliberately free of any Revit import so it can be unit-tested outside
 Revit.
@@ -23,7 +30,10 @@ import posixpath
 from collections import namedtuple
 from xml.etree import ElementTree as ET
 
-Entry = namedtuple("Entry", "label name code")
+# name is the B&G name (column B), neev the NeevIQ one (column C);
+# either may be None, never both.  heading is True for department
+# (.000) and group heading (.x00) rows.
+Entry = namedtuple("Entry", "label name code neev heading")
 
 _NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 _RNS = ("{http://schemas.openxmlformats.org/officeDocument/2006/"
@@ -37,59 +47,83 @@ def is_code(text):
     return bool(text) and _CODE.match(text.strip()) is not None
 
 
+def _text(value):
+    """The trimmed text, or None when there is none."""
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _is_neev_header(text):
+    text = (text or u"").lower()
+    return u"neeviq" in text and u"input" in text
+
+
 def parse_rows(rows):
-    """Keep the (code, name) rows from (column A, column B) pairs.
+    """Keep the (code, name, neev) rows from (column A, B[, C]) rows.
 
     Rows up to and including the first one whose A reads 'Codes' are
-    skipped; with no such row nothing is skipped.
+    skipped; with no such row nothing is skipped.  Column C is read
+    only when that header row names it NeevIQ input; else neev is None.
+    A row needs a code and at least one of the two names.
     """
-    rows = list(rows)
+    rows = [(tuple(r) + (None, None))[:3] for r in rows]
     start = 0
-    for i, (a, _b) in enumerate(rows):
+    use_c = False
+    for i, (a, _b, c) in enumerate(rows):
         if a is not None and a.strip().lower() == u"codes":
             start = i + 1
+            use_c = _is_neev_header(c)
             break
     out = []
-    for a, b in rows[start:]:
-        if a is None or b is None:
+    for a, b, c in rows[start:]:
+        if a is None or not is_code(a):
             continue
-        if is_code(a) and b.strip():
-            out.append((a.strip(), b.strip()))
+        name = _text(b)
+        neev = _text(c) if use_c else None
+        if name or neev:
+            out.append((a.strip(), name, neev))
     return out
 
 
-def make_entries(pairs):
-    """Build Entry(label, name, code) from (code, name) pairs."""
-    pairs = list(pairs)
+def make_entries(rows):
+    """Build Entry(label, name, code, neev, heading) for (code, name, neev)
+    rows.
+
+    Department (.000) and group heading (.x00) rows are entries with
+    heading True, and also the parent a repeated name is told apart by:
+    a room's parent is the nearest heading above it, a heading's the
+    department.
+    """
     dept = None
-    heading = None
-    parents = []
-    for code, name in pairs:
+    group = None
+    rows_out = []
+    for code, name, neev in rows:
+        shown = name or neev
         last = code.split(".")[-1]
         if last == "000":
-            dept = name
-            heading = None
-            parents.append(None)
+            rows_out.append((code, name, neev, True, None))
+            dept = shown
+            group = None
         elif last.endswith("00"):
-            heading = name
-            parents.append(dept)
+            rows_out.append((code, name, neev, True, dept))
+            group = shown
         else:
-            parents.append(heading if heading is not None else dept)
+            rows_out.append((code, name, neev, False,
+                             group if group is not None else dept))
     counts = {}
-    for _code, name in pairs:
-        counts[name] = counts.get(name, 0) + 1
-    labels = []
-    for (code, name), parent in zip(pairs, parents):
-        if counts[name] == 1 or parent is None:
-            labels.append(name)
-        else:
-            labels.append(name + _DASH + parent)
-    seen = {}
-    for label in labels:
-        seen[label] = seen.get(label, 0) + 1
-    return [Entry(label if seen[label] == 1
-                  else label + u" (" + code + u")", name, code)
-            for label, (code, name) in zip(labels, pairs)]
+    for _code, name, neev, _heading, _parent in rows_out:
+        shown = name or neev
+        counts[shown] = counts.get(shown, 0) + 1
+    entries = []
+    for code, name, neev, heading, parent in rows_out:
+        base = name or neev
+        if counts[base] > 1 and parent is not None and parent != base:
+            base = base + _DASH + parent
+        entries.append(Entry(base + u" (" + code + u")", name, code, neev,
+                             heading))
+    return entries
 
 
 def resolve_label(entries, text):
@@ -139,13 +173,13 @@ def _sheet_rows(data, shared):
     root = ET.fromstring(data)
     rows = []
     for row in root.iter(_NS + "row"):
-        got = {"A": None, "B": None}
+        got = {"A": None, "B": None, "C": None}
         for pos, cell in enumerate(row.findall(_NS + "c")):
             ref = cell.get("r")
-            col = _column(ref) if ref else "AB"[pos] if pos < 2 else ""
+            col = _column(ref) if ref else "ABC"[pos] if pos < 3 else ""
             if col in got:
                 got[col] = _cell_value(cell, shared, col == "A")
-        rows.append((got["A"], got["B"]))
+        rows.append((got["A"], got["B"], got["C"]))
     return rows
 
 
