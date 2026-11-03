@@ -1,17 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-Merge Floors
+Merge Floors / Roofs
 Combines sketch boundaries of multiple floor elements (that share the same
 type, reference level, and Height Offset from Level) into a single new floor,
-then deletes the originals.
+then deletes the originals. Footprint roofs are merged the same way (same
+type, base level, and Base Offset From Level).
 """
 
-__title__  = "Merge\nFloors"
+__title__  = "Merge\nFloors/Roofs"
 __author__ = "Tahir Sanwarwala"
 __doc__    = (
     "Select 2 or more floor elements that share the same type, reference level, "
-    "and Height Offset from Level. The script merges their sketch boundaries into "
-    "a single new floor and deletes the originals."
+    "and Height Offset from Level - or 2 or more footprint roofs that share the "
+    "same type, base level, and Base Offset From Level. The script merges their "
+    "sketch boundaries into a single new element and deletes the originals."
 )
 
 import clr
@@ -20,9 +22,13 @@ clr.AddReference("RevitAPI")
 clr.AddReference("RevitAPIUI")
 
 from Autodesk.Revit.DB import (
+    BuiltInParameter,
+    CurveArray,
     CurveLoop,
     ElementId,
     Floor,
+    FootPrintRoof,
+    ModelCurveArray,
     Transaction,
 )
 from Autodesk.Revit.UI.Selection import ISelectionFilter, ObjectType
@@ -41,11 +47,16 @@ TOLERANCE = 1e-6
 # SELECTION FILTER
 # ===============================================================================
 
-class FloorFilter(ISelectionFilter):
-    """Allow only Floor elements to be selected."""
+def is_mergeable(elem):
+    """True for elements this tool can merge: floors and footprint roofs."""
+    return isinstance(elem, (Floor, FootPrintRoof))
+
+
+class FloorRoofFilter(ISelectionFilter):
+    """Allow only Floor and FootPrintRoof elements to be selected."""
 
     def AllowElement(self, elem):
-        return isinstance(elem, Floor)
+        return is_mergeable(elem)
 
     def AllowReference(self, ref, point):
         return False
@@ -61,6 +72,28 @@ def get_height_offset(floor):
     if p and p.HasValue:
         return p.AsDouble()
     return 0.0
+
+
+def get_roof_base_offset(roof):
+    """Return the 'Base Offset From Level' value (in feet) for a roof, or 0.0."""
+    p = roof.get_Parameter(BuiltInParameter.ROOF_LEVEL_OFFSET_PARAM)
+    if p and p.HasValue:
+        return p.AsDouble()
+    return 0.0
+
+
+def get_offset(elem):
+    """Offset from the reference level, for either a floor or a roof."""
+    if isinstance(elem, FootPrintRoof):
+        return get_roof_base_offset(elem)
+    return get_height_offset(elem)
+
+
+def get_type_element(elem):
+    """The FloorType or RoofType of the element."""
+    if isinstance(elem, FootPrintRoof):
+        return elem.RoofType
+    return elem.FloorType
 
 
 def get_is_structural(floor):
@@ -116,84 +149,86 @@ def curves_share_edge(c1, c2, tol=TOLERANCE):
 # STEP 1 - GET SELECTION
 # ===============================================================================
 
-def get_floors_from_selection():
+def get_elements_from_selection():
     """
     Try pre-selection first; fall back to PickObjects prompt.
-    Returns a list of Floor elements, or None if user cancelled.
+    Returns a list of Floor / FootPrintRoof elements, or None if user cancelled.
     """
-    pre_ids = list(uidoc.Selection.GetElementIds())
-    floors  = [doc.GetElement(eid) for eid in pre_ids
-               if isinstance(doc.GetElement(eid), Floor)]
+    pre_ids  = list(uidoc.Selection.GetElementIds())
+    elements = [doc.GetElement(eid) for eid in pre_ids
+                if is_mergeable(doc.GetElement(eid))]
 
-    if len(floors) >= 2:
-        return floors
+    if len(elements) >= 2:
+        return elements
 
     # Nothing useful pre-selected -> ask the user to pick
     try:
         refs = uidoc.Selection.PickObjects(
             ObjectType.Element,
-            FloorFilter(),
-            "Select 2 or more floors - press Finish when done",
+            FloorRoofFilter(),
+            "Select 2 or more floors or 2 or more roofs - press Finish when done",
         )
     except Exception:
         return None  # user pressed Escape
 
-    floors = [doc.GetElement(r.ElementId) for r in refs]
-    floors = [f for f in floors if isinstance(f, Floor)]
-    return floors if floors else None
+    elements = [doc.GetElement(r.ElementId) for r in refs]
+    elements = [e for e in elements if is_mergeable(e)]
+    return elements if elements else None
 
 
 # ===============================================================================
 # STEP 2 - VALIDATE SIMILARITY
 # ===============================================================================
 
-def validate_floors(floors):
+def validate_elements(elements, kind):
     """
-    Check that all floors share the same FloorType, Level, and Height Offset.
+    Check that all elements share the same type, Level, and level offset.
 
-    Returns (True, reference_floor) on success, or
+    Returns (True, reference_element) on success, or
             (False, error_message_string) on failure.
     """
-    ref    = floors[0]
+    ref    = elements[0]
     errors = []
 
-    ref_type_id  = ref.FloorType.Id
+    ref_type_id  = get_type_element(ref).Id
     ref_level_id = ref.LevelId
-    ref_offset   = get_height_offset(ref)
+    ref_offset   = get_offset(ref)
+    offset_name  = ("Base Offset" if kind == "Roof" else "Height Offset")
 
-    for i, fl in enumerate(floors[1:], start=2):
-        floor_label = "Floor #{} (id {})".format(i, fl.Id.IntegerValue)
+    for i, el in enumerate(elements[1:], start=2):
+        label = "{} #{} (id {})".format(kind, i, el.Id.IntegerValue)
 
         # Type check
-        if fl.FloorType.Id != ref_type_id:
+        if get_type_element(el).Id != ref_type_id:
             errors.append(
                 "{}: type '{}' != reference type '{}'".format(
-                    floor_label, get_name(fl.FloorType), get_name(ref.FloorType))
+                    label, get_name(get_type_element(el)),
+                    get_name(get_type_element(ref)))
             )
 
         # Level check
-        if fl.LevelId != ref_level_id:
+        if el.LevelId != ref_level_id:
             ref_level = doc.GetElement(ref_level_id)
-            fl_level  = doc.GetElement(fl.LevelId)
+            el_level  = doc.GetElement(el.LevelId)
             errors.append(
                 "{}: level '{}' != reference level '{}'".format(
-                    floor_label,
-                    get_name(fl_level)  if fl_level  else str(fl.LevelId.IntegerValue),
+                    label,
+                    get_name(el_level)  if el_level  else str(el.LevelId.IntegerValue),
                     get_name(ref_level) if ref_level else str(ref_level_id.IntegerValue),
                 )
             )
 
-        # Height Offset check
-        fl_offset = get_height_offset(fl)
-        if abs(fl_offset - ref_offset) > TOLERANCE:
+        # Offset check
+        el_offset = get_offset(el)
+        if abs(el_offset - ref_offset) > TOLERANCE:
             errors.append(
-                "{}: Height Offset {:.4f} ft != reference {:.4f} ft".format(
-                    floor_label, fl_offset, ref_offset)
+                "{}: {} {:.4f} ft != reference {:.4f} ft".format(
+                    label, offset_name, el_offset, ref_offset)
             )
 
     if errors:
         msg = (
-            "The selected floors are NOT compatible for merging.\n\n"
+            "The selected {}s are NOT compatible for merging.\n\n".format(kind.lower())
             + "\n".join("- " + e for e in errors)
         )
         return False, msg
@@ -238,6 +273,56 @@ def extract_curve_loops(floors):
             all_loops.append(loop)
 
     return all_loops
+
+
+def extract_roof_loops(roofs):
+    """
+    For each footprint roof, read its footprint profiles and return
+    (curve_loops, edge_props).
+
+    edge_props is a list of (curve, props_dict) recording each original
+    footprint edge's slope settings, so they can be carried over to the
+    matching edge of the merged roof.
+
+    Raises RuntimeError if a roof has no footprint.
+    """
+    all_loops  = []
+    edge_props = []
+
+    for rf in roofs:
+        profiles = rf.GetProfiles()
+        if profiles is None or profiles.Size == 0:
+            raise RuntimeError(
+                "Roof id {} has no footprint - cannot extract boundary.".format(
+                    rf.Id.IntegerValue)
+            )
+
+        # GetProfiles() is a ModelCurveArrArray; each ModelCurveArray is one loop
+        for model_curve_arr in profiles:
+            loop = CurveLoop()
+            for mc in model_curve_arr:
+                crv = mc.GeometryCurve
+                loop.Append(crv)
+                edge_props.append((crv, read_roof_edge_props(rf, mc)))
+            all_loops.append(loop)
+
+    return all_loops, edge_props
+
+
+def read_roof_edge_props(roof, model_curve):
+    """Read the slope-related settings of one footprint edge."""
+    props = {}
+    for key, getter in (
+        ("defines_slope", roof.get_DefinesSlope),
+        ("slope_angle",   roof.get_SlopeAngle),
+        ("offset",        roof.get_Offset),
+        ("overhang",      roof.get_Overhang),
+    ):
+        try:
+            props[key] = getter(model_curve)
+        except Exception:
+            pass  # not every property applies to every edge
+    return props
 
 
 # ===============================================================================
@@ -411,6 +496,60 @@ def create_merged_floor(curve_loops, ref_floor):
     return new_floor
 
 
+def create_merged_roof(curve_loops, ref_roof, edge_props):
+    """
+    Create a new footprint roof using Document.Create.NewFootPrintRoof().
+    Set Base Offset to match the source roofs, and copy each original
+    edge's slope settings onto the matching edge of the new footprint.
+    Returns the new FootPrintRoof element.
+    """
+    roof_type   = ref_roof.RoofType
+    level       = doc.GetElement(ref_roof.LevelId)
+    base_offset = get_roof_base_offset(ref_roof)
+
+    footprint = CurveArray()
+    for cl in curve_loops:
+        for crv in cl:
+            footprint.Append(crv)
+
+    model_curves_ref = clr.Reference[ModelCurveArray]()
+    new_roof = doc.Create.NewFootPrintRoof(
+        footprint, level, roof_type, model_curves_ref)
+    model_curves = model_curves_ref.Value
+
+    # Apply base offset
+    offset_param = new_roof.get_Parameter(BuiltInParameter.ROOF_LEVEL_OFFSET_PARAM)
+    if offset_param and not offset_param.IsReadOnly:
+        offset_param.Set(base_offset)
+
+    # Carry over slope settings edge by edge
+    for mc in model_curves:
+        props = _find_edge_props(mc.GeometryCurve, edge_props)
+        if props is None:
+            continue
+        for key, setter in (
+            ("defines_slope", new_roof.set_DefinesSlope),
+            ("slope_angle",   new_roof.set_SlopeAngle),
+            ("offset",        new_roof.set_Offset),
+            ("overhang",      new_roof.set_Overhang),
+        ):
+            if key not in props:
+                continue
+            try:
+                setter(mc, props[key])
+            except Exception as ex:
+                logger.debug("Could not set {} on roof edge: {}".format(key, ex))
+
+    return new_roof
+
+
+def _find_edge_props(curve, edge_props):
+    """Return the slope settings of the original edge matching this curve."""
+    for orig_curve, props in edge_props:
+        if curves_share_edge(curve, orig_curve):
+            return props
+    return None
+
 
 # ===============================================================================
 # MAIN
@@ -418,35 +557,56 @@ def create_merged_floor(curve_loops, ref_floor):
 
 def main():
     # Step 1: Selection
-    floors = get_floors_from_selection()
+    elements = get_elements_from_selection()
 
-    if not floors:
+    if not elements:
         script.exit()
 
-    if len(floors) < 2:
+    floors = [e for e in elements if isinstance(e, Floor)]
+    roofs  = [e for e in elements if isinstance(e, FootPrintRoof)]
+
+    if floors and roofs:
         forms.alert(
-            "Please select at least 2 floor elements.\n"
-            "Only {} floor(s) were found in the selection.".format(len(floors)),
-            title="Merge Floors - Not Enough Floors",
+            "Floors and roofs cannot be merged together.\n"
+            "Select only floors, or only roofs.\n\n"
+            "Selected: {} floor(s), {} roof(s).".format(len(floors), len(roofs)),
+            title="Merge Floors/Roofs - Mixed Selection",
+        )
+        script.exit()
+
+    kind     = "Roof" if roofs else "Floor"
+    elements = roofs or floors
+    title    = "Merge {}s".format(kind)
+
+    if len(elements) < 2:
+        forms.alert(
+            "Please select at least 2 {0} elements.\n"
+            "Only {1} {0}(s) were found in the selection.".format(
+                kind.lower(), len(elements)),
+            title="{} - Not Enough {}s".format(title, kind),
         )
         script.exit()
 
     # Step 2: Validation
-    valid, result = validate_floors(floors)
+    valid, result = validate_elements(elements, kind)
 
     if not valid:
-        forms.alert(result, title="Merge Floors - Incompatible Elements")
+        forms.alert(result, title="{} - Incompatible Elements".format(title))
         script.exit()
 
-    ref_floor = result
+    ref_element = result
 
     # Step 3: Extract sketch loops
+    edge_props = []
     try:
-        curve_loops = extract_curve_loops(floors)
+        if kind == "Roof":
+            curve_loops, edge_props = extract_roof_loops(elements)
+        else:
+            curve_loops = extract_curve_loops(elements)
     except RuntimeError as ex:
         forms.alert(
-            "Failed to extract floor sketch:\n{}".format(str(ex)),
-            title="Merge Floors - Sketch Error",
+            "Failed to extract {} sketch:\n{}".format(kind.lower(), str(ex)),
+            title="{} - Sketch Error".format(title),
         )
         script.exit()
 
@@ -456,17 +616,20 @@ def main():
     if cleanup_warning:
         logger.warning(
             "Shared-edge cleanup could not fully resolve topology. "
-            "Attempting floor creation with original loops."
+            "Attempting {} creation with original loops.".format(kind.lower())
         )
 
-    # Step 5 & 6: Create new floor + delete originals
-    original_ids   = [fl.Id for fl in floors]
+    # Step 5 & 6: Create new element + delete originals
+    original_ids   = [el.Id for el in elements]
     creation_error = None
 
-    with Transaction(doc, "Merge Floors") as t:
+    with Transaction(doc, title) as t:
         t.Start()
         try:
-            new_floor = create_merged_floor(curve_loops, ref_floor)
+            if kind == "Roof":
+                create_merged_roof(curve_loops, ref_element, edge_props)
+            else:
+                create_merged_floor(curve_loops, ref_element)
 
             # Delete originals
             for eid in original_ids:
@@ -474,8 +637,8 @@ def main():
                     doc.Delete(eid)
                 except Exception as del_ex:
                     logger.warning(
-                        "Could not delete floor id {}: {}".format(
-                            eid.IntegerValue, str(del_ex))
+                        "Could not delete {} id {}: {}".format(
+                            kind.lower(), eid.IntegerValue, str(del_ex))
                     )
 
             t.Commit()
@@ -490,9 +653,10 @@ def main():
     # Only show a dialog on failure
     if creation_error is not None:
         forms.alert(
-            "Floor creation failed:\n\n{}\n\n"
-            "The original floors have NOT been deleted.".format(creation_error),
-            title="Merge Floors - Error",
+            "{0} creation failed:\n\n{1}\n\n"
+            "The original {2}s have NOT been deleted.".format(
+                kind, creation_error, kind.lower()),
+            title="{} - Error".format(title),
         )
 
 
