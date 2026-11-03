@@ -57,6 +57,8 @@ CODE_PARAM = "BG_SPACE"
 OUTLINE_RGB = (255, 0, 255)
 OUTLINE_WEIGHT = 8
 
+# Area.inside (the scratch room's location point) is kept for a future
+# fallback match; create_room does not use it today.
 Area = namedtuple("Area", "outer inners inside bounds")
 
 
@@ -218,12 +220,16 @@ def create_room(doc, view, area, name, code):
         _roll_back_if_open(t)
 
 
-def delete_room(doc, room_id):
-    """Delete the room; False (and nothing done) if gone or not a Room."""
+def delete_room(doc, room_id, name):
+    """Delete the room, in a transaction "Bulk Rooms – undo <name>".
+
+    Returns False (and does nothing) if the id is gone or not a Room,
+    else whether the deletion committed.
+    """
     el = doc.GetElement(room_id)
     if el is None or not isinstance(el, Room):
         return False
-    t = Transaction(doc, u"Bulk Rooms – undo")
+    t = Transaction(doc, u"Bulk Rooms – undo " + name)
     t.Start()
     try:
         doc.Delete(room_id)

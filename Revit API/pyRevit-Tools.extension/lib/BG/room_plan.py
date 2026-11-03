@@ -12,6 +12,8 @@ Deliberately free of any Revit import so it can be unit-tested outside
 Revit.
 """
 
+from __future__ import division
+
 MIN_AREA_SQFT = 1.0
 ROW_BAND_FT = 1.0
 TOL = 1e-6

@@ -32,8 +32,8 @@ __doc__ = (
 )
 __persistentengine__ = True
 
-import io
 import os
+import StringIO   # this script runs only under IronPython 2.7
 import traceback
 
 import clr
@@ -81,16 +81,22 @@ def load_workbook(path):
 
     Opened with FileShare.ReadWrite so a workbook open in Excel can
     still be read; its bytes are copied out before zipfile sees them.
+
+    StringIO, not BytesIO: IronPython 2.7's zipfile hands the data to
+    cStringIO, which rejects a bytes object ("expected str, got bytes").
     """
     stream = File.Open(path, FileMode.Open, FileAccess.Read,
                        FileShare.ReadWrite)
     try:
         ms = MemoryStream()
-        stream.CopyTo(ms)
+        try:
+            stream.CopyTo(ms)
+            data = str(bytearray(ms.ToArray()))
+        finally:
+            ms.Dispose()
     finally:
-        stream.Close()
-    data = bytes(bytearray(ms.ToArray()))
-    return room_codes.read_workbook(io.BytesIO(data))
+        stream.Dispose()
+    return room_codes.read_workbook(StringIO.StringIO(data))
 
 
 def remembered_workbook():
@@ -483,7 +489,8 @@ class BulkRoomsWindow(forms.WPFWindow):
         refill = None
         if outcome.kind == "created":
             try:
-                if room_build.delete_room(self._doc, outcome.room_id):
+                if room_build.delete_room(self._doc, outcome.room_id,
+                                          outcome.label or ""):
                     refill = (outcome.sheet, outcome.label)
             except Exception as ex:
                 logger.error(traceback.format_exc())
