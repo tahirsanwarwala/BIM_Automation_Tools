@@ -798,6 +798,39 @@ def set_bg_level(doc, elem, level_id, param_name=None):
         return BG_REFUSED
 
 
+def clear_bg_level(doc, elem, param_name=None):
+    """Empty *elem*'s level-name parameter, and say what happened.
+
+    Returns one of the BG_* constants, read the same way set_bg_level's
+    are: a parameter already empty is BG_ALREADY, one this element has
+    not got is BG_MISSING and nobody's problem.
+
+    What it is for: a wall spanning more than one storey has no single
+    storey to record, and a name left over from a run when it had one
+    is worse than no name -- it reads as current and is not.  Emptying
+    it is the only way to say "this wall is not on a storey" in a
+    parameter whose whole vocabulary is storey names.
+    """
+    p = find_parameter(elem, param_name or BG_LEVEL_PARAM)
+    if p is None:
+        return BG_MISSING
+    if p.IsReadOnly:
+        return BG_READONLY
+    if p.StorageType != StorageType.String:
+        return BG_NOT_TEXT
+
+    try:
+        if not (p.AsString() or ""):
+            return BG_ALREADY
+    except Exception:
+        pass
+
+    try:
+        return BG_WRITTEN if p.Set("") else BG_REFUSED
+    except Exception:
+        return BG_REFUSED
+
+
 def apply_bg_level(doc, wall, band, param_name=None):
     """Write the name of *wall*'s Base Constraint level into BG_LEVEL.
 

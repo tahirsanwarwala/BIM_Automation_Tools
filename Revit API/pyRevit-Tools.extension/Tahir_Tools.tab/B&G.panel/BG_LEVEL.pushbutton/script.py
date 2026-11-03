@@ -137,6 +137,22 @@ a wall this tool would make.  So do stacked walls, grouped walls, and
 any wall whose extent cannot be read.  Every one of them still gets
 its level name, written from the Base Constraint it already has.
 
+A WALL SPANNING MORE THAN ONE STOREY HAS NO LEVEL NAME.  The parameter
+records the storey a wall sits on, and a wall reaching through several
+has none to record; naming one of them would be picking a storey out
+of a set.  So the parameter is left EMPTY for such a wall, and a name
+left over from a run when the wall had one storey is cleared rather
+than left to be read as current.
+
+That covers every way a wall ends up spanning: a sketched profile
+Revit will not carry a cut across, a door or insert above the first
+storey, splitting turned off in the dialog, and a curtain wall that is
+never cut by design.  The last of those is why this is a separate
+question from whether a cut is OUTSTANDING: a curtain wall left whole
+wants no cut and is never reported as needing one, but it still spans
+what it passes and still holds no name.  A wall that WAS split comes
+out as one wall per storey, and every one of those is named.
+
 WHAT A RUN COSTS.  Binding a wall costs Revit about three document
 regenerations, and the transaction each wall is processed in is what
 makes it do them.  So no transaction is opened until a read-only pass
@@ -172,7 +188,10 @@ __doc__    = (
     "gains none above it; one whose door sits above the cut is left\n"
     "whole and reported, to be divided by hand.\n"
     "A wall with a sketched profile is never split whatever the\n"
-    "settings say - Revit will not carry the outline across a split."
+    "settings say - Revit will not carry the outline across a split.\n"
+    "A wall left spanning more than one storey - uncut for any\n"
+    "reason, a curtain wall included - gets NO level name, and a\n"
+    "stale one is cleared.  Each wall of a split one is named."
 )
 
 import traceback
@@ -293,6 +312,40 @@ def apply_bg_level(wall, band):
     """
     if not SETTINGS.write_bg_level:
         return True
+    return wall_bind.apply_bg_level(doc, wall, band, SETTINGS.bg_level_param)
+
+
+def spans_levels_between(base_z, top_z, levels):
+    """True when a wall still reaches through a storey it did not get cut at.
+
+    Deliberately NOT the same question as crossing_left, which asks
+    whether a cut was wanted and is outstanding and so drives the
+    status.  A curtain wall left whole is never cut by design and must
+    not be reported as needing it -- but it does span the storeys it
+    passes, and a parameter whose whole vocabulary is storey names has
+    nothing true to say about such a wall.
+    """
+    return bool(wc.interior_levels(base_z, top_z, levels, tol()))
+
+
+def apply_bg_level_for(wall, band, spans_levels):
+    """Name the wall's storey, or empty the parameter when it has several.
+
+    A wall that was split has one band per storey and each band is
+    exactly what the parameter is for.  A wall that was not -- a
+    sketched profile, a door above the first storey, splitting turned
+    off, a curtain wall never cut by design -- still reaches through
+    all of them, and naming one would be picking a storey out of
+    several.  A name left over from a run when the wall had one is
+    cleared rather than left to be read as current.
+    """
+    if not SETTINGS.write_bg_level:
+        return True
+
+    if spans_levels:
+        return wall_bind.clear_bg_level(
+            doc, wall, SETTINGS.bg_level_param) in wall_bind.BG_OK
+
     return wall_bind.apply_bg_level(doc, wall, band, SETTINGS.bg_level_param)
 
 
@@ -979,6 +1032,14 @@ def describe(base_lvl_id, base_off, top_lvl_id, top_off):
         base, _level_name(top_lvl_id), _feet_to_text(top_off))
 
 
+def _note_spanning(res):
+    """Record that the wall has no one storey to be named after."""
+    res.caveat = True
+    res.notes.append(
+        "spans more than one storey, so {0} was left empty".format(
+            SETTINGS.bg_level_param))
+
+
 def _note_unwritten(res):
     """Record that the level name would not take on this wall."""
     res.notes.append(bg_unwritten())
@@ -1132,6 +1193,15 @@ def _process_wall(wall, levels):
         wc.interior_levels(b["base_z"], b["top_z"], levels, tol())
         for b in bands)
 
+    # And, separately, whether the wall still reaches through a storey
+    # at all.  Not the same question: a curtain wall left whole wanted
+    # no cut and so is not "crossing_left", but it spans every storey
+    # it passes and has no single one to be named after.  See
+    # apply_bg_level_for.
+    spans_levels = any(
+        spans_levels_between(b["base_z"], b["top_z"], levels)
+        for b in bands)
+
     changed = wc.constraints_changed(
         (_eid(current[0]), current[1], _eid(current[2]), current[3]),
         {"base_level_id": _eid(bands[0]["base_level_id"]),
@@ -1143,12 +1213,15 @@ def _process_wall(wall, levels):
     if not changed and not plan["rounded"] and len(bands) == 1:
         res.status = "Already correct"
         res.after = res.before
-        # The level name is written even here.  The constraints being
-        # right already says nothing about whether the parameter was
-        # ever filled, and a wall this tool has looked at should come
-        # away with both.
-        if not apply_bg_level(wall, bands[0]):
+        # The parameter is settled even here.  The constraints being
+        # right already says nothing about whether it was ever filled,
+        # and a wall this tool has looked at should come away with
+        # both -- including a wall that spans storeys, whose leftover
+        # name is cleared rather than left to be read as current.
+        if not apply_bg_level_for(wall, bands[0], spans_levels):
             _note_unwritten(res)
+        elif spans_levels:
+            _note_spanning(res)
         if crossing_left:
             res.status = "Needs split"
         return res
@@ -1170,8 +1243,10 @@ def _process_wall(wall, levels):
         return res
 
     unwritten = 0
-    if not apply_bg_level(wall, bands[0]):
+    if not apply_bg_level_for(wall, bands[0], spans_levels):
         unwritten += 1
+    elif spans_levels:
+        _note_spanning(res)
 
     new_ids = []
     retyped = 0
@@ -1333,6 +1408,24 @@ class ElementResult(object):
         return self.rebased or self.status not in ELEMENT_QUIET_STATUSES
 
 
+def wall_spans_levels(wall, pairs):
+    """True when this wall reaches through a storey, read off its own
+    parameters.
+
+    For the name-only pass, which has no plan to consult.  Parameter
+    reads only -- no geometry, nothing that would slow the pass this
+    one exists to keep fast.  A wall whose extent cannot be read is
+    taken as not spanning: the extent is also what the constraint pass
+    would have needed, and refusing a name on a guess is worse than
+    writing one.
+    """
+    try:
+        base_z, top_z, _current = wall_extent(wall)
+    except Exception:
+        return False
+    return spans_levels_between(base_z, top_z, pairs)
+
+
 def level_for(elem):
     """The level whose name belongs in this element's parameter.
 
@@ -1475,6 +1568,22 @@ def process_element(elem, pairs, by_value):
     if not SETTINGS.write_bg_level:
         if not res.status:
             res.status = "Not applicable"
+        return res
+
+    # A wall spanning storeys holds no name, whichever pass it came
+    # down.  The rule is a property of the wall, not of the run, so a
+    # name-only run must not quietly write one the constraint pass
+    # would have refused.  Costs two parameter reads; no geometry.
+    if isinstance(elem, Wall) and wall_spans_levels(elem, pairs):
+        outcome = wall_bind.clear_bg_level(doc, elem,
+                                           SETTINGS.bg_level_param)
+        res.level = ""
+        if ELEMENT_OUTCOMES.get(outcome) != "Failed":
+            res.notes.append(
+                "spans more than one storey, so {0} was left "
+                "empty".format(SETTINGS.bg_level_param))
+            res.rebased = True
+        res.status = ELEMENT_OUTCOMES.get(outcome, "Failed")
         return res
 
     try:
@@ -1773,21 +1882,24 @@ def report(results, elements):
 # MAIN
 # ===============================================================================
 
-def bg_level_is_current(wall, level_id):
-    """True when the level name needs no writing, WITHOUT writing it.
+def bg_level_is_current(wall, level_id, spans_levels=False):
+    """True when the parameter needs no touching, WITHOUT touching it.
 
     Reads only, so the triage can ask before any transaction exists.
     The three quiet outcomes count as current -- writing turned off, no
     level to name, no such parameter on the wall -- because in each
-    case set_bg_level would do nothing and report nothing.  A parameter
+    case the writer would do nothing and report nothing.  A parameter
     that is read-only or not text counts as NOT current, so the wall
     goes down the ordinary path and has that reported properly.
+
+    *spans_levels* flips what "current" means: a wall reaching through
+    more than one storey should hold NOTHING, so an empty parameter is
+    current and a leftover name is not.  Without this a curtain wall
+    spanning storeys, with sound constraints and a stale name, would be
+    declared settled, skip its transaction, and keep that name for
+    ever.
     """
     if not SETTINGS.write_bg_level:
-        return True
-
-    level = doc.GetElement(level_id) if _is_valid(level_id) else None
-    if level is None:
         return True
 
     p = find_parameter(wall, SETTINGS.bg_level_param)
@@ -1797,9 +1909,17 @@ def bg_level_is_current(wall, level_id):
         return False
 
     try:
-        return p.AsString() == _name(level)
+        held = p.AsString() or ""
     except Exception:
         return False
+
+    if spans_levels:
+        return held == ""
+
+    level = doc.GetElement(level_id) if _is_valid(level_id) else None
+    if level is None:
+        return True
+    return held == _name(level)
 
 
 def settled_result(wall, levels):
@@ -1871,7 +1991,15 @@ def settled_result(wall, levels):
                 tol()):
             return None
 
-        if not bg_level_is_current(wall, band["base_level_id"]):
+        # A wall reaching through a storey should hold no name at all,
+        # so what counts as settled depends on which it is.  Asked of
+        # the single band this wall has: a wall with more than one
+        # never reaches here.
+        spans_levels = spans_levels_between(
+            band["base_z"], band["top_z"], levels)
+
+        if not bg_level_is_current(wall, band["base_level_id"],
+                                   spans_levels):
             return None
 
         res = Result(wall.Id, _name(wall.WallType))

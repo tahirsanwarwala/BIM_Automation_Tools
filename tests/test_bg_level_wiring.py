@@ -608,5 +608,76 @@ class TestEveryLevelBasedElementIsChecked(unittest.TestCase):
         self.assertIn("rebased", ast.dump(prop))
 
 
+class TestAWallSpanningStoreysHasNoLevelName(unittest.TestCase):
+    """One storey is what the parameter records, so a wall across two
+    records nothing.
+
+    A wall that was split has one band per storey and every band is
+    exactly what BG_LEVEL is for.  A wall that was NOT split -- a
+    sketched profile Revit will not carry a cut across, a door above
+    the first storey, splitting turned off, a curtain wall never cut by
+    design -- still spans them all, and naming one of them would be
+    picking a storey out of several.  A stale name from an earlier run
+    is cleared rather than left to be believed.
+    """
+
+    def test_spanning_is_judged_separately_from_needing_a_cut(self):
+        # crossing_left drives the STATUS and must stay as it is: a
+        # curtain wall is not cut by design and must not be reported as
+        # needing one.  Whether the name is written is a different
+        # question with a different answer for exactly that wall.
+        source = _source(BG_LEVEL)
+        self.assertIn("crossing_left", source)
+        self.assertIn("spans_levels", source)
+
+    def test_spanning_does_not_require_a_cut_to_have_been_wanted(self):
+        # needs_split is False for a curtain wall left whole, so asking
+        # it here would let precisely the wall this must catch through.
+        func = _function("_process_wall", BG_LEVEL)
+        spans = None
+        for node in ast.walk(func):
+            if (isinstance(node, ast.Assign)
+                    and any(getattr(t, "id", None) == "spans_levels"
+                            for t in node.targets)):
+                spans = ast.dump(node.value)
+        self.assertIsNotNone(spans, "nothing computes spans_levels")
+        self.assertTrue(
+            "interior_levels" in spans or "spans_levels_between" in spans,
+            "spans_levels is not computed from the level arithmetic")
+        self.assertNotIn(
+            "needs_split", spans,
+            "spans_levels asks whether a cut was WANTED, which is False "
+            "for the curtain wall this exists to catch")
+
+    def test_there_is_a_way_to_clear_the_parameter(self):
+        self.assertIn("def clear_bg_level", _source(WALL_BIND))
+
+    def test_the_wall_pass_clears_rather_than_writes_when_spanning(self):
+        func = _function("apply_bg_level_for", BG_LEVEL)
+        dumped = ast.dump(func)
+        self.assertIn("spans_levels", dumped)
+        self.assertIn("clear_bg_level", dumped)
+
+    def test_the_band_walls_still_get_their_names(self):
+        # Each band is wholly within one storey; that is the point.
+        func = _function("_process_wall", BG_LEVEL)
+        calls = [c for c in ast.walk(func)
+                 if isinstance(c, ast.Call)
+                 and _called_name(c) == "apply_bg_level_for"]
+        self.assertTrue(calls, "the wall pass no longer writes any name")
+
+    def test_the_triage_does_not_declare_a_stale_name_settled(self):
+        # A curtain wall spanning storeys with correct constraints and
+        # a leftover name would otherwise skip its transaction and keep
+        # the name for ever.
+        func = _function("settled_result", BG_LEVEL)
+        self.assertIn("spans_levels", ast.dump(func))
+
+    def test_a_name_only_run_clears_them_too(self):
+        # The rule is a property of the wall, not of the run.
+        func = _function("process_element", BG_LEVEL)
+        self.assertIn("spans_levels", ast.dump(func))
+
+
 if __name__ == "__main__":
     unittest.main()
