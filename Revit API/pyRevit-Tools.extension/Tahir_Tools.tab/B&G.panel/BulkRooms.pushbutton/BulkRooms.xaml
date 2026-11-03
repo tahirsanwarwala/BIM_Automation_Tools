@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Bulk Rooms" Width="480"
+        SizeToContent="Height" ResizeMode="NoResize"
+        WindowStartupLocation="CenterScreen"
+        ShowInTaskbar="False">
+
+    <Window.Resources>
+        <Style TargetType="TextBlock" x:Key="field">
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Margin" Value="0,0,8,0"/>
+        </Style>
+        <Style TargetType="Button" x:Key="action">
+            <Setter Property="MinWidth" Value="80"/>
+            <Setter Property="Padding" Value="10,3"/>
+            <Setter Property="Margin" Value="6,0,0,0"/>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="12">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Position in the walk -->
+        <TextBlock x:Name="counter_text" Grid.Row="0" Grid.ColumnSpan="3"
+                   HorizontalAlignment="Right" FontWeight="Bold"
+                   Margin="0,0,0,10" Text="Area 1 of 1"/>
+
+        <!-- Excel file -->
+        <TextBlock Grid.Row="1" Grid.Column="0" Style="{StaticResource field}"
+                   Text="Excel file:"/>
+        <TextBox x:Name="file_box" Grid.Row="1" Grid.Column="1"
+                 IsReadOnly="True" VerticalContentAlignment="Center"
+                 Padding="2"/>
+        <Button x:Name="browse_btn" Grid.Row="1" Grid.Column="2"
+                Content="Browse…" Padding="10,2" Margin="6,0,0,0"/>
+
+        <TextBlock x:Name="file_error" Grid.Row="2" Grid.Column="1"
+                   Grid.ColumnSpan="2" Foreground="#B00020"
+                   TextWrapping="Wrap" Margin="0,4,0,0"
+                   Visibility="Collapsed"/>
+
+        <!-- Sheet -->
+        <TextBlock Grid.Row="3" Grid.Column="0" Style="{StaticResource field}"
+                   Text="Sheet:" Margin="0,8,8,0"/>
+        <ComboBox x:Name="sheet_combo" Grid.Row="3" Grid.Column="1"
+                  Grid.ColumnSpan="2" Margin="0,8,0,0"/>
+
+        <!-- Name -->
+        <TextBlock Grid.Row="4" Grid.Column="0" Style="{StaticResource field}"
+                   Text="Name:" Margin="0,8,8,0"/>
+        <ComboBox x:Name="name_combo" Grid.Row="4" Grid.Column="1"
+                  Grid.ColumnSpan="2" Margin="0,8,0,0"
+                  IsEditable="True" IsTextSearchEnabled="False"
+                  StaysOpenOnEdit="True" MaxDropDownHeight="300"/>
+        <TextBlock Grid.Row="5" Grid.Column="1" Grid.ColumnSpan="2"
+                   Foreground="#666666" FontSize="11" Margin="0,2,0,0"
+                   Text="Type to filter the names of the chosen sheet."/>
+
+        <!-- Actions -->
+        <StackPanel Grid.Row="6" Grid.ColumnSpan="3" Orientation="Horizontal"
+                    HorizontalAlignment="Right" Margin="0,14,0,0">
+            <Button x:Name="back_btn" Content="Back" Style="{StaticResource action}"/>
+            <Button x:Name="skip_btn" Content="Skip" Style="{StaticResource action}"/>
+            <Button x:Name="create_btn" Content="Create &amp; Next"
+                    Style="{StaticResource action}" FontWeight="Bold"/>
+            <Button x:Name="close_btn" Content="Close" Style="{StaticResource action}"/>
+        </StackPanel>
+    </Grid>
+</Window>
